@@ -57,9 +57,14 @@
   .msg.err { background: var(--err-bg); color: var(--err-ink); }
   .status { color: var(--muted); font-size: 12px; min-height: 18px; }
   .setlist { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
-  .setlist button { display: flex; width: 100%; justify-content: space-between; gap: 8px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; text-align: left; }
-  .setlist button.active { background: var(--chip); font-weight: 600; }
+  .setlist .row { display: flex; border-bottom: 1px solid var(--line); }
+  .setlist .row.active { background: var(--chip); font-weight: 600; }
+  .setlist .open { display: flex; flex: 1; min-width: 0; justify-content: space-between; gap: 8px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+  .setlist .remove { flex: 0 0 auto; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 0 10px; }
+  .setlist .remove:hover { color: var(--accent); }
   .setlist .skip { color: var(--muted); }
+  .addrow { display: flex; gap: 6px; margin-bottom: 8px; }
+  .undo { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); margin: 6px 0 0; }
   .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
   .retreat { display: flex; align-items: center; gap: 6px; }
   .retreat .icons { display: flex; gap: 2px; min-height: 26px; min-width: 60px; align-items: center; padding: 2px 4px; border: 1px dashed var(--line); border-radius: 6px; }
@@ -113,11 +118,16 @@
 
 <main>
   <div>
-    <section id="setPanel" hidden>
+    <section id="setPanel">
       <h2><span id="setName">Cards</span>
         <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="changelogBtn" class="small" title="Every card's changes from its printed card, as Markdown">Changelog (.md)</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
-      <div id="setList" class="setlist"></div>
-      <p class="hint">Every card you load joins this list. The list and your edits save themselves after every change (as a dated project until you name it, top right) and open on their own next time.</p>
+      <div class="addrow">
+        <input id="addIds" type="text" placeholder="Add cards: TCGdex ids, e.g. sv10.5b-001, swsh5-92" aria-label="Card ids to add">
+        <button id="addBtn" type="button" class="small">Add</button>
+      </div>
+      <div id="setList" class="setlist" hidden></div>
+      <p id="undoBar" class="undo" hidden><span id="undoText"></span><button id="undoBtn" type="button" class="small">Undo</button></p>
+      <p class="hint">Every card you load or add joins this list; × takes one out (with its edits). The list and your edits save themselves after every change (as a dated project until you name it, top right) and open on their own next time.</p>
       <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
     </section>
 
@@ -254,6 +264,7 @@ const state = {
   foilSeq: 0,
   changes: {},            // id -> [what differs from the printed card], from the last render
   rendered: new Set(),    // ids rendered since the page opened (✓ in the list)
+  removed: null,          // the last card taken out of the list, for Undo: {card, index, edits, options, changes}
   project: null,          // name of the saved project being worked on (autosaved), or null
   autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
@@ -668,6 +679,8 @@ async function openProject(name) {
     state.options = data.options || {};
     state.setCards = data.cards || [];
     state.current = null;
+    state.removed = null;
+    $("undoBar").hidden = true;
     $("setName").textContent = data.setName || saved;
     $("foilOn").checked = !!data.foil && !$("foilOn").disabled;
     $("projectName").value = saved;
@@ -709,24 +722,101 @@ async function importSet(file) {
 }
 
 function drawSet() {
-  $("setPanel").hidden = state.setCards.length === 0;
+  $("setList").hidden = state.setCards.length === 0;
   const todo = state.setCards.filter((c) => !c.skip).length;
-  $("setList").replaceChildren(...state.setCards.map((c) => el("button", {
-      "data-id": c.id, class: c.skip ? "skip" : "", disabled: !!c.skip,
-      onclick: () => loadCard(c.id) },
-    el("span", {}, `${c.name} `, el("span", { class: "badge" }, c.id)),
-    el("span", {},
-      ...(state.changes[c.id] && state.changes[c.id].length ? [el("span", { class: "badge changed-count", title: state.changes[c.id].join("\n") },
-        `${state.changes[c.id].length} changed`), " "] : []),
-      el("span", { class: "badge" }, (c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit" }[c.layout])
-        + (state.rendered.has(c.id) ? " ✓" : ""))))));
+  $("setList").replaceChildren(...state.setCards.map((c) => el("div", { class: "row", "data-id": c.id },
+    el("button", { class: c.skip ? "open skip" : "open", disabled: !!c.skip, onclick: () => loadCard(c.id) },
+      el("span", {}, `${c.name} `, el("span", { class: "badge" }, c.id)),
+      el("span", {},
+        ...(state.changes[c.id] && state.changes[c.id].length ? [el("span", { class: "badge changed-count", title: state.changes[c.id].join("\n") },
+          `${state.changes[c.id].length} changed`), " "] : []),
+        el("span", { class: "badge" }, (c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit" }[c.layout])
+          + (state.rendered.has(c.id) ? " ✓" : "")))),
+    el("button", { class: "remove", title: `Remove ${c.name} from the set`, "aria-label": `Remove ${c.name}`,
+                   onclick: () => removeCard(c.id) }, "×"))));
   $("zipBtn").disabled = $("renderAllBtn").disabled = $("changelogBtn").disabled = todo === 0;
   markActive();
 }
 
 function markActive() {
-  document.querySelectorAll("#setList button").forEach((b) =>
-    b.classList.toggle("active", !!state.current && b.dataset.id === state.current.id));
+  document.querySelectorAll("#setList .row").forEach((r) =>
+    r.classList.toggle("active", !!state.current && r.dataset.id === state.current.id));
+}
+
+// Several ids at once (commas, spaces or new lines); each is checked with the server before it joins the list.
+async function addCards(text) {
+  const ids = [...new Set((text || "").split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean))];
+  if (!ids.length) return;
+  showError("");
+  const known = new Set(state.setCards.map((c) => c.id));
+  const failed = [];
+  let added = 0;
+  for (const [i, id] of ids.entries()) {
+    if (known.has(id)) continue;
+    status(`Adding ${i + 1}/${ids.length}: ${id}…`);
+    try {
+      const data = await (await api(`/api/card?id=${encodeURIComponent(id)}`)).json();
+      state.setCards.push({ id, name: data.name, layout: data.layout });
+      known.add(id);
+      added += 1;
+      drawSet();
+    } catch (e) { failed.push({ id, why: e.message }); }
+  }
+  status("");
+  $("addIds").value = failed.map((f) => f.id).join(", ");          // what did not go in stays, to fix
+  if (added) {
+    autosave();
+    const first = state.setCards.find((c) => !c.skip);
+    if (!state.current && first) await loadCard(first.id);       // clears the error box, so before the report
+  }
+  if (failed.length) showError(`Not added:\n${failed.map((f) => `${f.id}: ${f.why}`).join("\n")}`);
+}
+
+// Out of the list with its edits; Undo puts it back where it was, until the next removal.
+function removeCard(id) {
+  const index = state.setCards.findIndex((c) => c.id === id);
+  if (index < 0) return;
+  const [card] = state.setCards.splice(index, 1);
+  state.removed = { card, index, edits: state.edits[id], options: state.options[id], changes: state.changes[id] };
+  delete state.edits[id];
+  delete state.options[id];
+  delete state.changes[id];
+  state.rendered.delete(id);
+  $("undoText").textContent = `Removed ${card.name} (${id}).`;
+  $("undoBar").hidden = false;
+  if (state.current && state.current.id === id) {
+    const next = state.setCards.slice(index).concat(state.setCards.slice(0, index).reverse()).find((c) => !c.skip);
+    if (next) loadCard(next.id);
+    else closeCard();
+  }
+  drawSet();
+  autosave();
+}
+
+function undoRemove() {
+  const r = state.removed;
+  if (!r) return;
+  state.removed = null;
+  $("undoBar").hidden = true;
+  if (state.setCards.some((c) => c.id === r.card.id)) return;     // loaded again since
+  state.setCards.splice(Math.min(r.index, state.setCards.length), 0, r.card);
+  if (r.edits) state.edits[r.card.id] = r.edits;
+  if (r.options) state.options[r.card.id] = r.options;
+  if (r.changes) state.changes[r.card.id] = r.changes;
+  drawSet();
+  autosave();
+  if (!state.current && !r.card.skip) loadCard(r.card.id);
+}
+
+// No card open: the page as it starts.
+function closeCard() {
+  state.current = null;
+  state.lastPng = null;
+  stopFoil();
+  for (const id of ["editor", "stage", "viewbar", "compare", "changesBox"]) $(id).hidden = true;
+  $("placeholder").hidden = false;
+  $("cardId").value = "";
+  showWarnings([]);
 }
 function markRendered(id) {
   state.rendered.add(id);
@@ -783,6 +873,9 @@ async function init() {
   $("loadBtn").addEventListener("click", () => loadCard($("cardId").value));
   $("cardId").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCard($("cardId").value); });
   $("importBtn").addEventListener("click", () => $("setFile").click());
+  $("addBtn").addEventListener("click", () => addCards($("addIds").value));
+  $("addIds").addEventListener("keydown", (e) => { if (e.key === "Enter") addCards($("addIds").value); });
+  $("undoBtn").addEventListener("click", undoRemove);
   $("setFile").addEventListener("change", (e) => { if (e.target.files[0]) importSet(e.target.files[0]); e.target.value = ""; });
   $("renderBtn").addEventListener("click", renderNow);
   $("resetBtn").addEventListener("click", () => {
@@ -848,6 +941,7 @@ async function init() {
     if (state.project && state.saveTimer) navigator.sendBeacon("/api/projects",
       new Blob([JSON.stringify({ name: state.project, data: projectData() })], { type: "application/json" }));
   });
+  drawSet();                                                // an empty list: its buttons off until cards come in
   await refreshProjects();
   const q = new URLSearchParams(location.search).get("id");
   const last = localStorage.getItem(LAST_PROJECT);

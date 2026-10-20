@@ -123,7 +123,9 @@ resistance, retreat, illustrator, flavour text); the card list counts them per c
 printed, or both side by side. "Changelog (.md)" writes every card's changes as Markdown, and each zip download
 holds the same CHANGELOG.md.
 
-Projects: every card you load joins the card list. The page saves itself 1.5 s after each change - the list, every
+Projects: every card you load joins the card list; the Cards panel adds several by id at once (commas or spaces;
+those TCGdex does not know, or that are not Pokémon, stay in the box with the reason) and × takes one out with its
+edits (Undo puts it back). The page saves itself 1.5 s after each change - the list, every
 card's edits and options, the card open and the holofoil switch - and opens it again on its own next time. Work
 with no name yet is saved as "<set> <date time>" (or "Untitled <date time>"); type a name and Save to rename it. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
 or deleted from the same bar, from any browser that reaches the server.
