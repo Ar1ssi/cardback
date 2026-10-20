@@ -4,7 +4,9 @@ was edited is taken off and set again in the same layouts the restyles use.
 - Name and HP, and the weakness row (weakness, resistance, retreat): the original is set again with the composers
   (they match these prints to a pixel or two, see tests) to find exactly where it is printed.
 - Stage, "Evolves from" and the evolution portrait: the Stage pieces sit at one place on every SV / ME card, so the
-  ones that changed are pasted over (stage.py); back to Basic they are taken off and the BASIC tab set.
+  ones that changed are pasted over (stage.py); back to Basic they are taken off and the BASIC tab set. A Stage card
+  keeps its own strip (Mega ex cards end it under their badge): the old "Evolves from" line is found like the name and
+  blended away along the strip's pixel rows (fill_band).
 - Abilities and attacks: ex prints do not stack their blocks by one rule, so the old block is found on the card
   instead: everything in the text zone that stands out from the panel behind it (text, cost icons, the Ability
   badge). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular cards share
@@ -100,6 +102,10 @@ def _moves(canvas, card, fill):
 def _row(canvas, card, fill):
     icons = compose.SV_ROW_ICONS if card["family"] == "ex" else mecompose.ROW_ICONS
     compose.weakness_row(canvas, card, fill, None, labels=False, icons=icons)
+
+
+def _evolves(canvas, card):
+    stage.evolves_line(canvas, card["evolves_from"], min(stage.EVOLVES_RIGHT, stage.strip_end(card) - stage.STRIP_PAD))
 
 
 def _drawn(draw, card, *args):
@@ -204,7 +210,8 @@ def stage_off(original, card):
 
 
 def taken_off(card_id, original, groups, card=None):
-    """What the edited groups take off the card. -> (bool HxW for LaMa, bool HxW for the weakness row)"""
+    """What the edited groups take off the card. -> (bool HxW for LaMa, bool HxW filled along pixel rows: the
+    weakness row and the "Evolves from" line)"""
     scan = tcg.scan(card_id)
     mask, row = np.zeros((H, W), bool), np.zeros((H, W), bool)
     if "stage" in groups and card is not None:
@@ -217,6 +224,8 @@ def taken_off(card_id, original, groups, card=None):
         # tight: the weakness icon sits close to the end of its label
         row = dilate(ink_near(scan, _cover(_drawn(_row, original, compose.WHITE), ("row_icon", "row_text")),
                               ROW_NEAR), 1)
+    if "stage" in groups and card is not None and original["stage"] and card["stage"]             and card["evolves_from"] != original["evolves_from"]:
+        row |= dilate(ink_near(scan, _cover(_drawn(_evolves, original), ("evolves",)), ROW_NEAR), 1)
     return dilate(mask, MARK_GROW), row
 
 
@@ -282,7 +291,8 @@ def compose_card(card_id, card, original=None):
     canvas = canvas.copy()
     if "stage" in groups:
         own = lambda: stage.disc_sprite(card_id)
-        stage.draw(canvas, card, stage_parts(original, card), own if original["stage"] else None)
+        printed = bool(original["stage"])
+        stage.draw(canvas, card, stage_parts(original, card), own if printed else None, printed=printed)
     if "name" in groups:
         logo = card_logo(scan, original) if card["family"] == "ex" else None
         _name(canvas, card, logo)

@@ -68,7 +68,11 @@ pre-evolution's portrait, and the "Evolves from" strip (regular cards also the s
 same place on every SV / ME card, regular and ex. The portrait is lifted whole from a SV / ME card TCGdex lists as
 evolving from that Pokemon (they all print the same picture on the same disc); name a card id under "Portrait from
 card" to choose: a SV / ME Stage card gives its portrait, any other card the middle of its art. A card made Basic
-gets the BASIC tab and the pieces taken off (LaMa; the plain left border is blended top to bottom). Only the tab's
+gets the BASIC tab and the pieces taken off (LaMa; the plain left border is blended top to bottom). A Stage card
+keeps its own strip (Mega ex cards end it under their "Mega-Evolved form of" badge): only the old line is blended
+away along the strip's rows. The line is set like the print, which is not Gill Sans: Segoe UI Bold Italic narrowed
+and tightened matches it glyph for glyph (`segoeuiz.ttf`, looked up in the fonts folder and the system font folders;
+without it, Gill Sans Bold Italic). Only the tab's
 lettering is swapped, so each card keeps its own tab and border. On the holofoil plates the ring and strip take the
 SV ex frame's silver value on ex cards and are left out elsewhere; the portrait, lettering and "Evolves from" line
 are cut out.
@@ -91,6 +95,11 @@ follows the pointer) or the white plate itself, per printing (holo / reverse hol
 foil textures as a zip (the custom-set zip includes them too). The preview re-renders as you
 edit, in exactly the card layout the command line produces; download one PNG, or every card of an imported set as a
 zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
+
+Projects: every card you load joins the card list. Name the project and Save (top right) to keep the list, every
+card's edits and options, the card open and the holofoil switch; after that it saves itself 1.5 s after each change,
+and the page opens it again on its own next time. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
+or deleted from the same bar, from any browser that reaches the server.
 
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.

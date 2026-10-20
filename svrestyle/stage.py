@@ -8,8 +8,10 @@ card TCGdex lists as evolving from that Pokemon. A card id can be named instead:
 portrait, any other card the middle of its art window.
 """
 import functools
+import os
 import re
 import warnings
+from pathlib import Path
 from urllib.parse import quote
 
 import cv2
@@ -37,7 +39,17 @@ LETTER_BOX = (20, 32, 122, 58)    # x0, y0, x1, y1: the tab's lettering, inside 
 TAB_LETTERS = 0.5                 # HSV value under which a lozenge pixel is lettering (dark grey on light silver)
 LETTER_GROW = 2                   # px around the letters: their light rim
 
-EVOLVES_X, EVOLVES_BASE, EVOLVES_SIZE, EVOLVES_RIGHT = 143, 111, 17.5, 490
+# The "Evolves from" line is not Gill Sans but a Frutiger-style italic ('f' without a descender): Segoe UI Bold
+# Italic matches it glyph for glyph once narrowed and tightened (fitted on Kadabra and Alakazam of sv3.5 and me1,
+# Alakazam ex, Mega Venusaur ex, Mega Clefable ex). Without Segoe UI, Gill Sans Bold Italic as first measured.
+EVOLVES_FONT = "segoeuiz.ttf"
+EVOLVES_FIT = dict(size=19.6, xscale=0.9, tracking=-0.6, base=112)
+EVOLVES_FALLBACK = dict(face=ts.BOLD_ITALIC, size=17.5, xscale=1.0, tracking=0.0, base=111)
+EVOLVES_X, EVOLVES_RIGHT = 143, 490
+STRIP_PAD = 8                     # px the "Evolves from" line keeps from the strip's end
+# Mega Evolution ex cards (me1 Mega Venusaur, me3 Mega Clefable) end the strip under the "Mega-Evolved form of"
+# badge, which starts here.
+MEGA_STRIP_END = 408
 
 
 # ---------------------------------------------------------------- pieces
@@ -226,28 +238,60 @@ def portrait(card, own=None):
 
 
 # ---------------------------------------------------------------- text
-def evolves_line(canvas, name):
+@functools.lru_cache(maxsize=1)
+def evolves_style():
+    """dict(face, size, xscale, tracking, base) of the "Evolves from" line."""
+    dirs = [ts._font_dir, Path(os.environ.get("WINDIR", "C:/Windows"), "Fonts"),
+            Path(os.environ.get("LOCALAPPDATA", "~"), "Microsoft", "Windows", "Fonts"),
+            "/usr/share/fonts/truetype/msttcorefonts", "/Library/Fonts"]
+    for d in dirs:
+        if d and Path(d, EVOLVES_FONT).exists():
+            return dict(face=str(Path(d, EVOLVES_FONT)), **EVOLVES_FIT)
+    warnings.warn(f"{EVOLVES_FONT} (Segoe UI Bold Italic) not found: the \"Evolves from\" line is set in Gill Sans, "
+                  f"which looks wider than the print; copy the font into the fonts folder to fix")
+    return EVOLVES_FALLBACK
+
+
+def evolves_line(canvas, name, right=EVOLVES_RIGHT):
+    """The "Evolves from" line, squeezed further to end left of `right`."""
+    style = evolves_style()
     text = f"Evolves from {name}"
-    width = ts.text_width(text, ts.BOLD_ITALIC, EVOLVES_SIZE)
-    xscale = min(1.0, (EVOLVES_RIGHT - EVOLVES_X) / width)
+    width = ts.text_width(text, style["face"], style["size"], style["xscale"], style["tracking"])
+    xscale = style["xscale"] * min(1.0, (right - EVOLVES_X) / width)
     with layers.kind("evolves"):
-        ts.stamp(canvas, ts.coverage([dict(text=text, face=ts.BOLD_ITALIC, size=EVOLVES_SIZE, x=EVOLVES_X,
-                                           base=EVOLVES_BASE, xscale=xscale)]),
+        ts.stamp(canvas, ts.coverage([dict(text=text, face=style["face"], size=style["size"], x=EVOLVES_X,
+                                           base=style["base"], xscale=xscale, tracking=style["tracking"])]),
                  np.array(frame.DARK_INK, np.float32))
 
 
 # ---------------------------------------------------------------- all together
-def draw(canvas, card, parts, own=None):
+def strip_end(card):
+    """x where the card's "Evolves from" strip ends."""
+    mega = card.get("family") == "ex" and card["name"].startswith("Mega ")
+    return MEGA_STRIP_END if mega else STRIP[2]
+
+
+def draw(canvas, card, parts, own=None, printed=False):
     """card["stage"]'s pieces `parts` (REGULAR, EX or a few of them); the disc gets the portrait and the strip the
-    "Evolves from" line. Stage 0: the BASIC tab, when parts has the tab."""
+    "Evolves from" line. Stage 0: the BASIC tab, when parts has the tab. printed: the card prints its own Stage
+    pieces already (an SV / ME Stage card edited in place): its strip and disc stay (the caller clears the old line),
+    only the line and the portrait are set again."""
     if not card["stage"]:
         if "tab" in parts:
             paste(canvas, basic_tab(), part_mask(("tab",)))
         return
-    paste(canvas, meframe.stage_sprite(card["stage"]), part_mask(parts))
+    sprite = meframe.stage_sprite(card["stage"])
+    end = strip_end(card)
+    where = part_mask(parts)
+    if printed:
+        where &= ~part_mask(("strip", "disc"))
+    where[:, end:] &= ~_boxes()["strip"][:, end:]
+    paste(canvas, sprite, where)
     if "disc" in parts:
         pic = portrait(card, own)
         if pic is not None:
             put_portrait(canvas, *pic)
+        elif printed:                 # no picture found: an empty disc rather than the old one
+            paste(canvas, sprite, part_mask(("disc",)))
     if "strip" in parts:
-        evolves_line(canvas, card["evolves_from"])
+        evolves_line(canvas, card["evolves_from"], min(EVOLVES_RIGHT, end - STRIP_PAD))

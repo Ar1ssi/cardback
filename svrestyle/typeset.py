@@ -34,6 +34,8 @@ def configure(font_dir):
 def font(face, size):
     if _font_dir is None:
         raise RuntimeError("typeset.configure(font_dir) first")
+    if face.lower().endswith((".ttf", ".otf")):          # a font file by path (stage.evolves_style)
+        return ImageFont.truetype(face, round(size * SS))
     return ImageFont.truetype(f"{_font_dir}/{face}.otf", round(size * SS))
 
 

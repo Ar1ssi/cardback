@@ -15,10 +15,19 @@ API (JSON in and out unless noted):
   POST /api/set               a ptcg-sim custom-set export -> {cards: [{id, name, layout | skip}]}
   POST /api/zip               {items: [{id, edits?, style?, attacks?, foil?}]} -> application/zip (with foil also
                               the 1024x1024 front, the white plates and <card>-foil.json, see foil.files)
+  GET  /api/projects          {projects: [{name, saved, cards}]}, newest first
+  GET  /api/projects?name=N   {name, saved, data}: a saved project (the page's card list, edits and options)
+  POST /api/projects          {name, data} -> {name, saved}: save (overwrites a project of that name)
+  POST /api/projects/delete   {name} -> {deleted: name}
+
+Projects are JSON files under the cache folder (SVRESTYLE_CACHE/projects), so work resumes after a restart.
 """
 import base64
+import datetime
 import io
 import json
+import os
+import re
 import threading
 import warnings
 import webbrowser
@@ -38,6 +47,8 @@ PAGE = Path(__file__).with_name("gui.html")
 MAX_BODY = 8 << 20
 MAX_ZIP_ITEMS = 60
 STYLES = ("hybrid", "panel")
+PROJECT_NAME = re.compile(r"\w[\w .,'()&+#-]{0,59}")
+MAX_PROJECT = 4 << 20                 # bytes of one saved project
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _renders = OrderedDict()              # request key -> Render; the last few, for zip downloads
@@ -186,6 +197,65 @@ def zip_renders(items):
     return buf.getvalue()
 
 
+# ---------------------------------------------------------------- projects
+_project_lock = threading.Lock()
+
+
+def projects_dir():
+    return cache.CACHE / "projects"
+
+
+def project_file(name):
+    if not isinstance(name, str) or not PROJECT_NAME.fullmatch(name.strip()):
+        raise UserError("project name: 1-60 letters, digits, spaces or . , ' ( ) & + # -")
+    slug = re.sub(r"[^\w-]+", "-", name.strip().lower()).strip("-")
+    return projects_dir() / f"{slug}.json"
+
+
+def list_projects():
+    out = []
+    for f in projects_dir().glob("*.json") if projects_dir().exists() else ():
+        try:
+            p = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        out.append({"name": p.get("name", f.stem), "saved": p.get("saved", ""),
+                    "cards": len((p.get("data") or {}).get("cards") or [])})
+    return {"projects": sorted(out, key=lambda p: p["saved"], reverse=True)}
+
+
+def load_project(name):
+    f = project_file(name)
+    if not f.exists():
+        raise UserError(f"no saved project {name.strip()!r}")
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
+def save_project(name, data):
+    """Write the project atomically (a half-written file would lose the work it was saving)."""
+    if not isinstance(data, dict) or not isinstance(data.get("cards", []), list)             or not isinstance(data.get("edits", {}), dict):
+        raise UserError("project data: an object with a \"cards\" list and an \"edits\" object")
+    f = project_file(name)
+    saved = datetime.datetime.now().isoformat(timespec="seconds")
+    text = json.dumps({"name": name.strip(), "saved": saved, "data": data}, ensure_ascii=False)
+    if len(text.encode()) > MAX_PROJECT:
+        raise UserError(f"project too large (over {MAX_PROJECT >> 20} MB)")
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with _project_lock:
+        tmp = f.with_suffix(f".tmp{threading.get_ident()}")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, f)
+    return {"name": name.strip(), "saved": saved}
+
+
+def delete_project(name):
+    f = project_file(name)
+    if not f.exists():
+        raise UserError(f"no saved project {name.strip()!r}")
+    f.unlink()
+    return {"deleted": name.strip()}
+
+
 # ---------------------------------------------------------------- HTTP
 class Handler(BaseHTTPRequestHandler):
     server_version = "svrestyle-gui"
@@ -238,6 +308,9 @@ class Handler(BaseHTTPRequestHandler):
                             "foil": bool(tcg.TCGLIVE)})
             elif url.path == "/api/card":
                 self._json(card_summary((parse_qs(url.query).get("id") or [""])[0].strip()))
+            elif url.path == "/api/projects":
+                name = (parse_qs(url.query).get("name") or [None])[0]
+                self._json(load_project(name) if name is not None else list_projects())
             elif url.path.startswith("/api/icon/") and url.path.endswith(".png"):
                 self._send(HTTPStatus.OK, icon_png(url.path[len("/api/icon/"):-4]), "image/png")
             else:
@@ -260,6 +333,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(import_set(body))
             elif url.path == "/api/zip":
                 self._send(HTTPStatus.OK, zip_renders(body.get("items")), "application/zip")
+            elif url.path == "/api/projects":
+                self._json(save_project(body.get("name"), body.get("data")))
+            elif url.path == "/api/projects/delete":
+                self._json(delete_project(body.get("name")))
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         self._guard(go)

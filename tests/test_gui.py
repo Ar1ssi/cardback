@@ -178,3 +178,46 @@ class Http(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Projects(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patch = mock.patch.object(gui.cache, "CACHE", Path(self.tmp.name))
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def test_save_list_open_delete(self):
+        data = {"cards": [{"id": "swsh3-88", "name": "Tyranitar", "layout": "me"}],
+                "edits": {"swsh3-88": {"hp": "190"}}, "current": "swsh3-88"}
+        self.assertEqual(gui.list_projects(), {"projects": []})
+        out = gui.save_project(" My Set (v2) ", data)
+        self.assertEqual(out["name"], "My Set (v2)")
+        listed = gui.list_projects()["projects"]
+        self.assertEqual([(p["name"], p["cards"]) for p in listed], [("My Set (v2)", 1)])
+        self.assertEqual(gui.load_project("My Set (v2)")["data"], data)
+        gui.save_project("My Set (v2)", {**data, "cards": []})          # overwrites
+        self.assertEqual(gui.list_projects()["projects"][0]["cards"], 0)
+        self.assertEqual(gui.delete_project("My Set (v2)"), {"deleted": "My Set (v2)"})
+        self.assertEqual(gui.list_projects(), {"projects": []})
+
+    def test_rejections(self):
+        for name in ("", "../x", "a/b", None, "x" * 61, " "):
+            with self.subTest(name), self.assertRaises(gui.UserError):
+                gui.save_project(name, {"cards": []})
+        for data in (None, [], {"cards": "x"}, {"edits": []}):
+            with self.subTest(data), self.assertRaises(gui.UserError):
+                gui.save_project("ok", data)
+        with self.assertRaises(gui.UserError):
+            gui.load_project("missing")
+        with mock.patch.object(gui, "MAX_PROJECT", 50), self.assertRaises(gui.UserError):
+            gui.save_project("big", {"cards": [{"id": "x" * 100}]})
+
+    def test_names_stay_inside_the_folder(self):
+        self.assertEqual(gui.project_file("Base Set, 1999").parent, gui.projects_dir())
+        self.assertEqual(gui.project_file("Base Set, 1999").name, "base-set-1999.json")

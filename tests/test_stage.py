@@ -53,6 +53,19 @@ class Parts(unittest.TestCase):
         self.assertEqual(modern.stage_parts(card(), card(portrait="me01-055")), ("disc",))
         self.assertEqual(modern.stage_parts(basic, basic), ())
 
+    def test_mega_ex_strip_ends_at_its_badge(self):
+        self.assertEqual(stage.strip_end(card(family="ex", name="Mega Clefable")), stage.MEGA_STRIP_END)
+        self.assertEqual(stage.strip_end(card(family="ex", name="Alakazam")), stage.STRIP[2])
+        self.assertEqual(stage.strip_end(card(name="Mega Man")), stage.STRIP[2])     # regular: no badge
+
+    def test_evolves_face_falls_back_to_gill_sans(self):
+        stage.evolves_style.cache_clear()
+        try:
+            with mock.patch.object(stage.Path, "exists", return_value=False), self.assertWarns(UserWarning):
+                self.assertEqual(stage.evolves_style(), stage.EVOLVES_FALLBACK)
+        finally:
+            stage.evolves_style.cache_clear()
+
     def test_ex_keeps_its_own_swoosh(self):
         self.assertNotIn("swoosh", stage.EX)
         self.assertIn("swoosh", stage.REGULAR)

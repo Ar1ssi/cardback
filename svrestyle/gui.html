@@ -69,6 +69,8 @@
   .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 14px; pointer-events: none; mix-blend-mode: color-dodge; opacity: .8; }
   .stage img.plate { border-radius: 14px; }
   .foil-info { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .project { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+  .project select { width: auto; max-width: 220px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -79,15 +81,24 @@
   <button id="loadBtn" class="primary">Load card</button>
   <label class="tight" style="margin:0"><button id="importBtn" type="button">Import custom set…</button></label>
   <input id="setFile" type="file" accept=".json,application/json" hidden>
+  <span class="project" role="group" aria-label="Project">
+    <select id="projectSel" aria-label="Saved projects"><option value="">Saved projects…</option></select>
+    <button id="openProjectBtn" type="button">Open</button>
+    <input id="projectName" type="text" placeholder="Project name" aria-label="Project name" style="max-width: 170px">
+    <button id="saveProjectBtn" type="button">Save</button>
+    <button id="deleteProjectBtn" type="button" title="Delete the saved project">Delete</button>
+  </span>
   <span id="status" class="status" role="status"></span>
+  <span id="saved" class="status"></span>
 </header>
 
 <main>
   <div>
     <section id="setPanel" hidden>
-      <h2><span id="setName">Custom set</span>
+      <h2><span id="setName">Cards</span>
         <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
       <div id="setList" class="setlist"></div>
+      <p class="hint">Every card you load joins this list. Save the project (top right) to keep the list and your edits: it saves itself again after every change, and opens on its own next time.</p>
       <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
     </section>
 
@@ -203,7 +214,10 @@ const state = {
   foilInfo: null,         // /api/render's foil answer for the card shown
   light: { x: 0.5, y: 0.35, pointer: false },
   raf: 0,
+  project: null,          // name of the saved project being worked on (autosaved), or null
+  saveTimer: null,
 };
+const LAST_PROJECT = "svrestyle.project";
 
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -258,8 +272,13 @@ async function loadCard(id) {
     if (!state.edits[id]) state.edits[id] = structuredClone(data.card);
     if (!state.options[id]) state.options[id] = { style: "hybrid", attacks: true };
     $("cardId").value = id;
+    if (!state.setCards.some((c) => c.id === id)) {
+      state.setCards.push({ id, name: data.name, layout: data.layout });
+      drawSet();
+    }
     fillForm();
     markActive();
+    autosave();
     status("");
     await renderNow();
   } catch (e) { status(""); showError(e.message); }
@@ -392,6 +411,7 @@ function readForm() {
 function changed() {
   if (!state.current) return;
   readForm();
+  autosave();
   if (!$("autoRender").checked) return;
   const card = state.edits[state.current.id];
   if (card.stage && !card.evolves_from.trim()) { status("Type what it evolves from to render."); return; }
@@ -519,22 +539,99 @@ function drawFoil(t) {
   state.raf = requestAnimationFrame(drawFoil);
 }
 
+// ---------------------------------------------------------------- projects
+// A project is what the page holds: the card list, every card's edits and options, the card open and the foil
+// switch. Saved on the server (GET/POST /api/projects), re-saved 1.5 s after each change once it has a name.
+function projectData() {
+  return { version: 1, setName: $("setName").textContent, cards: state.setCards, edits: state.edits,
+           options: state.options, current: state.current ? state.current.id : null, foil: $("foilOn").checked };
+}
+
+async function refreshProjects(selected) {
+  try {
+    const { projects } = await (await api("/api/projects")).json();
+    $("projectSel").replaceChildren(el("option", { value: "" }, projects.length ? "Saved projects…" : "No saved projects"),
+      ...projects.map((p) => el("option", { value: p.name },
+        `${p.name} · ${p.cards} card${p.cards === 1 ? "" : "s"} · ${p.saved.replace("T", " ").slice(0, 16)}`)));
+    if (selected) $("projectSel").value = selected;
+  } catch (e) { showError(`Could not list projects: ${e.message}`); }
+}
+
+async function saveProject(name, quiet) {
+  name = (name || "").trim();
+  if (!name) { $("projectName").focus(); status("Name the project to save it."); return; }
+  try {
+    const out = await (await api("/api/projects", { name, data: projectData() })).json();
+    state.project = out.name;
+    state.saveTimer = null;
+    localStorage.setItem(LAST_PROJECT, out.name);
+    $("projectName").value = out.name;
+    $("saved").textContent = `Saved “${out.name}” ${out.saved.slice(11, 16)}`;
+    if (!quiet) refreshProjects(out.name);
+  } catch (e) { showError(`Save failed: ${e.message}`); }
+}
+
+function autosave() {
+  if (!state.project) return;
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => saveProject(state.project, true), 1500);
+}
+
+async function openProject(name) {
+  if (!name) return;
+  showError("");
+  try {
+    const { name: saved, data } = await (await api(`/api/projects?name=${encodeURIComponent(name)}`)).json();
+    clearTimeout(state.saveTimer);
+    state.saveTimer = null;
+    state.project = saved;
+    localStorage.setItem(LAST_PROJECT, saved);
+    state.edits = data.edits || {};
+    state.options = data.options || {};
+    state.setCards = data.cards || [];
+    state.current = null;
+    $("setName").textContent = data.setName || saved;
+    $("foilOn").checked = !!data.foil && !$("foilOn").disabled;
+    $("projectName").value = saved;
+    $("projectSel").value = saved;
+    $("saved").textContent = `Opened “${saved}”`;
+    drawSet();
+    const first = data.current || (state.setCards.find((c) => !c.skip) || {}).id;
+    if (first) await loadCard(first);
+  } catch (e) {
+    if (localStorage.getItem(LAST_PROJECT) === name) localStorage.removeItem(LAST_PROJECT);
+    showError(`Could not open “${name}”: ${e.message}`);
+  }
+}
+
+async function deleteProject(name) {
+  if (!name || !confirm(`Delete the saved project “${name}”? The cards on the page stay.`)) return;
+  try {
+    await api("/api/projects/delete", { name });
+    if (state.project === name) { state.project = null; $("saved").textContent = ""; }
+    if (localStorage.getItem(LAST_PROJECT) === name) localStorage.removeItem(LAST_PROJECT);
+    refreshProjects();
+  } catch (e) { showError(e.message); }
+}
+
 // ---------------------------------------------------------------- custom set
 async function importSet(file) {
   showError("");
   try {
     const text = await file.text();
     const data = await (await api("/api/set", JSON.parse(text))).json();
-    state.setCards = data.cards;
+    const known = new Set(state.setCards.map((c) => c.id));
+    state.setCards.push(...data.cards.filter((c) => !known.has(c.id)));
     $("setName").textContent = data.name || file.name;
     drawSet();
-    $("setPanel").hidden = false;
-    const first = state.setCards.find((c) => !c.skip);
+    autosave();
+    const first = data.cards.find((c) => !c.skip);
     if (first) loadCard(first.id);
   } catch (e) { showError(`Import failed: ${e.message}`); }
 }
 
 function drawSet() {
+  $("setPanel").hidden = state.setCards.length === 0;
   const todo = state.setCards.filter((c) => !c.skip).length;
   $("setList").replaceChildren(...state.setCards.map((c) => el("button", {
       "data-id": c.id, class: c.skip ? "skip" : "", disabled: !!c.skip,
@@ -608,7 +705,7 @@ async function init() {
   $("resetBtn").addEventListener("click", () => {
     if (!state.current) return;
     state.edits[state.current.id] = structuredClone(state.current.card);
-    fillForm(); renderNow();
+    fillForm(); autosave(); renderNow();
   });
   $("downloadBtn").addEventListener("click", async () => {
     if (!state.lastPng) return;
@@ -636,6 +733,7 @@ async function init() {
   for (const id of ["weakValue", "resValue", "style", "showAttacks"]) $(id).addEventListener("change", changed);
   for (const p of ["weak", "res"]) $(p + "Type").addEventListener("change", () => { drawSide(p); changed(); });
   $("foilOn").addEventListener("change", () => {
+    autosave();
     if ($("foilOn").checked) { drawFoilInfo(); renderNow(); }
     else { setFoil(null); $("downloadFoilBtn").disabled = true; }
   });
@@ -656,8 +754,20 @@ async function init() {
   });
   $("renderAllBtn").addEventListener("click", renderAll);
   $("zipBtn").addEventListener("click", downloadZip);
+  $("openProjectBtn").addEventListener("click", () => openProject($("projectSel").value));
+  $("projectSel").addEventListener("change", () => { if ($("projectSel").value) $("projectName").value = $("projectSel").value; });
+  $("saveProjectBtn").addEventListener("click", () => saveProject($("projectName").value));
+  $("projectName").addEventListener("keydown", (e) => { if (e.key === "Enter") saveProject($("projectName").value); });
+  $("deleteProjectBtn").addEventListener("click", () => deleteProject($("projectSel").value || state.project));
+  window.addEventListener("beforeunload", () => {          // the last edit, if its autosave has not run yet
+    if (state.project && state.saveTimer) navigator.sendBeacon("/api/projects",
+      new Blob([JSON.stringify({ name: state.project, data: projectData() })], { type: "application/json" }));
+  });
+  await refreshProjects();
   const q = new URLSearchParams(location.search).get("id");
+  const last = localStorage.getItem(LAST_PROJECT);
   if (q) loadCard(q);
+  else if (last) openProject(last);
 }
 init().catch((e) => showError(`Could not start: ${e.message}`));
 </script>
