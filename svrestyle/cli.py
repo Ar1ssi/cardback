@@ -2,7 +2,9 @@
 
   python -m svrestyle prepare --fonts DIR            check dependencies and fonts, download and build every asset
   python -m svrestyle card ID [ID ...] --fonts DIR   render cards (TCGdex ids, e.g. swsh6-99)
-      --style hybrid|panel   hybrid (default): art runs behind the text; panel: SV translucent type panel
+      Pokemon V become Scarlet & Violet ex cards; regular Sun & Moon / Sword & Shield Pokemon become Mega
+      Evolution regular cards.
+      --style hybrid|panel   ex only. hybrid (default): art runs behind the text; panel: SV translucent panel
       --no-attacks           leave out abilities and attacks (names, text, costs, damage)
       --out DIR              where PNGs go (default ./out); --debug also writes the art-cleaning mask overlay
 """
@@ -13,7 +15,7 @@ import sys
 import warnings
 from pathlib import Path
 
-from . import cache, frame, inpaint, refs, swsh, tcg
+from . import cache, frame, inpaint, meframe, refs, swsh, tcg
 from . import typeset as ts
 from .imaging import save_rgba
 
@@ -36,10 +38,17 @@ def cmd_prepare(a):
     print("cache:", cache.CACHE)
     print("model:", inpaint.model_file())
     frame.build_all()
-    print("assets built for:", ", ".join(refs.TYPES))
+    print("ex assets built for:", ", ".join(refs.TYPES))
+    meframe.build_all()
+    print("Mega Evolution assets built for:", ", ".join(meframe.POOL))
+
+
+def is_v(card_id):
+    return tcg.card(card_id).get("name", "").endswith(" V")
 
 
 def cmd_card(a):
+    from . import mecompose
     from .compose import Options, compose
     fonts_dir(a.fonts)
     out = Path(a.out)
@@ -51,12 +60,14 @@ def cmd_card(a):
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                img, report = compose(card_id, opts)
+                v = is_v(card_id)
+                img, report = compose(card_id, opts) if v else mecompose.compose_card(card_id, opts.attacks)
             c = report["card"]
-            stem = f"{card_id}-{(c['prefix'] + ' ' + c['name']).strip().lower().replace(' ', '-')}-ex-{suffix}"
+            slug = (c["prefix"] + " " + c["name"]).strip().lower().replace(" ", "-")
+            stem = f"{card_id}-{slug}-ex-{suffix}" if v else f"{card_id}-{slug}-me" + ("" if opts.attacks else "-no-attacks")
             path = out / f"{stem}.png"
             save_rgba(img, path)
-            if a.debug:
+            if a.debug and v:
                 scan = tcg.scan(card_id)
                 mask, det = swsh.text_mask(scan)
                 save_rgba(swsh.overlay(scan, mask), out / f"{stem}-mask.png")
@@ -72,7 +83,8 @@ def cmd_card(a):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="svrestyle", description="Sword & Shield V -> Scarlet & Violet ex restyle")
+    p = argparse.ArgumentParser(prog="svrestyle", description="Restyle older cards: V -> Scarlet & Violet ex, "
+                                                           "regular -> Mega Evolution")
     sub = p.add_subparsers(dest="cmd", required=True)
     pp = sub.add_parser("prepare", help="check dependencies, download the model, build frame assets")
     pp.add_argument("--fonts")

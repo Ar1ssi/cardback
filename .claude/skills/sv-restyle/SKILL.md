@@ -1,12 +1,14 @@
 ---
 name: sv-restyle
-description: Re-make a Sword & Shield Pokemon V card (any type) as a Scarlet & Violet "ex" card - SV frame, name bar, Gill Sans lettering, ex logo, rule box and footer - in the full-art "hybrid" layout or the SV translucent-panel layout, with or without attack text. Use when the user names a SWSH V card (by name or TCGdex id like swsh6-99) and wants it restyled, converted to ex, given the gen 9 / SV look, or wants its text or attacks removed in that style.
+description: Re-make older Pokemon cards in the current look. A Sword & Shield Pokemon V (any type) becomes a Scarlet & Violet "ex" card (SV frame, Gill Sans lettering, ex logo, rule box, footer; full-art "hybrid" or translucent-panel layout, with or without attack text). A regular Sun & Moon or Sword & Shield Pokemon (Basic/Stage 1/Stage 2) becomes a Mega Evolution regular card (its art in the Mega Evolution frame of its type, evolution portrait, Pokedex line, attacks, flavour text). Use when the user names such cards (by name or TCGdex id like swsh6-99, sm10-19) and wants them restyled, made uniform with Scarlet & Violet / Mega Evolution cards, converted to ex, or their text or attacks removed in that style.
 ---
 
-# SV restyle: Sword & Shield V -> Scarlet & Violet ex
+# SV restyle: older cards -> Scarlet & Violet ex / Mega Evolution regular
 
-Everything is done by `python -m svrestyle` in this repo. Card text comes from TCGdex, the scan from
-pokemontcg.io (733x1024), and the SV frame is built from real SV scans listed in `svrestyle/refs.py`.
+Everything is done by `python -m svrestyle` in this repo. Card text comes from TCGdex, the Pokedex line from
+PokeAPI, scans from pokemontcg.io (733x1024). The layout follows the card: Pokemon V -> SV ex (frame built from the SV
+scans in `svrestyle/refs.py`); regular Pokemon -> Mega Evolution regular card (frame built from me1/me2 scans listed
+in `svrestyle/meframe.py`). Cards already from Scarlet & Violet or Mega Evolution need nothing.
 
 ## 1. Setup (once per machine/session)
 1. `pip install numpy pillow opencv-python-headless` and `pip install torch --index-url https://download.pytorch.org/whl/cpu`
@@ -18,18 +20,21 @@ pokemontcg.io (733x1024), and the SV frame is built from real SV scans listed in
    and builds the frame assets into `~/.cache/svrestyle` (about a minute). Later runs reuse the cache.
 
 ## 2. Find the card id
-TCGdex ids: `curl -s "https://api.tcgdex.net/v2/en/cards?name=<name>"` and pick the `swsh*` entry with a
-regular number (not a TG/SV/full-art number). Confirm with the user when several prints match - the regular
-print is the lowest local number in the main set. Only Basic Pokemon **V** are supported (no VMAX/VSTAR).
+TCGdex ids: `curl -s "https://api.tcgdex.net/v2/en/cards?name=<name>"` and pick the `swsh*`/`sm*` entry with a
+regular number (not a TG/SV/full-art number). When the user gives a deck or custom-set export (JSON with card ids),
+use exactly those ids - a promo there has different art from the set print. Otherwise the regular print is the
+lowest local number in the main set. Supported: Basic Pokemon **V** (no VMAX/VSTAR) and regular Basic/Stage 1/
+Stage 2 Pokemon; GX, ex, BREAK and Trainer/Energy cards are refused.
 
 ## 3. Render
 ```
 python -m svrestyle card <id> [<id> ...] --out <dir> [--style hybrid|panel] [--no-attacks] [--debug]
 ```
-- `--style hybrid` (default): the art runs behind the text, white text with a dark outline. `panel`: the SV
+- Output names end `-ex-<style>.png` (V cards) or `-me.png` (regular cards).
+- `--style hybrid` (default, ex only): the art runs behind the text, white text with a dark outline. `panel`: the SV
   translucent type panel behind the attacks, text in the type's ink.
 - `--no-attacks`: no abilities or attacks (names, text, energy costs, damage). Weakness/resistance/retreat stay.
-- `--debug`: also writes `<name>-mask.png` (what was removed from the original, in green) and a JSON report.
+- `--debug` (ex only): also writes `<name>-mask.png` (what was removed from the original, in green) and a JSON report.
 - The first render of a card runs LaMa (~15 s on CPU); its cleaned art is cached for later style changes.
 
 ## 4. Check before handing over
@@ -42,6 +47,10 @@ name bar. Things to look for, and what to do:
 Report failures verbatim. Send the PNG to the user (SendUserFile) rather than just naming its path.
 
 ## Limits (tell the user when they apply)
+- Mega Evolution layout: regular cards keep their attack text (as real regular cards print it) unless asked;
+  `--no-attacks` drops it. Old art and its stamps (Ultra Beast banner, Rapid/Single Strike) are kept as printed.
+  Dragon has one Mega Evolution reference (Latios), so its blank frame relies more on inpainting.
+  Promos print no set code. Sub-sets without their own code (Shiny Vault) use the main set's (`SUBSET_CODES`).
 - Fairy has no SV frame (SWSH has no Fairy cards anyway); Dragon uses Raging Bolt ex's bar.
 - Energy symbols inside effect text come out as words ("Metal Energy"), as TCGdex spells them.
 - The footer is set as an ex would print it: two stars (Double Rare), the card's own regulation mark, set
@@ -49,6 +58,7 @@ Report failures verbatim. Send the PNG to the user (SendUserFile) rather than ju
 - The Single/Rapid/Fusion Strike stamps are part of the art and are kept.
 
 ## Changing the look
-Layout constants live at the top of `svrestyle/compose.py` (type sizes, positions) and `svrestyle/frame.py`
-(frame geometry); each says which scan it was measured on. Delete `~/.cache/svrestyle/assets` after editing
-`frame.py` so the assets rebuild. Run `python -m unittest discover tests` after any change.
+Layout constants live at the top of `svrestyle/compose.py` (type sizes, positions), `svrestyle/frame.py`
+(SV frame geometry), `svrestyle/mecompose.py` and `svrestyle/meframe.py` (Mega Evolution); each says which scan it
+was measured on. Delete `~/.cache/svrestyle/assets` after editing a frame module so the assets rebuild, and
+`~/.cache/svrestyle/art` after changing how art is cleaned. Run `python -m unittest discover tests` after any change.

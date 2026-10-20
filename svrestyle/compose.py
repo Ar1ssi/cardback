@@ -106,14 +106,16 @@ def panel(art, gradient):
     return canvas
 
 
-def name_bar_text(canvas, card, prof):
+def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LIMIT):
+    """Name (regional prefix smaller), ex logo when ex, and HP. -> horizontal squeeze applied to the name."""
     ink = prof["ink"]
     edge = NAME_EDGE if prof["light_text"] else None
     logo, logo_left, logo_right = frame.ex_logo()
+    logo_room = (logo_right - logo_left) + EX_LOGO_GAP if ex else 0
     small = NAME_SIZE * PREFIX_RATIO
     gap = 8 if card["prefix"] else 0
     words = ts.text_width(card["prefix"], ts.BOLD, small) + ts.text_width(card["name"], ts.BOLD, NAME_SIZE)
-    room = EX_LOGO_RIGHT_LIMIT - (logo_right - logo_left) - EX_LOGO_GAP - NAME_X - gap
+    room = name_right_limit - logo_room - NAME_X - gap
     xscale = min(NAME_MAX_XSCALE, room / words)
     if xscale < NAME_MIN_XSCALE:
         warnings.warn(f"name {card['prefix']} {card['name']!r} squeezed to {xscale:.2f} width to fit the bar")
@@ -123,8 +125,9 @@ def name_bar_text(canvas, card, prof):
         dict(text=card["prefix"], face=ts.BOLD, size=small, x=NAME_X, base=NAME_BASE, xscale=xscale),
         dict(text=card["name"], face=ts.BOLD, size=NAME_SIZE, x=x_big, base=NAME_BASE, xscale=xscale),
     ]), ink, edge)
-    ox, oy = logo[4]
-    put_sprite(canvas, logo, ox + name_right + EX_LOGO_GAP - logo_left, oy)   # same height as on Absol
+    if ex:
+        ox, oy = logo[4]
+        put_sprite(canvas, logo, ox + name_right + EX_LOGO_GAP - logo_left, oy)   # same height as on Absol
     hp_w = ts.text_width(card["hp"], ts.COND_BOLD, HP_SIZE, HP_XSCALE)
     ts.stamp(canvas, ts.coverage([
         dict(text=card["hp"], face=ts.COND_BOLD, size=HP_SIZE, x=HP_RIGHT, base=HP_BASE, xscale=HP_XSCALE, anchor="r"),
@@ -138,26 +141,39 @@ def energy(type_name, cx, cy, r, canvas):
     put_sprite(canvas, prof["icon"], cx, cy, scale=r / prof["icon_r"])
 
 
-def text_block(canvas, card, fill, edge):
-    """Abilities then attacks, centred where Absol's block is centred; body text shrinks if it cannot fit."""
+def sv_ex_layout(laid, pitch):
+    """Absol ex: blocks stacked with a fixed gap and centred on the panel. laid: [(kind, block, lines)].
+    -> (top of each block's name cap, whether it fits)"""
+    heights = [(NAME_TO_BODY + pitch * (len(lines) - 1)) if lines else NAME_ROW_H for _, _, lines in laid]
+    span = sum(heights) + BLOCK_GAP * (len(laid) - 1)
+    top = round(BLOCK_CENTRE - span / 2)
+    tops = []
+    for h in heights:
+        tops.append(top)
+        top += h + BLOCK_GAP
+    return tops, BLOCK_TOP_MIN <= tops[0] and tops[0] + span <= BLOCK_BOTTOM_MAX - pitch
+
+
+def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_TO_BODY, fit_tracking=None,
+               red_edge=None):
+    """Abilities then attacks, placed by layout(laid, pitch); body text shrinks until the layout fits.
+    red_edge: keyline under the red Ability names (default: a white one when the text has an edge)."""
     blocks = [("ability", a) for a in card["abilities"]] + [("attack", a) for a in card["attacks"]]
     if not blocks:
         return None
     for k in SHRINK_STEPS:
         size, pitch = BODY_SIZE * k, round(BODY_PITCH * k)
-        laid = [(kind, b, ts.justify(b.get("effect") or "", size, BODY_FULL_W, BODY_TRACK) if b.get("effect") else [])
-                for kind, b in blocks]
-        heights = [(NAME_TO_BODY + pitch * (len(lines) - 1)) if lines else NAME_ROW_H for _, _, lines in laid]
-        span = sum(heights) + BLOCK_GAP * (len(laid) - 1)
-        top = round(BLOCK_CENTRE - span / 2)
-        if top >= BLOCK_TOP_MIN and top + span <= BLOCK_BOTTOM_MAX - pitch:
+        laid = [(kind, b, ts.justify(b.get("effect") or "", size, BODY_FULL_W, BODY_TRACK, fit_tracking)
+                 if b.get("effect") else []) for kind, b in blocks]
+        tops, fits = layout(laid, pitch)
+        if fits:
             break
     else:
-        warnings.warn(f"{card['id']}: text block runs {span} px tall, more than the panel holds")
+        warnings.warn(f"{card['id']}: abilities and attacks run taller than the panel holds")
     atk_cap = ts.cap_height(ATK_FACE, ATK_SIZE)
     body_cap = ts.cap_height(BODY_FACE, size)
     items, red_items, icons = [], [], []
-    for (kind, b, lines), height in zip(laid, heights):
+    for (kind, b, lines), top in zip(laid, tops):
         if kind == "ability":
             badge, (bw, bh) = frame.ability_badge()
             put_sprite(canvas, badge, BADGE_X, top - 5)     # Chien-Pao: badge rim top 551, name cap top 556
@@ -179,23 +195,22 @@ def text_block(canvas, card, fill, edge):
                 if suffix:
                     items.append(dict(text="×" if suffix in "×x" else suffix, face=ATK_FACE, size=DMG_SIZE,
                                       x=DMG_RIGHT + 1, base=top + atk_cap, xscale=DMG_XSCALE))
-        body_top = top + NAME_TO_BODY
+        body_top = top + name_to_body
         for i, (runs, tracking) in enumerate(lines):
             items += ts.line_items(runs, tracking, size, BODY_X, body_top + i * pitch + body_cap)
-        top += height + BLOCK_GAP
     ts.stamp(canvas, ts.coverage(items), fill, edge)
     if red_items:
-        ts.stamp(canvas, ts.coverage(red_items), ABILITY_RED, LIGHT_KEYLINE if edge else None)
+        ts.stamp(canvas, ts.coverage(red_items), ABILITY_RED, red_edge or (LIGHT_KEYLINE if edge else None))
     for t, cx, cy in icons:
         energy(t, cx, cy, COST_R, canvas)
     return size / BODY_SIZE
 
 
-def weakness_row(canvas, card, fill, edge):
+def weakness_row(canvas, card, fill, edge, labels=True):
     label = 22.0 * 69 / ts.text_width("weakness", ts.MEDIUM, 22.0)      # Absol's "weakness" ink is 69 px wide
     items = [dict(text="weakness", face=ts.MEDIUM, size=label, x=41, base=901),
              dict(text="resistance", face=ts.MEDIUM, size=label, x=229, base=901),
-             dict(text="retreat", face=ts.MEDIUM, size=label, x=457, base=901)]
+             dict(text="retreat", face=ts.MEDIUM, size=label, x=457, base=901)] if labels else []
     if card["weakness"]:
         value = card["weakness"].get("value", "×2").replace("x", "×")
         items += [dict(text="×", face=ts.MEDIUM, size=27.0, x=146, base=905),
@@ -212,7 +227,22 @@ def weakness_row(canvas, card, fill, edge):
         energy("Colorless", RETREAT_X0 + RETREAT_PITCH * i, ROW_Y, ROW_ICON_R, canvas)
 
 
-def footer(canvas, card, white_text):
+def rarity_mark(symbol, x, y=980.5):
+    """Coverage of the rarity symbol(s) starting at x: 'common' circle, 'uncommon' diamond, 'rare' star,
+    'double' two stars (Double Rare, as on ex)."""
+    if symbol == "common":
+        yy, xx = np.mgrid[:H, :W]
+        return np.clip(5.6 - np.hypot(xx - (x + 6), yy - y), 0, 1).astype(np.float32)
+    if symbol == "uncommon":
+        yy, xx = np.mgrid[:H, :W]
+        return np.clip(6.8 - (np.abs(xx - (x + 6.5)) + np.abs(yy - y)), 0, 1).astype(np.float32)
+    stars = ts.star(x + 7, y, 7.6, 3.1)
+    if symbol == "double":
+        stars = np.maximum(stars, ts.star(x + 24, y, 7.6, 3.1))
+    return stars
+
+
+def footer(canvas, card, white_text, rarity="double"):
     ink, keyline = (WHITE, DARK_KEYLINE) if white_text else (np.array(frame.DARK_INK, np.float32), LIGHT_KEYLINE)
     dark = np.array([38, 33, 38], np.float32)
     ts.stamp(canvas, ts.coverage([dict(text=f"Illus. {card['illustrator']}", face=ts.BOLD_ITALIC, size=15.5, x=46,
@@ -222,23 +252,25 @@ def footer(canvas, card, white_text):
         ts.stamp(canvas, ts.rounded_box(45.6, 961.6, 61.4, 986.4, 2.2), WHITE)
         ts.stamp(canvas, ts.coverage([dict(text=card["reg_mark"], face=ts.COND_BOLD, size=19.5, x=53.6, base=981,
                                            anchor="c")]), dark)
-    code_w = ts.text_width(card["set_code"], ts.COND_BOLD, 19.5, 0.8)
-    en_w = ts.text_width("EN", ts.COND_BOLD, 11.5, 0.85)
-    box_x1 = max(115.5, 73 + code_w + 1.5 + en_w + 3)
-    ts.stamp(canvas, ts.rounded_box(67.5, 960.5, box_x1, 987.5, 3.2), dark)
-    ts.stamp(canvas, ts.rounded_box(69.0, 962.0, box_x1 - 1.5, 986.0, 2.4), WHITE)
-    ts.stamp(canvas, ts.rounded_box(70.2, 963.2, box_x1 - 2.7, 984.8, 1.8), [28, 24, 28])
-    left = (67.5 + box_x1) / 2 - (code_w + 1.5 + en_w) / 2
-    ts.stamp(canvas, ts.coverage([dict(text=card["set_code"], face=ts.COND_BOLD, size=19.5, x=left, base=981, xscale=0.8),
-                                  dict(text="EN", face=ts.COND_BOLD, size=11.5, x=left + code_w + 1.5, base=981,
-                                       xscale=0.85)]), WHITE)
-    num_x = box_x1 + 8.5
+    if card["set_code"]:
+        code_w = ts.text_width(card["set_code"], ts.COND_BOLD, 19.5, 0.8)
+        en_w = ts.text_width("EN", ts.COND_BOLD, 11.5, 0.85)
+        box_x1 = max(115.5, 73 + code_w + 1.5 + en_w + 3)
+        ts.stamp(canvas, ts.rounded_box(67.5, 960.5, box_x1, 987.5, 3.2), dark)
+        ts.stamp(canvas, ts.rounded_box(69.0, 962.0, box_x1 - 1.5, 986.0, 2.4), WHITE)
+        ts.stamp(canvas, ts.rounded_box(70.2, 963.2, box_x1 - 2.7, 984.8, 1.8), [28, 24, 28])
+        left = (67.5 + box_x1) / 2 - (code_w + 1.5 + en_w) / 2
+        ts.stamp(canvas, ts.coverage([dict(text=card["set_code"], face=ts.COND_BOLD, size=19.5, x=left, base=981,
+                                           xscale=0.8),
+                                      dict(text="EN", face=ts.COND_BOLD, size=11.5, x=left + code_w + 1.5, base=981,
+                                           xscale=0.85)]), WHITE)
+        num_x = box_x1 + 8.5
+    else:                                   # promos print no set code: the number follows the regulation mark
+        num_x = 71.0 if card["reg_mark"] else 46.0
     ts.stamp(canvas, ts.coverage([dict(text=card["number"], face=ts.HEAVY_ITALIC, size=16.6, x=num_x, base=988,
                                        xscale=1.11)]), ink, keyline)
     num_right = num_x + ts.text_width(card["number"], ts.HEAVY_ITALIC, 16.6, 1.11)
-    stars = ts.star(num_right + 13, 980.5, 7.6, 3.1)
-    stars = np.maximum(stars, ts.star(num_right + 30, 980.5, 7.6, 3.1))     # two stars: Double Rare, as on ex
-    ts.stamp(canvas, stars, ink, keyline)
+    ts.stamp(canvas, rarity_mark(rarity, num_right + 6), ink, keyline)
     ts.stamp(canvas, ts.coverage([dict(text=f"©{card['year']} Pokémon / Nintendo / Creatures / GAME FREAK",
                                        face=ts.REGULAR, size=12.6, x=367, base=1011, anchor="c")]), COPYRIGHT_GREY)
 

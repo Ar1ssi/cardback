@@ -23,8 +23,8 @@ def set_info(set_id):
 
 
 def pokemontcg_id(card_id):
-    """TCGdex id -> pokemontcg.io image path: swsh6-099 -> swsh6/99, sv03.5-065 -> sv3pt5/65."""
-    m = re.fullmatch(r"([a-z]+)0*(\d+)(\.5)?-0*(\w+)", card_id)
+    """TCGdex id -> pokemontcg.io image path: swsh6-099 -> swsh6/99, sv03.5-065 -> sv3pt5/65, sma-SV33 -> sma/SV33."""
+    m = re.fullmatch(r"([a-z]+)0*(\d*)(\.5)?-0*(\w+)", card_id)
     if not m:
         raise ValueError(f"unexpected card id {card_id!r}")
     prefix, num, half, local = m.groups()

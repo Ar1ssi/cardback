@@ -130,13 +130,15 @@ def runs_width(runs, size, tracking):
     return sum(font(f, size).getlength(t) / SS for t, f in runs) + tracking * max(0, chars - 1)
 
 
-def justify(text, size, full_width, natural_tracking):
+def justify(text, size, full_width, natural_tracking, fit_tracking=None):
     """SV effect text is justified by letter-spacing: full lines spread to full_width, the last line keeps the
-    natural tracking. -> [(runs, tracking)]"""
+    natural tracking. A word joins a line while the line fits at fit_tracking (default: natural_tracking).
+    -> [(runs, tracking)]"""
+    fit = natural_tracking if fit_tracking is None else fit_tracking
     ws, lines = words(text), []
     while ws:
         n = len(ws)
-        while n > 1 and runs_width(runs_of(ws[:n]), size, natural_tracking) > full_width:
+        while n > 1 and runs_width(runs_of(ws[:n]), size, fit) > full_width:
             n -= 1
         runs = runs_of(ws[:n])
         ws = ws[n:]
