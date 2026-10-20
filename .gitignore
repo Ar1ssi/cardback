@@ -1,0 +1,7 @@
+__pycache__/
+out/
+*.part
+# Card scans, the LaMa model and built assets live in the cache (~/.cache/svrestyle), never in the repo.
+# Gill Sans is licensed: keep the .otf files outside the repo and point SVRESTYLE_FONTS at them.
+*.otf
+*.ttf
