@@ -149,18 +149,53 @@ class OwnFoil(unittest.TestCase):
 
 
 class InPlace(unittest.TestCase):
-    def test_moves_and_weakness_row_keep_the_printed_plate(self):
+    @staticmethod
+    def disc(cy, cx, r=12):
+        yy, xx = np.mgrid[:H, :W]
+        return (np.hypot(yy - cy, xx - cx) < r).astype(np.float32)
+
+    def test_a_removed_cost_leaves_no_cut_out(self):
+        """An attack that drops an energy (me02.5-075 Clefable's Magical Shot, Psychic Colorless Colorless ->
+        Psychic Colorless, as reported): its third circle was cut out of the reverse plate and must go with it."""
+        from unittest import mock
+        card = {"id": "me02.5-075", "family": "regular", "type": "Psychic", "prefix": "", "name": "Clefable",
+                "hp": "120", "stage": 1, "evolves_from": "Clefairy", "portrait": "", "abilities": [], "retreat": 2,
+                "attacks": [{"cost": ["Psychic", "Colorless", "Colorless"], "name": "Magical Shot", "damage": "100",
+                             "effect": ""}], "weakness": {"type": "Metal", "value": "×2"}, "resistance": None}
+        edited = dict(card, attacks=[dict(card["attacks"][0], cost=["Psychic", "Colorless"])])
+        old_icons = self.disc(766, 70) + self.disc(766, 115) + self.disc(766, 160)
+        printed = np.full((H, W), 229, np.float32) * (1 - old_icons)          # the cut-out circles
+        text = np.zeros((H, W), np.float32)
+        text[760:772, 240:420] = 1                                            # foil runs through the text
+        drawn = {"icon": self.disc(766, 70) + self.disc(766, 115), "text": text}
+        off = np.zeros((H, W), bool)
+        off[740:792, 40:440] = True
+        with mock.patch.object(foil, "printings", return_value={"base": None, "reverse": {"_f": "FlatSilver", "_s": "x"}}), \
+                mock.patch.object(foil, "plate", return_value=printed), \
+                mock.patch.object(foil, "field", return_value=(np.full((H, W), 229, np.float32), np.ones((H, W)))), \
+                mock.patch.object(foil, "printed_blocks", return_value={"icon": old_icons, "text": text}), \
+                mock.patch("svrestyle.modern.taken_off", return_value=(off, np.zeros((H, W), bool))), \
+                mock.patch.object(foil, "modern_front", return_value=None), \
+                mock.patch.object(foil, "texture", return_value=None):
+            out = foil.build_modern("me02.5-075", edited, np.full((H, W, 4), 255, np.float32), drawn, card)
+        plate = foil.card_space(out["reverse"][1]).astype(np.float32)
+        self.assertGreater(plate[766, 160], 220)          # the third circle: foil again
+        self.assertLess(plate[766, 70], 10)               # the two left: cut, at the printed value
+        self.assertLess(plate[766, 115], 10)
+        self.assertEqual(plate[766, 300], 229)            # text the foil runs through: as printed
+
+    def test_untouched_blocks_keep_the_printed_plate(self):
         from unittest import mock
         card = {"id": "me02-013", "family": "ex", "type": "Fire", "prefix": "", "name": "Mega Charizard X", "hp": "250",
                 "stage": 2, "evolves_from": "Charmeleon", "portrait": "", "abilities": [], "retreat": 2,
                 "attacks": [{"cost": ["Fire"], "name": "Inferno X", "damage": "90×", "effect": ""}],
                 "weakness": {"type": "Water", "value": "×2"}, "resistance": None}
-        edited = dict(card, retreat=1, attacks=[dict(card["attacks"][0], damage="100×")])
         printed = np.full((H, W), 180, np.float32)
-        drawn = {k: np.ones((H, W), np.float32) for k in ("text", "icon", "row_icon", "row_text")}
-        canvas = np.full((H, W, 4), 255, np.float32)
-        with mock.patch.object(foil, "printings", return_value={"base": {"_f": "SvUltra", "_s": "x"}, "reverse": None}),                 mock.patch.object(foil, "plate", return_value=printed),                 mock.patch.object(foil, "modern_front", return_value=None),                 mock.patch.object(foil, "texture", return_value=None):
-            out = foil.build_modern("me02-013", edited, canvas, drawn, card)
+        with mock.patch.object(foil, "printings", return_value={"base": {"_f": "SvUltra", "_s": "x"}, "reverse": None}), \
+                mock.patch.object(foil, "plate", return_value=printed), \
+                mock.patch.object(foil, "modern_front", return_value=None), \
+                mock.patch.object(foil, "texture", return_value=None):
+            out = foil.build_modern("me02-013", card, np.full((H, W, 4), 255, np.float32), {}, card)
         np.testing.assert_array_equal(foil.card_space(out["base"][1]), printed)
 
 

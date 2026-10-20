@@ -65,7 +65,10 @@ layout (regular cards; Scarlet & Violet regulars share it) or the Absol ex layou
 an edited ex name keeps the card's own ex logo. With holofoil on, the card's own TCG Live printings are re-made: the
 same shaders and the card's own plates, edited the way each plate prints that kind of ink: ink the plate shows (a
 cut-out name, an ex name's lit letters, the Stage tab's letters) is taken off and set again at the printed value;
-ink the plate runs through (most reverse holos' names and "Evolves from") leaves it as printed. The etch is
+ink the plate runs through (most reverse holos' names and "Evolves from") leaves it as printed. In abilities,
+attacks and the weakness row, the old cut-outs (energy circles, the badge) take the card's own foil field, so a
+dropped cost leaves no circle behind, and new icons are cut like the printed ones; what every printing cuts (the
+row's lines) stays cut. The etch is
 carried over, and the front keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
 layout).
 

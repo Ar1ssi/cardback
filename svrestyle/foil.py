@@ -47,13 +47,16 @@ STAGE_CUT = ("stage", "stage_text", "portrait", "evolves")
 EX_CUT = ("hp", "type_icon", "icon", "row_icon", "badge", "ability_name", "text", "row_text", "footer",
           "stage_text", "portrait", "evolves")
 ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer") + STAGE_CUT
-# Edits whose plates stay as printed on cards edited in place, and the kinds those edits draw.
-PLATE_KEPT = ("moves", "row")
-PLATE_KEPT_KINDS = ("text", "icon", "badge", "ability_name", "row_icon", "row_text")
+# Edits to the text blocks on cards edited in place (abilities and attacks, the weakness row), and the kinds they
+# draw. Their plates are the card's own foil field where the old block's cut-outs were (block_cutout_value).
+BLOCKS = ("moves", "row")
+BLOCK_KINDS = {"moves": ("text", "icon", "badge", "ability_name"), "row": ("row_icon", "row_text")}
 EX_STAGE_REF = "sv03.5-065"   # Alakazam ex (Stage 2): its plate gives the SV ex Stage pieces' foil value
 ME_REVERSE_REFS = {"basic": "me01-054", "stage": "me01-010"}   # Abra, Meganium: their reverse plates
 FILL_GROW = 4      # px around a reference card's own marks that are filled in when its plate becomes a template
 PANEL_INSET = 6    # the Mega Evolution text panel (meframe.PANEL) less its rim: all foil but the marks on it
+BLOCK_REACH = 3     # px: a block's printed cut-outs may sit this far from where the composers set its ink
+BLOCK_SHOWN = 0.3   # share of a kind's ink that must fall on cut-outs for the plate to cut that kind out
 FOOTER_ZONE = (40, 935, 330, 996)   # x0, y0, x1, y1: illustrator, regulation mark, set code, number, rarity
 ROW_REACH = 40     # px either side a filled pixel takes its row's value from
 EX_FILL_GROW = 5   # Absol's plate: its HP digits are a little bolder there than as set here
@@ -72,6 +75,7 @@ FIT_GAIN = 3.0
 FIT_TOL = 6.0        # plate levels: fits this much worse weigh e times less
 BRIDGE_SIGMAS = (6, 12, 24, 48, 96, 192)   # px: blurs that bridge what no peer shows
 OWN_FEATHER = 3      # px: soft edge between a card's own foil and the template's
+OWN_KNOWN = 0.5      # field's own weight above which a filled cut-out is the card's foil, not a guess
 # How a card's own plate prints a kind of ink (ink_value)
 INK_MIN = 20         # px: less printed ink than this is not judged
 INK_CLEAR = 2        # px: the ground is read this far out from all the ink
@@ -575,22 +579,54 @@ def ink_value(img, cover, around):
     return float(np.median(img[judged])), float(np.median(ground[judged]))
 
 
+def printed_blocks(original, groups):
+    """What the card prints in the edited text blocks, by kind, as the composers set it (coverage 0..1)."""
+    from . import modern
+    out = {}
+    if "moves" in groups:
+        out.update(modern._drawn(modern._moves, original, compose.WHITE))
+    if "row" in groups:
+        out.update(modern._drawn(modern._row, original, compose.WHITE))
+    return out
+
+
+def block_cutout_value(img, cover, marks):
+    """The plate value of a block's printed ink where the plate cuts it out (energy circles, the Ability badge),
+    or None where the foil runs through it. Read off the cut-outs near where the composers set the ink: TCGdex
+    spells energy in words, so a block is not always set exactly where its print has it."""
+    core = cover > 0.5
+    if core.sum() < INK_MIN:
+        return None
+    hit = dilate(core, BLOCK_REACH) & marks
+    if hit.sum() < BLOCK_SHOWN * core.sum():
+        return None
+    return float(np.median(img[hit]))
+
+
 def build_modern(card_id, card, canvas, drawn, original):
     """Foil of a Scarlet & Violet / Mega Evolution card edited in place (modern.compose_card): its own printings,
     edited. Edits to the name or the Stage pieces re-make their part of each plate the way the card's own plate
     prints that kind of ink (ink_value): ink the plate shows is taken off (cut-outs filled from the card's own
     foil field, a lit ink from the plate around it) and set again at the printed value; ink the plate does not
-    show leaves it as printed. Kinds the card does not print (Stage pieces on a Basic made Stage) follow the era:
-    ex: cut out, as on SV ex plates; reverse holo: what Mega Evolution reverse plates leave out. Abilities,
-    attacks and the weakness row keep the plates as printed (PLATE_KEPT). Same shape as build()."""
+    show leaves it as printed. Abilities, attacks and the weakness row (BLOCKS): the old block's cut-outs (energy
+    circles, badge) take the card's own foil field, and the new block's ink of each kind is cut at the value the
+    print gives it; kinds the foil runs through stay as printed. Kinds the card does not print (Stage pieces on a
+    Basic made Stage) follow the era: ex: cut out, as on SV ex plates; reverse holo: what Mega Evolution reverse
+    plates leave out. Same shape as build()."""
     from . import modern
     alpha = canvas[..., 3]
     old = printings(card_id)
-    groups = tuple(g for g in modern.changed(original, card) if g not in PLATE_KEPT)
+    edited = modern.changed(original, card)
+    groups = tuple(g for g in edited if g not in BLOCKS)
+    blocks = tuple(g for g in edited if g in BLOCKS)
     taken_off = modern.taken_off(card_id, original, groups, card) if groups else None
+    block_off = None
+    if blocks:
+        mask, row = modern.taken_off(card_id, original, blocks, card)
+        block_off = mask | row
     printed = printed_ink(original, groups)
+    in_blocks = printed_blocks(original, blocks)
     shed = modern.stage_off(original, card) if "stage" in groups else np.zeros((H, W), bool)
-    drawn = {k: v for k, v in drawn.items() if k not in PLATE_KEPT_KINDS}
     if original["stage"]:
         drawn.pop("stage", None)            # the card's own pieces, set again where they were: as printed
     out = {"front": modern_front(card_id, canvas), "base": None, "reverse": None}
@@ -602,6 +638,20 @@ def build_modern(card_id, card, canvas, drawn, original):
         if shed.any():
             img = fill(img, shed)
         learned = {}
+        if block_off is not None:
+            marks = dilate(img < MARK_DARK, MARK_GROW)
+            for kind, cover in in_blocks.items():
+                value = block_cutout_value(img, cover, marks)
+                learned[kind] = None if value is None else (value, None)
+            gone = block_off & marks
+            if gone.any():
+                own_field, own = field(record)
+                gone &= own > OWN_KNOWN       # what every printing cuts (the row's lines) stays cut, not bridged
+                img = np.where(gone, own_field, img)
+                # the filled cut-out's edge, softened so no rim shows where it was (cut-outs kept stay sharp)
+                inner = cv2.erode(gone.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+                seam = dilate(gone, 2) & ~inner & ~(marks & ~gone)
+                img[seam] = cv2.GaussianBlur(img, (0, 0), 1.5)[seam]
         if taken_off is not None:
             mask, row = taken_off
             off = mask | row
