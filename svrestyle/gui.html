@@ -243,6 +243,7 @@ const state = {
   changes: {},            // id -> [what differs from the printed card], from the last render
   rendered: new Set(),    // ids rendered since the page opened (✓ in the list)
   project: null,          // name of the saved project being worked on (autosaved), or null
+  autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
 };
 const LAST_PROJECT = "svrestyle.project";
@@ -605,7 +606,7 @@ function drawFoil(t) {
 
 // ---------------------------------------------------------------- projects
 // A project is what the page holds: the card list, every card's edits and options, the card open and the foil
-// switch. Saved on the server (GET/POST /api/projects), re-saved 1.5 s after each change once it has a name.
+// switch. Saved on the server (GET/POST /api/projects), re-saved 1.5 s after each change.
 function projectData() {
   return { version: 1, setName: $("setName").textContent, cards: state.setCards, edits: state.edits,
            options: state.options, current: state.current ? state.current.id : null, foil: $("foilOn").checked };
@@ -624,10 +625,17 @@ async function refreshProjects(selected) {
 async function saveProject(name, quiet) {
   name = (name || "").trim();
   if (!name) { $("projectName").focus(); status("Name the project to save it."); return; }
+  clearTimeout(state.saveTimer);                             // or a pending autosave re-saves the old name
   try {
     const out = await (await api("/api/projects", { name, data: projectData() })).json();
+    const untitled = state.autoNamed && state.project !== out.name ? state.project : null;
     state.project = out.name;
     state.saveTimer = null;
+    if (untitled) {                                          // naming the work renames it, not copies it
+      state.autoNamed = false;
+      await api("/api/projects/delete", { name: untitled }).catch(() => {});
+      quiet = false;
+    }
     localStorage.setItem(LAST_PROJECT, out.name);
     $("projectName").value = out.name;
     $("saved").textContent = `Saved “${out.name}” ${out.saved.slice(11, 16)}`;
@@ -635,10 +643,21 @@ async function saveProject(name, quiet) {
   } catch (e) { showError(`Save failed: ${e.message}`); }
 }
 
+// Work never waits for a name: the first change of an unnamed page starts a project named after the set (or the
+// time), which the name box can rename later.
+function untitledName() {
+  const set = $("setName").textContent.trim();
+  const t = new Date(), two = (n) => String(n).padStart(2, "0");
+  const when = `${t.getFullYear()}-${two(t.getMonth() + 1)}-${two(t.getDate())} ${two(t.getHours())}.${two(t.getMinutes())}`;
+  const base = set && set !== "Cards" ? set.replace(/[^\w .,'()&+#-]+/g, " ").trim().slice(0, 40) : "Untitled";
+  return `${base || "Untitled"} ${when}`;
+}
+
 function autosave() {
-  if (!state.project) return;
+  const first = !state.project;
+  if (first) { state.project = untitledName(); state.autoNamed = true; }
   clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => saveProject(state.project, true), 1500);
+  state.saveTimer = setTimeout(() => saveProject(state.project, !first), 1500);
 }
 
 async function openProject(name) {
@@ -649,6 +668,7 @@ async function openProject(name) {
     clearTimeout(state.saveTimer);
     state.saveTimer = null;
     state.project = saved;
+    state.autoNamed = false;
     localStorage.setItem(LAST_PROJECT, saved);
     state.edits = data.edits || {};
     state.options = data.options || {};

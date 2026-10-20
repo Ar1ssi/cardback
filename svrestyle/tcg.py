@@ -35,6 +35,9 @@ TCGLIVE_SETS = {
     "xyp": ("xybsp", 0),
     "bwp": ("bwbsp", 0),
 }
+# Sets released as a pair under one number: TCGdex suffixes the number (sv10.5b), pokemontcg.io and TCG Live prefix the
+# series with the mascot's letter (zsv10pt5, zsv10-5: Zekrom's Black Bolt; Reshiram's White Flare).
+PAIRED_SETS = {"sv10.5b": "z", "sv10.5w": "r"}
 CORNER_REF = "sv03-135"   # its pokemontcg.io scan's alpha gives TCG Live fronts the printed card's rounded corners
 
 
@@ -50,21 +53,30 @@ def set_info(set_id):
 
 
 def _split(card_id):
-    m = re.fullmatch(r"([a-z]+)0*(\d*)(\.5)?-0*(\w+)", card_id)
+    """TCGdex id -> (series, set number, ".5" or None, card number), with a paired set's letter on the series:
+    sv03.5-065 -> ("sv", "3", ".5", "65"), sv10.5b-001 -> ("zsv", "10", ".5", "1")."""
+    m = re.fullmatch(r"([a-z]+)0*(\d*)(\.5)?([a-z]?)-0*(\w+)", card_id)
     if not m:
         raise ValueError(f"unexpected card id {card_id!r}")
-    return m.groups()
+    prefix, num, half, pair, local = m.groups()
+    if pair:
+        set_id = card_id.split("-", 1)[0]
+        if set_id not in PAIRED_SETS:
+            raise ValueError(f"unexpected card id {card_id!r}")
+        prefix = PAIRED_SETS[set_id] + prefix
+    return prefix, num, half, local
 
 
 def pokemontcg_id(card_id):
-    """TCGdex id -> pokemontcg.io image path: swsh6-099 -> swsh6/99, sv03.5-065 -> sv3pt5/65, sma-SV33 -> sma/SV33."""
+    """TCGdex id -> pokemontcg.io image path: swsh6-099 -> swsh6/99, sv03.5-065 -> sv3pt5/65, sma-SV33 -> sma/SV33,
+    sv10.5b-001 -> zsv10pt5/1."""
     prefix, num, half, local = _split(card_id)
     return f"{prefix}{num}{'pt5' if half else ''}/{local}"
 
 
 def tcglive_id(card_id):
     """TCGdex id -> TCG Live card id: swsh6-099 -> swsh6_99, sv03.5-065 -> sv3-5_65, sma-SV33 -> sm11-5_102,
-    swshp-SWSH055 -> swshbsp_55, me01-054 -> me1_54."""
+    swshp-SWSH055 -> swshbsp_55, me01-054 -> me1_54, sv10.5w-001 -> rsv10-5_1."""
     prefix, num, half, local = _split(card_id)
     set_id, offset = TCGLIVE_SETS.get(f"{prefix}{num}", (f"{prefix}{num}{'-5' if half else ''}", 0))
     digits = re.fullmatch(r"[A-Za-z]*0*(\d+)", local)

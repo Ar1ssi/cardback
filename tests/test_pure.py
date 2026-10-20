@@ -18,6 +18,14 @@ class PokemonTcgId(unittest.TestCase):
         self.assertEqual(tcg.pokemontcg_id("sv03.5-065"), "sv3pt5/65")
         self.assertEqual(tcg.pokemontcg_id("swsh12.5-013"), "swsh12pt5/13")
 
+    def test_paired_sets(self):
+        # TCGdex sv10.5b-001 / sv10.5w-001 are Snivy (Black Bolt) / Sewaddle (White Flare): pokemontcg.io
+        # zsv10pt5-1 / rsv10pt5-1
+        self.assertEqual(tcg.pokemontcg_id("sv10.5b-001"), "zsv10pt5/1")
+        self.assertEqual(tcg.pokemontcg_id("sv10.5w-001"), "rsv10pt5/1")
+        with self.assertRaises(ValueError):
+            tcg.pokemontcg_id("sv10.5x-001")
+
     def test_rejects_garbage(self):
         with self.assertRaises(ValueError):
             tcg.pokemontcg_id("not a card")
@@ -33,6 +41,8 @@ class TcgLiveId(unittest.TestCase):
     def test_promos_and_subsets(self):
         self.assertEqual(tcg.tcglive_id("swshp-SWSH055"), "swshbsp_55")
         self.assertEqual(tcg.tcglive_id("sma-SV33"), "sm11-5_102")
+        self.assertEqual(tcg.tcglive_id("sv10.5b-086"), "zsv10-5_86")      # bundles zsv10-5_en_086
+        self.assertEqual(tcg.tcglive_id("sv10.5w-172"), "rsv10-5_172")
 
     def test_no_extract_means_no_front(self):
         with mock.patch.object(tcg, "TCGLIVE", None):
