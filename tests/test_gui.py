@@ -21,6 +21,49 @@ def card(**over):
     return base
 
 
+class Search(unittest.TestCase):
+    ANSWERS = {
+        "/series/tcgp": {"sets": [{"id": "A1"}]},
+        "/sets": [{"id": "xy1", "name": "XY"}, {"id": "sv07", "name": "Stellar Crown"}, {"id": "A1", "name": "Pocket"}],
+        "/cards?name=Greninja%20ex&category=Pokemon": [
+            {"id": "xy1-41", "localId": "41", "name": "Greninja ex"},
+            {"id": "A1-87", "localId": "87", "name": "Greninja ex", "image": "https://a/tcgp/A1/87"},
+            {"id": "sv07-106", "localId": "106", "name": "Greninja ex"},
+            {"id": "sv07-41", "localId": "41", "name": "Greninja ex", "image": "https://a/sv/sv07/41"},
+            {"id": "new1-5", "localId": "5", "name": "Greninja ex"},
+            {"id": "30th-021", "localId": "021", "name": "Greninja ex"}],          # an id the editor cannot open
+    }
+
+    def setUp(self):
+        gui._searches.clear()
+        gui._search_sets.clear()
+        self.asked = []
+        patch = mock.patch.object(gui, "_tcgdex", side_effect=lambda path: self.asked.append(path) or self.ANSWERS[path])
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_newest_sets_first_without_pocket_cards(self):
+        out = gui.search_cards("  Greninja   ex ")
+        self.assertEqual([c["id"] for c in out["cards"]], ["sv07-41", "sv07-106", "xy1-41", "new1-5"])
+        self.assertEqual(out["cards"][0], {"id": "sv07-41", "name": "Greninja ex", "set": "Stellar Crown",
+                                           "number": "41", "image": "https://a/sv/sv07/41/low.webp"})
+        self.assertEqual(out["cards"][3]["set"], "new1")         # a set TCGdex's list does not have yet
+        self.assertEqual(out["more"], 0)
+
+    def test_answers_are_reused_and_capped(self):
+        with mock.patch.object(gui, "SEARCH_LIMIT", 2):
+            out = gui.search_cards("Greninja ex")
+            self.assertEqual((len(out["cards"]), out["more"]), (2, 2))
+            gui.search_cards("greninja EX")
+        self.assertEqual(self.asked.count("/cards?name=Greninja%20ex&category=Pokemon"), 1)
+        self.assertEqual(self.asked.count("/sets"), 1)
+
+    def test_rejections(self):
+        for q in ("", "a", " a ", "x" * 41, None):
+            with self.subTest(q), self.assertRaises(gui.UserError):
+                gui.search_cards(q)
+
+
 class Apply(unittest.TestCase):
     def test_round_trip_keeps_card(self):
         c = card()

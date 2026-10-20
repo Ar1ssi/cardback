@@ -128,7 +128,8 @@ resistance, retreat, illustrator, flavour text); the card list counts them per c
 printed, or both side by side. "Changelog (.md)" writes every card's changes as Markdown, and each zip download
 holds the same CHANGELOG.md.
 
-Projects: every card you load joins the card list; the Cards panel adds several by id at once (commas or spaces;
+Projects: every card you load joins the card list; the Cards panel's add box searches Pokémon by name (TCGdex,
+newest sets first; arrows and Enter or a click add one, and the list stays open for more) or adds several by id at once (commas or spaces;
 those TCGdex does not know, or that are not Pokémon, stay in the box with the reason) and × takes one out with its
 edits (Undo puts it back). The page saves itself 0.3 s after each change - the list, every
 card's edits and options, the card open and the holofoil switch - and opens it again on its own next time. Work

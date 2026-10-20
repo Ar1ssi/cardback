@@ -19,6 +19,8 @@ API (JSON in and out unless noted):
   GET  /api/foil/tex/NAME.png the materials' textures (spectrum, shine, glitter, patterns), lossless
   GET  /api/original/ID.png   the printed card (the scan the render starts from), for comparing
   GET  /api/icon/TYPE.png     the energy icon used on cards (PNG)
+  GET  /api/search?q=NAME     Pokemon cards whose name holds NAME (TCGdex), newest sets first -> {cards: [{id, name,
+                              set, number, image?}], more: how many past SEARCH_LIMIT}
   POST /api/set               a ptcg-sim custom-set export -> {cards: [{id, name, layout | skip}]}
   POST /api/zip               {items: [{id, edits?, style?, attacks?, foil?}], title?} -> application/zip (with foil
                               also the 1024x1024 front, the white plates and <card>-foil.json, see foil.files), and
@@ -51,6 +53,8 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 import warnings
 import webbrowser
 import zipfile
@@ -58,7 +62,7 @@ from collections import OrderedDict, deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import numpy as np
 from PIL import Image
@@ -80,6 +84,11 @@ MAX_ZIP_ITEMS = 60
 STYLES = ("hybrid", "panel")
 PROJECT_NAME = re.compile(r"\w[\w .,'()&+#-]{0,59}")
 MAX_PROJECT = 4 << 20                 # bytes of one saved project
+SEARCH_LEN = (2, 40)                  # characters a card search may have
+SEARCH_LIMIT = 40                     # cards one search answers with
+SEARCH_TTL = 3600                     # s a search's answer (and TCGdex's set list) is reused: new sets come out
+SEARCH_TIMEOUT = 10                   # s to wait for TCGdex
+NOT_PRINTED_SERIES = ("tcgp",)        # TCG Pocket: TCGdex lists its cards with the TCG's, but they are not cards
 POLL_WAIT = 20                        # s a poll waits for news before answering with none (tunnels cut at ~100 s)
 VIEWER_GONE = POLL_WAIT + 25          # s without a poll after which a page no longer counts as having it open
 EVENT_LOG = 200                       # events each project keeps for pages catching up
@@ -300,6 +309,63 @@ def icon_png(type_name):
     buf = io.BytesIO()
     Image.fromarray(rgba, "RGBA").save(buf, "PNG")
     return buf.getvalue()
+
+
+_searches = OrderedDict()             # query -> (time, answer)
+_search_sets = {}                     # at: time, sets: set id -> (release order, name), pocket: ids not printed
+_search_lock = threading.Lock()
+
+
+def _tcgdex(path):
+    req = urllib.request.Request(tcg.TCGDEX + path, headers={"User-Agent": cache.USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=SEARCH_TIMEOUT) as r:
+            return json.loads(r.read())
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        raise UserError(f"card search could not reach TCGdex: {e}") from e
+
+
+def _printed_sets():
+    """(set id -> (release order, name) of the printed TCG's sets, the ids of the sets that are not printed).
+    TCGdex lists sets oldest first."""
+    with _search_lock:
+        if time.monotonic() - _search_sets.get("at", -SEARCH_TTL) < SEARCH_TTL:
+            return _search_sets["sets"], _search_sets["pocket"]
+    pocket = {s["id"] for series in NOT_PRINTED_SERIES for s in _tcgdex(f"/series/{series}").get("sets", [])}
+    sets = {s["id"]: (i, s.get("name", s["id"])) for i, s in enumerate(_tcgdex("/sets")) if s["id"] not in pocket}
+    with _search_lock:
+        _search_sets.update(at=time.monotonic(), sets=sets, pocket=pocket)
+    return sets, pocket
+
+
+def search_cards(query):
+    """Pokemon cards whose name holds `query`, newest sets first (TCGdex); only ids the editor takes."""
+    query = " ".join(str(query or "").split())
+    if not SEARCH_LEN[0] <= len(query) <= SEARCH_LEN[1]:
+        raise UserError(f"search: {SEARCH_LEN[0]}-{SEARCH_LEN[1]} characters of a Pokemon's name")
+    key = query.lower()
+    with _search_lock:
+        hit = _searches.get(key)
+        if hit and time.monotonic() - hit[0] < SEARCH_TTL:
+            return hit[1]
+    sets, pocket = _printed_sets()
+    found = []
+    for c in _tcgdex(f"/cards?name={quote(query)}&category=Pokemon"):
+        set_id = c.get("id", "").rpartition("-")[0]
+        if set_id in pocket or not edit.valid_card_id(c.get("id")):       # only what /api/card can open
+            continue
+        order, set_name = sets.get(set_id, (-1, set_id))           # a set the list does not have yet: last
+        number = str(c.get("localId", ""))
+        found.append(((-order, int(number) if number.isdigit() else 0, number),
+                      {"id": c["id"], "name": c.get("name", ""), "set": set_name, "number": number,
+                       **({"image": c["image"] + "/low.webp"} if c.get("image") else {})}))
+    found.sort(key=lambda f: f[0])
+    answer = {"cards": [card for _, card in found[:SEARCH_LIMIT]], "more": max(0, len(found) - SEARCH_LIMIT)}
+    with _search_lock:
+        _searches[key] = (time.monotonic(), answer)
+        while len(_searches) > 200:
+            _searches.popitem(last=False)
+    return answer
 
 
 def import_set(data):
@@ -623,6 +689,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
                             "weakness": list(edit.WEAKNESS_VALUES), "resistance": list(edit.RESISTANCE_VALUES),
                             "foil": bool(tcg.TCGLIVE)})
+            elif url.path == "/api/search":
+                self._json(search_cards((parse_qs(url.query).get("q") or [""])[0]))
             elif url.path == "/api/card":
                 self._json(card_summary((parse_qs(url.query).get("id") or [""])[0].strip()))
             elif url.path == "/api/projects":
