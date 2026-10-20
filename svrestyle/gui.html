@@ -64,13 +64,8 @@
   .setlist .remove:hover { color: var(--accent); }
   .setlist .skip { color: var(--muted); }
   .addrow { display: flex; gap: 6px; margin-bottom: 8px; }
-  .searchlist { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin: -2px 0 8px; background: var(--panel); }
-  .searchlist .hit { display: flex; width: 100%; align-items: center; gap: 8px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; text-align: left; padding: 4px 8px; }
-  .searchlist .hit.picked, .searchlist .hit:hover:not(:disabled) { background: var(--chip); }
-  .searchlist .hit img, .searchlist .noimg { width: 30px; height: 42px; object-fit: cover; border-radius: 3px; flex: 0 0 30px; background: var(--chip); }
-  .searchlist .what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .searchlist .what span { color: var(--muted); font-size: 12px; }
-  .searchnote { color: var(--muted); font-size: 12px; padding: 6px 8px; }
+  .findcount { flex: 0 0 auto; align-self: center; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .setlist .none { color: var(--muted); font-size: 12px; padding: 6px 8px; }
   .undo { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); margin: 6px 0 0; }
   .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
   .retreat { display: flex; align-items: center; gap: 6px; }
@@ -130,12 +125,14 @@
       <h2><span id="setName">Cards</span>
         <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="changelogBtn" class="small" title="Every card's changes from its printed card, as Markdown">Changelog (.md)</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
       <div class="addrow">
-        <input id="addIds" type="text" placeholder="Add cards: search a name, or TCGdex ids (sv10.5b-001, swsh5-92)"
-               aria-label="Search a Pokémon, or card ids to add" autocomplete="off" role="combobox"
-               aria-controls="searchList" aria-autocomplete="list">
+        <input id="addIds" type="text" placeholder="Add cards: TCGdex ids, e.g. sv10.5b-001, swsh5-92" aria-label="Card ids to add">
         <button id="addBtn" type="button" class="small">Add</button>
       </div>
-      <div id="searchList" class="searchlist" role="listbox" aria-label="Cards found" hidden></div>
+      <div id="findRow" class="addrow" hidden>
+        <input id="findCards" type="text" placeholder="Find in the list: name or id" aria-label="Find cards in the list"
+               autocomplete="off">
+        <span id="findCount" class="findcount"></span>
+      </div>
       <div id="setList" class="setlist" hidden></div>
       <p id="undoBar" class="undo" hidden><span id="undoText"></span><button id="undoBtn" type="button" class="small">Undo</button></p>
       <p class="hint">Every card you load or add joins this list; × takes one out (with its edits). The list and your edits save themselves after every change (as a dated project until you name it, top right) and open on their own next time.</p>
@@ -279,12 +276,6 @@ const state = {
   project: null,          // name of the saved project being worked on (autosaved), or null
   autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
-  searchTimer: null,
-  searchSeq: 0,           // the search answered last; a newer one (or closing the list) drops older answers
-  searchHits: [],         // the cards the add box's search found
-  searchPick: -1,         // the one Enter adds
-  searchText: "",
-  searchMore: 0,          // how many more it found than it lists
   synced: null,           // the project as the server holds it, as far as this page knows (projectData's shape)
   rev: 0,                 // the server's revision of it
   listening: 0,           // turn of the poll loop for the project's news (listen); a new turn ends the old loop
@@ -988,10 +979,20 @@ async function importSet(file) {
   } catch (e) { showError(`Import failed: ${e.message}`); }
 }
 
+// The find box narrows the list to cards whose name or id holds every word typed (accents aside: "pokemon" finds
+// "Pokémon").
+const fold = (text) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const findWords = () => fold($("findCards").value).split(/\s+/).filter(Boolean);
+const found = (card, words) => words.every((w) => fold(`${card.name} ${card.id}`).includes(w));
+
 function drawSet() {
-  $("setList").hidden = state.setCards.length === 0;
+  $("setList").hidden = $("findRow").hidden = state.setCards.length === 0;
   const todo = state.setCards.filter((c) => !c.skip).length;
-  $("setList").replaceChildren(...state.setCards.map((c) => el("div", { class: "row", "data-id": c.id },
+  const words = findWords();
+  const shown = state.setCards.filter((c) => found(c, words));
+  $("findCount").textContent = words.length ? `${shown.length} of ${state.setCards.length}` : "";
+  $("setList").replaceChildren(...(shown.length ? [] : [el("div", { class: "none" }, "No cards in the list match.")]),
+    ...shown.map((c) => el("div", { class: "row", "data-id": c.id },
     el("button", { class: c.skip ? "open skip" : "open", disabled: !!c.skip, onclick: () => loadCard(c.id) },
       el("span", {}, `${c.name} `, el("span", { class: "badge" }, c.id)),
       el("span", {},
@@ -1003,7 +1004,6 @@ function drawSet() {
                    onclick: () => removeCard(c.id) }, "×"))));
   $("zipBtn").disabled = $("renderAllBtn").disabled = $("changelogBtn").disabled = todo === 0;
   markActive();
-  if (!$("searchList").hidden && state.searchHits.length) drawSearch();     // its "in list" marks
 }
 
 function markActive() {
@@ -1011,97 +1011,8 @@ function markActive() {
     r.classList.toggle("active", !!state.current && r.dataset.id === state.current.id));
 }
 
-// ---------------------------------------------------------------- search
-// The add box takes TCGdex ids, or part of a Pokémon's name: a name lists the cards that have it (/api/search),
-// newest sets first, to add with a click or Enter. The list stays open, so several can go in one after another.
-const SEARCH_DELAY = 250;                                   // ms after the last key before searching
-const looksLikeIds = (text) => text.split(/[\s,;]+/).filter(Boolean).every((t) => /^[\w.]+-\w*\d\w*$/.test(t));
-
-function searchTyped() {
-  clearTimeout(state.searchTimer);
-  const text = $("addIds").value.trim();
-  if (text.length < 2 || looksLikeIds(text)) { closeSearch(); return; }
-  state.searchTimer = setTimeout(() => runSearch(text), SEARCH_DELAY);
-}
-
-async function runSearch(text) {
-  const seq = ++state.searchSeq;
-  $("searchList").hidden = false;
-  if (!state.searchHits.length) $("searchList").replaceChildren(el("div", { class: "searchnote" }, `Searching “${text}”…`));
-  try {
-    const found = await (await api(`/api/search?q=${encodeURIComponent(text)}`)).json();
-    if (seq !== state.searchSeq) return;                    // typed on, or closed, meanwhile
-    Object.assign(state, { searchHits: found.cards, searchText: text, searchMore: found.more });
-    state.searchPick = found.cards.findIndex((c) => !inList(c.id));
-    drawSearch();
-  } catch (e) {
-    if (seq === state.searchSeq) $("searchList").replaceChildren(el("div", { class: "searchnote" }, e.message));
-  }
-}
-
-const inList = (id) => state.setCards.some((c) => c.id === id);
-
-function drawSearch() {
-  const hits = state.searchHits;
-  $("searchList").replaceChildren(
-    ...(hits.length ? [] : [el("div", { class: "searchnote" }, `No Pokémon named like “${state.searchText}”.`)]),
-    ...hits.map((c, i) => el("button", {
-      type: "button", role: "option", class: i === state.searchPick ? "hit picked" : "hit", disabled: inList(c.id),
-      "aria-selected": i === state.searchPick ? "true" : "false",
-      onmousedown: (e) => e.preventDefault(),               // the box keeps the focus, so the list stays open
-      onclick: () => pickHit(i) },
-      c.image ? el("img", { src: c.image, alt: "", loading: "lazy" }) : el("span", { class: "noimg" }),
-      el("span", { class: "what" }, el("strong", {}, c.name), el("span", {}, `${c.set} · ${c.number}`)),
-      el("span", { class: "badge" }, inList(c.id) ? "in list" : c.id))),
-    ...(state.searchMore ? [el("div", { class: "searchnote" }, `${state.searchMore} more: type more of the name.`)] : []));
-  const picked = $("searchList").querySelector(".picked");
-  if (picked) picked.scrollIntoView({ block: "nearest" });
-}
-
-async function pickHit(i) {
-  const card = state.searchHits[i];
-  if (!card || inList(card.id)) return;
-  await addCards(card.id, { fromSearch: true });
-  const next = state.searchHits.findIndex((c, j) => j > i && !inList(c.id));
-  state.searchPick = next >= 0 ? next : state.searchHits.findIndex((c) => !inList(c.id));
-  if (!$("searchList").hidden) drawSearch();
-}
-
-function movePick(step) {
-  const open = state.searchHits.map((_, i) => i).filter((i) => !inList(state.searchHits[i].id));
-  if (!open.length) return;
-  const at = open.indexOf(state.searchPick);
-  state.searchPick = open[at < 0 ? 0 : (at + step + open.length) % open.length];
-  drawSearch();
-}
-
-function closeSearch() {
-  clearTimeout(state.searchTimer);
-  state.searchSeq += 1;
-  Object.assign(state, { searchHits: [], searchPick: -1, searchMore: 0 });
-  $("searchList").hidden = true;
-}
-
-// Enter and Add: the card picked in the list, or the ids typed.
-function addTyped() {
-  const text = $("addIds").value;
-  const listed = !$("searchList").hidden && state.searchPick >= 0 && !looksLikeIds(text.trim());
-  if (listed) pickHit(state.searchPick);
-  else { closeSearch(); addCards(text); }
-}
-
-function searchKeys(e) {
-  if (e.key === "Enter") { e.preventDefault(); addTyped(); }
-  else if (e.key === "Escape") closeSearch();
-  else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !$("searchList").hidden) {
-    e.preventDefault();
-    movePick(e.key === "ArrowDown" ? 1 : -1);
-  }
-}
-
 // Several ids at once (commas, spaces or new lines); each is checked with the server before it joins the list.
-// fromSearch: the search list picked it, so the box keeps its search.
-async function addCards(text, { fromSearch = false } = {}) {
+async function addCards(text) {
   const ids = [...new Set((text || "").split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean))];
   if (!ids.length) return;
   showError("");
@@ -1120,7 +1031,7 @@ async function addCards(text, { fromSearch = false } = {}) {
     } catch (e) { failed.push({ id, why: e.message }); }
   }
   status("");
-  if (!fromSearch) $("addIds").value = failed.map((f) => f.id).join(", ");   // what did not go in stays, to fix
+  $("addIds").value = failed.map((f) => f.id).join(", ");          // what did not go in stays, to fix
   if (added) {
     autosave();
     const first = state.setCards.find((c) => !c.skip);
@@ -1230,11 +1141,15 @@ async function init() {
   $("loadBtn").addEventListener("click", () => loadCard($("cardId").value));
   $("cardId").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCard($("cardId").value); });
   $("importBtn").addEventListener("click", () => $("setFile").click());
-  $("addBtn").addEventListener("click", addTyped);
-  $("addIds").addEventListener("keydown", searchKeys);
-  $("addIds").addEventListener("input", searchTyped);
-  $("addIds").addEventListener("focus", searchTyped);
-  $("addIds").addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== $("addIds")) closeSearch(); }, 150));
+  $("addBtn").addEventListener("click", () => addCards($("addIds").value));
+  $("addIds").addEventListener("keydown", (e) => { if (e.key === "Enter") addCards($("addIds").value); });
+  $("findCards").addEventListener("input", drawSet);
+  $("findCards").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { $("findCards").value = ""; drawSet(); }
+    if (e.key !== "Enter") return;
+    const first = state.setCards.find((c) => !c.skip && found(c, findWords()));     // Enter opens the first found
+    if (first) loadCard(first.id);
+  });
   $("undoBtn").addEventListener("click", undoRemove);
   $("setFile").addEventListener("change", (e) => { if (e.target.files[0]) importSet(e.target.files[0]); e.target.value = ""; });
   $("renderBtn").addEventListener("click", renderNow);
