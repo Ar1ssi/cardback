@@ -5,7 +5,7 @@ from unittest import mock
 
 import numpy as np
 
-from svrestyle import compose, edit, modern
+from svrestyle import compose, edit, frame, modern
 from svrestyle import typeset as ts
 
 W, H = 733, 1024
@@ -93,6 +93,38 @@ class FindingPrint(unittest.TestCase):
         scan[:, :, :3] = 230
         scan[where, :3] = 30
         self.assertFalse(np.array_equal(modern.ink_colour(scan, where), compose.WHITE))
+
+    @staticmethod
+    def text_on(panel, ink, outline=None):
+        """A panel with two lines of glyph-sized marks, and a few art strokes of the other shade."""
+        scan = np.full((H, W, 4), panel, np.float32)
+        for base in (620, 660):
+            for x in range(80, 600, 20):
+                if outline is not None:
+                    scan[base - 16:base + 2, x - 2:x + 6, :3] = outline
+                scan[base - 14:base, x:x + 4, :3] = ink
+        scan[720:724, 60:400, :3] = 255 - panel     # a long streak of art: not glyph-shaped
+        return scan
+
+    def test_print_ink_reads_dark_and_light_text(self):
+        fill, edge = modern.print_ink(self.text_on(200, 30), modern.MOVES_ZONE["regular"])
+        self.assertTrue(np.array_equal(fill, frame.DARK_INK))
+        self.assertIsNone(edge)
+        fill, edge = modern.print_ink(self.text_on(40, 250), modern.MOVES_ZONE["ex"])
+        self.assertIs(fill, compose.WHITE)
+        self.assertIsNone(edge)
+
+    def test_print_ink_reads_a_keyline(self):
+        fill, edge = modern.print_ink(self.text_on(120, 30, outline=250), modern.MOVES_ZONE["ex"])
+        self.assertTrue(np.array_equal(fill, frame.DARK_INK))
+        self.assertIs(edge[0], compose.WHITE)
+
+    def test_print_ink_keeps_an_ink_it_does_not_know(self):
+        fill, _ = modern.print_ink(self.text_on(220, (150, 20, 20)), modern.MOVES_ZONE["regular"])
+        self.assertTrue(np.allclose(fill, (150, 20, 20), atol=12))
+
+    def test_print_ink_finds_nothing_on_a_plain_panel(self):
+        self.assertIsNone(modern.print_ink(np.full((H, W, 4), 200, np.float32), modern.MOVES_ZONE["regular"]))
 
     def test_fill_band_blends_along_rows(self):
         img = np.zeros((H, W, 4), np.float32)

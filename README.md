@@ -62,7 +62,8 @@ with the composers (they match these prints within a few pixels) and taking what
 shape whole; abilities and attacks by what stands out from the panel in the text zone. LaMa rebuilds what was taken
 off, except the weakness row, which is blended along its pixel rows (LaMa copies the labels into it). On a plain
 panel, a blot LaMa makes up in a hole is covered with the panel beside it. New blocks follow the Mega Evolution
-layout (regular cards; Scarlet & Violet regulars share it) or the Absol ex layout (ex), in the card's own text colour;
+layout (regular cards; Scarlet & Violet regulars share it) or the Absol ex layout (ex), in the ink the old block
+was printed in, read from its lines of glyphs (dark or white, and its keyline when outlined over full art);
 an edited ex name keeps the card's own ex logo. With holofoil on, the card's own TCG Live printings are re-made: the
 same shaders and the card's own plates, edited the way each plate prints that kind of ink: ink the plate shows (a
 cut-out name, an ex name's lit letters, the Stage tab's letters) is taken off and set again at the printed value;

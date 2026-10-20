@@ -10,7 +10,8 @@ was edited is taken off and set again in the same layouts the restyles use.
 - Abilities and attacks: ex prints do not stack their blocks by one rule, so the old block is found on the card
   instead: everything in the text zone that stands out from the panel behind it (text, cost icons, the Ability
   badge). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular cards share
-  it), ex cards in the Absol ex layout.
+  it), ex cards in the Absol ex layout, in the old block's own ink (print_ink: its fill colour, and its keyline when
+  the text is outlined over full art).
 What is taken off is rebuilt by LaMa (cached per card and set of edited parts), except in the weakness row, which
 is filled along its pixel rows (fill_band). Energy written {G}, {R} ... in effect text prints as its symbol.
 """
@@ -47,6 +48,13 @@ GHOST_MAX = 4000       # px: bigger standouts are not blots (art LaMa rebuilt)
 GHOST_GROW = 5         # px around a blot covered too: its soft edge is not caught as standing out
 CLEAN_VERSION = 3      # bump when cleaned() changes what it makes, so cached cleanups are made again
 ICON_SHADOW = 3        # px: a printed row icon's shadow reaches this far out (and down) from it
+# The old block's ink is read from its glyphs: shapes a glyph's size, lined up on a shared baseline.
+GLYPH_H = (5, 30)    # px: tallest and shortest glyph (accented capitals, commas aside)
+GLYPH_W = 40         # px: wider shapes are art or words run together
+GLYPH_MIN = 8        # px: smaller shapes are grain
+TEXT_LINE = 8        # glyphs whose bottoms sit within a pixel of each other make a line of text
+KEYLINE_RING = 2     # px: an outline is read this far out from the glyphs
+INK_SNAP = 48        # RGB distance within which a measured ink is the stock ink (white, DARK_INK)
 BAND_GAP, BAND_SAMPLE = 3, 6   # px: weakness-row gaps take their colour this far out, from this many pixels
 RING_SHADE = 4       # px: the ring's soft shadow on the card, past its cut-out
 BORDER_X = 26        # px: the plain silver card border on the left, which the Stage ring overlaps
@@ -101,10 +109,10 @@ def _name(canvas, card, logo=None):
     return compose.name_bar_text(canvas, card, prof, ex=False, name_right_limit=meframe.NAME_RIGHT_LIMIT)
 
 
-def _moves(canvas, card, fill):
+def _moves(canvas, card, fill, edge=None):
     if card["family"] == "ex":
-        return compose.text_block(canvas, card, fill, None)
-    return compose.text_block(canvas, card, fill, None, layout=mecompose.me_layout,
+        return compose.text_block(canvas, card, fill, edge)
+    return compose.text_block(canvas, card, fill, edge, layout=mecompose.me_layout,
                               name_to_body=mecompose.NAME_TO_BODY, fit_tracking=mecompose.BODY_FIT_TRACK,
                               cost_r=mecompose.COST_R, cost_dy=mecompose.COST_DY)
 
@@ -175,6 +183,58 @@ def ink_near(scan, cover, reach=REACH, holes=True):
     whole = np.setdiff1d(np.unique(labels[strokes & near]), np.append(spills, 0))
     found = ink | np.isin(labels, whole)
     return found | (cover > 0.05) if holes else found
+
+
+def _glyphs(ink):
+    """bool HxW: the shapes of ink that sit in lines of text."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
+    sized = [i for i in range(1, n) if GLYPH_H[0] <= stats[i, cv2.CC_STAT_HEIGHT] <= GLYPH_H[1]
+             and stats[i, cv2.CC_STAT_WIDTH] <= GLYPH_W and stats[i, cv2.CC_STAT_AREA] >= GLYPH_MIN]
+    bottoms = np.array([stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT] for i in sized])
+    lined = [i for i, b in zip(sized, bottoms) if (np.abs(bottoms - b) <= 1).sum() >= TEXT_LINE]
+    return np.isin(labels, lined)
+
+
+def _stock(rgb):
+    """The stock ink a measured colour is, or the colour itself."""
+    for stock in (compose.WHITE, np.array(frame.DARK_INK, np.float32)):
+        if float(np.linalg.norm(rgb - stock)) <= INK_SNAP:
+            return stock
+    return rgb.astype(np.float32)
+
+
+def _outlined(glyphs, lift, sign):
+    """Whether the glyphs (darker than their panel: sign -1) sit in an outline of the other shade."""
+    ring = dilate(glyphs, KEYLINE_RING) & ~glyphs
+    return bool(ring.any()) and -sign * float(np.median(lift[ring])) > INK_DIFF
+
+
+def print_ink(scan, box):
+    """The ink text is printed in inside box: (fill RGB, keyline (RGB, radius, opacity) or None), or None when no
+    lines of text are found. Dark and light print are read apart: a dark glyph's white outline (full art) would
+    otherwise join it, and the art, into one shape."""
+    x0, y0, x1, y1 = box
+    rgb = np.clip(scan[..., :3], 0, 255).astype(np.uint8)
+    pad = MEDIAN
+    crop = cv2.copyMakeBorder(rgb[y0:y1, x0:x1], pad, pad, pad, pad, cv2.BORDER_REFLECT)
+    background = cv2.medianBlur(crop, MEDIAN)[pad:-pad, pad:-pad].astype(np.float32)
+    seen = crop[pad:-pad, pad:-pad].astype(np.float32)
+    lift = luminance(seen) - luminance(background)
+    dark, light = _glyphs(lift < -INK_DIFF), _glyphs(lift > INK_DIFF)
+    dark_outlined, light_outlined = _outlined(dark, lift, -1), _outlined(light, lift, 1)
+    if dark_outlined != light_outlined:                     # an outline is never outlined itself: half its ring
+        sign = -1 if dark_outlined else 1                   # is the panel
+    else:
+        sign = -1 if dark.sum() >= light.sum() else 1       # the print is darker (-1) or lighter than its panel
+    glyphs, outlined = (dark, dark_outlined) if sign < 0 else (light, light_outlined)
+    if not glyphs.any():
+        return None
+    strength = np.abs(lift)
+    core = glyphs & (strength >= np.median(strength[glyphs]))      # past the glyphs' anti-aliased edges
+    fill = _stock(seen[core].mean(axis=0))
+    ring = dilate(glyphs, KEYLINE_RING) & ~glyphs
+    edge = (_stock(np.median(seen[ring], axis=0)), *compose.LIGHT_KEYLINE[1:]) if outlined else None
+    return fill, edge
 
 
 def ink_colour(scan, where):
@@ -373,6 +433,13 @@ def cleaned(card_id, original, groups, card=None):
     return art, mask | row
 
 
+def _block_colour(scan, original):
+    """White or dark, for a block print_ink finds no lines of text in."""
+    strokes = ink_in(scan, MOVES_ZONE[original["family"]], holes=False)
+    drawn = _cover(_drawn(_moves, original, compose.WHITE), ("icon", "badge", "ability_name"))
+    return ink_colour(scan, strokes & ~dilate(drawn > 0.1, 6))
+
+
 def compose_card(card_id, card, original=None):
     """-> (RGBA float32 733x1024, report). card: read_card's dict, edited; original: as printed (default: read)."""
     original = original or read_card(card_id)
@@ -390,10 +457,8 @@ def compose_card(card_id, card, original=None):
         logo = card_logo(scan, original) if card["family"] == "ex" else None
         _name(canvas, card, logo)
     if "moves" in groups:
-        strokes = ink_in(scan, MOVES_ZONE[original["family"]], holes=False)
-        fill = ink_colour(scan, strokes & ~dilate(_cover(_drawn(_moves, original, compose.WHITE),
-                                                         ("icon", "badge", "ability_name")) > 0.1, 6))
-        shrink = _moves(canvas, card, fill)
+        fill, edge = print_ink(scan, MOVES_ZONE[original["family"]]) or (_block_colour(scan, original), None)
+        shrink = _moves(canvas, card, fill, edge)
         if shrink is not None and shrink < 1:
             warnings.warn(f"{card_id}: ability/attack text set at {shrink:.0%} to fit")
     if "row" in groups:
