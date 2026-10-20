@@ -8,6 +8,7 @@
       --style hybrid|panel   ex only. hybrid (default): art runs behind the text; panel: SV translucent panel
       --no-attacks           leave out abilities and attacks (names, text, costs, damage)
       --out DIR              where PNGs go (default ./out); --debug also writes the art-cleaning mask overlay
+      --foil                 also write the card's TCG Live holofoil: 1024x1024 front, white plate(s), foil.json
   every command: --tcglive DIR   take scans from a Pokemon TCG Live extract (its 1024x1024 card fronts) instead of
                                  pokemontcg.io; or set SVRESTYLE_TCGLIVE. Cached apart from web scans.
 """
@@ -18,7 +19,7 @@ import sys
 import warnings
 from pathlib import Path
 
-from . import cache, frame, inpaint, meframe, refs, swsh, tcg
+from . import cache, foil, frame, inpaint, layers, meframe, refs, swsh, tcg
 from . import typeset as ts
 from .imaging import save_rgba
 
@@ -64,12 +65,16 @@ def cmd_card(a):
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 v = is_v(card_id)
-                img, report = compose(card_id, opts) if v else mecompose.compose_card(card_id, opts.attacks)
+                with layers.recording() as drawn:
+                    img, report = compose(card_id, opts) if v else mecompose.compose_card(card_id, opts.attacks)
             c = report["card"]
             slug = (c["prefix"] + " " + c["name"]).strip().lower().replace(" ", "-")
             stem = f"{card_id}-{slug}-ex-{suffix}" if v else f"{card_id}-{slug}-me" + ("" if opts.attacks else "-no-attacks")
             path = out / f"{stem}.png"
             save_rgba(img, path)
+            if a.foil:
+                built = foil.build(card_id, "ex" if v else "me", img, drawn, c)
+                print(f"{card_id}: foil {foil.save(built, out, stem, card_id)}")
             if a.debug and v:
                 scan = tcg.scan(card_id)
                 mask, det = swsh.text_mask(scan)
@@ -105,6 +110,8 @@ def main(argv=None):
     pc.add_argument("--no-attacks", action="store_true")
     pc.add_argument("--out", default="out")
     pc.add_argument("--debug", action="store_true", help="also write the art mask overlay and a JSON report")
+    pc.add_argument("--foil", action="store_true", help="also write TCG Live holofoil textures (needs --tcglive): "
+                                                         "1024x1024 front, white plates, <card>-foil.json")
     pc.set_defaults(func=cmd_card)
     pg = sub.add_parser("gui", help="open the editor in your browser (served on 127.0.0.1)")
     pg.add_argument("--fonts")

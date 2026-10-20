@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from . import layers
+
 
 def hsv(rgb):
     """-> hue (degrees), saturation, value (0..1)."""
@@ -80,6 +82,7 @@ def put_sprite(canvas, sprite, cx, cy, scale=1.0, snap=False):
     a = alpha[cy0 - y0:cy0 - y0 + region.shape[0], cx0 - x0:cx0 - x0 + region.shape[1], None]
     src = crop[cy0 - y0:cy0 - y0 + region.shape[0], cx0 - x0:cx0 - x0 + region.shape[1]]
     region[..., :3] = region[..., :3] * (1 - a) + src * a
+    layers.record(a[..., 0], cx0, cy0)
 
 
 def save_rgba(arr, path):

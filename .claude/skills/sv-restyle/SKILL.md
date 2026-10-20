@@ -50,6 +50,10 @@ headless session). The same edits go through `svrestyle.edit.apply` if you scrip
 `mecompose.compose_card(id, card=edit.apply(mecompose.read_card(id), edits))` (Mega Evolution).
 
 ## 4. Check before handing over
+Holofoil: add `--foil` (needs the TCG Live extract) for `<card>-front.png`, `<card>-wp.png`, `<card>-wp-ph.png` and
+`<card>-foil.json` (see README "Holofoil"). Check the plates next to the front: black where the HP, icons, Ability
+badge and footer are, the Pokemon black inside the art.
+
 Open the PNG and zoom (2-3x) on: the name bar, the text block, the weakness row and the area right under the
 name bar. Things to look for, and what to do:
 - Leftover old text or icon ghosts in the art: rerun with `--debug`; the mask overlay shows what was missed

@@ -36,6 +36,17 @@ from it too. TCGdex ids map to TCG Live ids by rule (`swsh6-99` -> `swsh6_99`, `
 `tcg.TCGLIVE_SETS` (`sma-SV33` -> `sm11-5_102`, `swshp-SWSH055` -> `swshbsp_55`). A card the extract lacks falls back
 to pokemontcg.io with a warning. Everything built from these scans is cached under `<cache>/tcglive/`.
 
+### Holofoil (`--foil`)
+
+With a TCG Live extract, `card ... --foil` also writes the card's holofoil the way TCG Live draws it: a 1024x1024
+`<card>-front.png` (the card plus bleed, the game's texture layout), white plates `<card>-wp.png` (base printing)
+and `<card>-wp-ph.png` (reverse holo), and `<card>-foil.json` naming the shader, material and pattern for each
+(`foil.py`). The foil is the new era's: ex cards get Scarlet & Violet ex foil (SunPillar, TEX_SouthernCross); Mega
+Evolution cards get SvHolo on the art window if the old card's base printing was foil, and a FlatSilver reverse holo
+if it had one. Plates start from the game's own: the old card's plate for the art (the Pokemon stays out of the
+foil), Absol ex's or me1 Abra's / Meganium's for the frame; the composers record every stamp and sprite by kind
+(`layers.py`), so the HP, icons, badges and footer drawn on the card are cut out of the plate exactly.
+
 ### Editor (GUI)
 
 ```sh

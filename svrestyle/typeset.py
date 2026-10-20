@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from . import layers
 from .imaging import grow
 
 W, H = 733, 1024
@@ -83,7 +84,9 @@ def stamp(canvas, cov, fill, edge=None):
         color, radius, opacity = edge
         e = grow(cov, radius) * opacity
         canvas[..., :3] = canvas[..., :3] * (1 - e[..., None]) + np.asarray(color, np.float32) * e[..., None]
+        layers.record(e)
     canvas[..., :3] = canvas[..., :3] * (1 - cov[..., None]) + np.asarray(fill, np.float32) * cov[..., None]
+    layers.record(cov)
 
 
 def rounded_box(x0, y0, x1, y1, r):

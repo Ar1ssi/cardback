@@ -12,7 +12,7 @@ import warnings
 import cv2
 import numpy as np
 
-from . import cache, compose, frame, inpaint, meframe, tcg
+from . import cache, compose, frame, inpaint, layers, meframe, tcg
 from . import typeset as ts
 from .imaging import dilate, fill_holes, hsv, load_rgba, luminance, save_rgba
 
@@ -183,6 +183,8 @@ def put_portrait(canvas, card):
     a = (alpha * disc)[..., None]
     region = canvas[y0:y0 + h, x0:x0 + w, :3]
     region[:] = region * (1 - a) + rgb * a
+    with layers.kind("stage"):
+        layers.record(a[..., 0], x0, y0)
 
 
 # ---------------------------------------------------------------- abilities and attacks
@@ -291,6 +293,8 @@ def compose_card(card_id, attacks=True, card=None):
         sprite = meframe.stage_sprite(card["stage"])
         a = sprite[..., 3:4] / 255
         canvas[..., :3] = canvas[..., :3] * (1 - a) + sprite[..., :3] * a
+        with layers.kind("stage"):
+            layers.record(a[..., 0])
         if card["old_stage"]:
             put_portrait(canvas, card)
 

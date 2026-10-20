@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import cache, frame, meframe, refs, swsh, tcg
+from . import cache, frame, layers, meframe, refs, swsh, tcg
 from . import typeset as ts
 from .imaging import load_rgba, luminance, put_sprite, save_rgba
 
@@ -127,18 +127,22 @@ def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LI
         warnings.warn(f"name {card['prefix']} {card['name']!r} squeezed to {xscale:.2f} width to fit the bar")
     x_big = NAME_X + ts.text_width(card["prefix"], ts.BOLD, small, xscale) + gap
     name_right = x_big + ts.text_width(card["name"], ts.BOLD, NAME_SIZE, xscale)
-    ts.stamp(canvas, ts.coverage([
-        dict(text=card["prefix"], face=ts.BOLD, size=small, x=NAME_X, base=NAME_BASE, xscale=xscale),
-        dict(text=card["name"], face=ts.BOLD, size=NAME_SIZE, x=x_big, base=NAME_BASE, xscale=xscale),
-    ]), ink, edge)
+    with layers.kind("name"):
+        ts.stamp(canvas, ts.coverage([
+            dict(text=card["prefix"], face=ts.BOLD, size=small, x=NAME_X, base=NAME_BASE, xscale=xscale),
+            dict(text=card["name"], face=ts.BOLD, size=NAME_SIZE, x=x_big, base=NAME_BASE, xscale=xscale),
+        ]), ink, edge)
     if ex:
         ox, oy = logo[4]
-        put_sprite(canvas, logo, ox + name_right + EX_LOGO_GAP - logo_left, oy)   # same height as on Absol
+        with layers.kind("logo"):
+            put_sprite(canvas, logo, ox + name_right + EX_LOGO_GAP - logo_left, oy)   # same height as on Absol
     hp_w = ts.text_width(card["hp"], ts.COND_BOLD, HP_SIZE, HP_XSCALE)
-    ts.stamp(canvas, ts.coverage([
-        dict(text=card["hp"], face=ts.COND_BOLD, size=HP_SIZE, x=HP_RIGHT, base=HP_BASE, xscale=HP_XSCALE, anchor="r"),
-        dict(text="HP", face=ts.COND_BOLD, size=19.4, x=HP_RIGHT - hp_w - 4, base=84, anchor="r"),
-    ]), ink, edge)
+    with layers.kind("hp"):
+        ts.stamp(canvas, ts.coverage([
+            dict(text=card["hp"], face=ts.COND_BOLD, size=HP_SIZE, x=HP_RIGHT, base=HP_BASE, xscale=HP_XSCALE,
+                 anchor="r"),
+            dict(text="HP", face=ts.COND_BOLD, size=19.4, x=HP_RIGHT - hp_w - 4, base=84, anchor="r"),
+        ]), ink, edge)
     return xscale
 
 
@@ -152,7 +156,8 @@ def name_icon(canvas, type_name):
     bar = np.median(canvas[ring, :3], axis=0)
     a = np.clip(NAME_ICON_CLEAR + 0.5 - d, 0, 1)[..., None]
     canvas[..., :3] = canvas[..., :3] * (1 - a) + bar * a
-    energy(type_name, cx, cy, NAME_ICON_R, canvas, kind="name")
+    with layers.kind("type_icon"):
+        energy(type_name, cx, cy, NAME_ICON_R, canvas, kind="name")
 
 
 def energy(type_name, cx, cy, r, canvas, kind="cost"):
@@ -200,7 +205,8 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
     for (kind, b, lines), top in zip(laid, tops):
         if kind == "ability":
             badge, (bw, bh) = frame.ability_badge()
-            put_sprite(canvas, badge, BADGE_X, top - 5)     # Chien-Pao: badge rim top 551, name cap top 556
+            with layers.kind("badge"):
+                put_sprite(canvas, badge, BADGE_X, top - 5)     # Chien-Pao: badge rim top 551, name cap top 556
             red_items.append(dict(text=b["name"], face=ATK_FACE, size=ABILITY_SIZE, x=ABILITY_X,
                                   base=top + ts.cap_height(ATK_FACE, ABILITY_SIZE), xscale=ABILITY_XSCALE))
         else:
@@ -222,11 +228,14 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
         body_top = top + name_to_body
         for i, (runs, tracking) in enumerate(lines):
             items += ts.line_items(runs, tracking, size, BODY_X, body_top + i * pitch + body_cap)
-    ts.stamp(canvas, ts.coverage(items), fill, edge)
+    with layers.kind("text"):
+        ts.stamp(canvas, ts.coverage(items), fill, edge)
     if red_items:
-        ts.stamp(canvas, ts.coverage(red_items), ABILITY_RED, red_edge or (LIGHT_KEYLINE if edge else None))
-    for t, cx, cy in icons:
-        energy(t, cx, cy, cost_r, canvas)
+        with layers.kind("ability_name"):
+            ts.stamp(canvas, ts.coverage(red_items), ABILITY_RED, red_edge or (LIGHT_KEYLINE if edge else None))
+    with layers.kind("icon"):
+        for t, cx, cy in icons:
+            energy(t, cx, cy, cost_r, canvas)
     return size / BODY_SIZE
 
 
@@ -245,13 +254,15 @@ def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS):
     if card["resistance"]:
         value = card["resistance"].get("value", "-30").replace("-", "−")
         items.append(dict(text=value, face=ts.COND_BOLD, size=31.5, x=339, base=908))
-    ts.stamp(canvas, ts.coverage(items), fill, edge)
-    for side in ("weakness", "resistance"):
-        if card[side]:
-            energy(card[side]["type"], *icons[side], canvas)
-    x0, y, r, pitch = icons["retreat"]
-    for i in range(card["retreat"]):
-        energy("Colorless", x0 + pitch * i, y, r, canvas)
+    with layers.kind("row_text"):
+        ts.stamp(canvas, ts.coverage(items), fill, edge)
+    with layers.kind("icon"):
+        for side in ("weakness", "resistance"):
+            if card[side]:
+                energy(card[side]["type"], *icons[side], canvas)
+        x0, y, r, pitch = icons["retreat"]
+        for i in range(card["retreat"]):
+            energy("Colorless", x0 + pitch * i, y, r, canvas)
 
 
 def rarity_mark(symbol, x, y=980.5):
@@ -270,6 +281,11 @@ def rarity_mark(symbol, x, y=980.5):
 
 
 def footer(canvas, card, white_text, rarity="double"):
+    with layers.kind("footer"):
+        _footer(canvas, card, white_text, rarity)
+
+
+def _footer(canvas, card, white_text, rarity):
     ink, keyline = (WHITE, DARK_KEYLINE) if white_text else (np.array(frame.DARK_INK, np.float32), LIGHT_KEYLINE)
     dark = np.array([38, 33, 38], np.float32)
     ts.stamp(canvas, ts.coverage([dict(text=f"Illus. {card['illustrator']}", face=ts.BOLD_ITALIC, size=15.5, x=46,
@@ -319,6 +335,8 @@ def compose(card_id, opts, card=None):
     bar = frame.name_bar(card["type"])
     ba = bar[..., 3:4] / 255
     canvas[..., :3] = canvas[..., :3] * (1 - ba) + bar[..., :3] * ba
+    with layers.kind("frame"):
+        layers.record(np.maximum(fa, ba)[..., 0])
     canvas[..., 3] = tcg.scan(refs.ABSOL.card_id, refs.ABSOL.sha)[..., 3]     # rounded corners
     name_icon(canvas, card["type"])
 
