@@ -46,6 +46,9 @@ STAGE_CUT = ("stage", "stage_text", "portrait", "evolves")
 EX_CUT = ("hp", "type_icon", "icon", "row_icon", "badge", "ability_name", "text", "row_text", "footer",
           "stage_text", "portrait", "evolves")
 ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer") + STAGE_CUT
+# Edits whose plates stay as printed on cards edited in place, and the kinds those edits draw.
+PLATE_KEPT = ("moves", "row")
+PLATE_KEPT_KINDS = ("text", "icon", "badge", "ability_name", "row_icon", "row_text")
 EX_STAGE_REF = "sv03.5-065"   # Alakazam ex (Stage 2): its plate gives the SV ex Stage pieces' foil value
 ME_REVERSE_REFS = {"basic": "me01-054", "stage": "me01-010"}   # Abra, Meganium: their reverse plates
 FILL_GROW = 4      # px around a reference card's own marks that are filled in when its plate becomes a template
@@ -345,13 +348,21 @@ def modern_front(card_id, canvas):
     return out
 
 
-def build_modern(card_id, card, canvas, drawn, taken_off, original):
-    """Foil of a Scarlet & Violet / Mega Evolution card edited in place (modern.compose_card): its own printings,
-    each plate with what was taken off filled in and what was set cut out (ex: everything printed, as on SV ex
-    plates; reverse holo: what Mega Evolution reverse plates leave out). Same shape as build()."""
+def build_modern(card_id, card, canvas, drawn, original):
+    """Foil of a Scarlet & Violet / Mega Evolution card edited in place (modern.compose_card): its own printings.
+    Edits to the name or the Stage pieces re-make their part of each plate: what was taken off filled in, what was
+    set cut out (ex: everything printed, as on SV ex plates; reverse holo: what Mega Evolution reverse plates leave
+    out). Abilities, attacks and the weakness row keep the plates as printed (PLATE_KEPT): there the plate is the
+    card's own foil pattern, which a fill would smear (full-art ex: the text zone is art). Same shape as build()."""
     from . import modern
     alpha = canvas[..., 3]
     old = printings(card_id)
+    groups = tuple(g for g in modern.changed(original, card) if g not in PLATE_KEPT)
+    taken_off = None
+    if groups:
+        mask, row = modern.taken_off(card_id, original, groups, card)
+        taken_off = mask | row
+    drawn = {k: v for k, v in drawn.items() if k not in PLATE_KEPT_KINDS}
     out = {"front": modern_front(card_id, canvas), "base": None, "reverse": None}
     for key in ("base", "reverse"):
         record = old[key]

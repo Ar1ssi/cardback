@@ -84,5 +84,21 @@ class Plates(unittest.TestCase):
         self.assertEqual(out[97, 305], 255)
 
 
+class InPlace(unittest.TestCase):
+    def test_moves_and_weakness_row_keep_the_printed_plate(self):
+        from unittest import mock
+        card = {"id": "me02-013", "family": "ex", "type": "Fire", "prefix": "", "name": "Mega Charizard X", "hp": "250",
+                "stage": 2, "evolves_from": "Charmeleon", "portrait": "", "abilities": [], "retreat": 2,
+                "attacks": [{"cost": ["Fire"], "name": "Inferno X", "damage": "90×", "effect": ""}],
+                "weakness": {"type": "Water", "value": "×2"}, "resistance": None}
+        edited = dict(card, retreat=1, attacks=[dict(card["attacks"][0], damage="100×")])
+        printed = np.full((H, W), 180, np.float32)
+        drawn = {k: np.ones((H, W), np.float32) for k in ("text", "icon", "row_icon", "row_text")}
+        canvas = np.full((H, W, 4), 255, np.float32)
+        with mock.patch.object(foil, "printings", return_value={"base": {"_f": "SvUltra", "_s": "x"}, "reverse": None}),                 mock.patch.object(foil, "plate", return_value=printed),                 mock.patch.object(foil, "modern_front", return_value=None),                 mock.patch.object(foil, "texture", return_value=None):
+            out = foil.build_modern("me02-013", edited, canvas, drawn, card)
+        np.testing.assert_array_equal(foil.card_space(out["base"][1]), printed)
+
+
 if __name__ == "__main__":
     unittest.main()

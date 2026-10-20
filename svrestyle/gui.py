@@ -125,7 +125,7 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
         warnings.simplefilter("always")
         if layout == "modern":
             img, report = modern.compose_card(card_id, card, original)
-            built = foil.build_modern(card_id, card, img, drawn, report["taken_off"], original) if holo else None
+            built = foil.build_modern(card_id, card, img, drawn, original) if holo else None
         else:
             if layout == "ex":
                 img, _ = compose.compose(card_id, compose.Options(style=style, attacks=bool(attacks)), card=card)
