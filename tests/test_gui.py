@@ -143,16 +143,20 @@ class Http(unittest.TestCase):
     def test_render_and_zip(self):
         gui._renders.clear()
         fake = gui.Render(b"\x89PNG fake", ["a warning"], "me")
-        with mock.patch.object(gui, "render", return_value=fake) as r:
+        with mock.patch.object(gui, "render", return_value=fake) as r, \
+                mock.patch.object(gui, "card_changes", return_value=("Tyranitar", ["Retreat: 4 → 2"])):
             status, _, body = self.call("/api/render", {"id": "swsh3-88", "edits": {"retreat": 2}})
             self.assertEqual(status, 200)
             data = json.loads(body)
             self.assertEqual((data["layout"], data["warnings"]), ("me", ["a warning"]))
+            self.assertEqual(data["changes"], ["Retreat: 4 → 2"])
             self.assertNotIn("foil", data)
             r.assert_called_once_with("swsh3-88", {"retreat": 2}, "hybrid", True, False)
             status, ctype, body = self.call("/api/zip", {"items": [{"id": "swsh3-88"}, {"id": "sm10-19"}]})
         self.assertEqual((status, ctype), (200, "application/zip"))
-        self.assertEqual(zipfile.ZipFile(io.BytesIO(body)).namelist(), ["swsh3-88-me.png", "sm10-19-me.png"])
+        z = zipfile.ZipFile(io.BytesIO(body))
+        self.assertEqual(z.namelist(), ["swsh3-88-me.png", "sm10-19-me.png", "CHANGELOG.md"])
+        self.assertIn("- Retreat: 4 → 2", z.read("CHANGELOG.md").decode())
 
     def test_render_and_zip_with_holofoil(self):
         gui._renders.clear()
@@ -160,14 +164,15 @@ class Http(unittest.TestCase):
                                             "material": "MAT_Cards3D_FlatSilver"}}
         files = {"swsh3-51-me-front.png": b"f", "swsh3-51-me-wp-ph.png": b"p", "swsh3-51-me-foil.json": b"{}"}
         fake = gui.Render(b"\x89PNG fake", [], "me", (record, files, {"reverse": b"plate"}))
-        with mock.patch.object(gui, "render", return_value=fake) as r:
+        with mock.patch.object(gui, "render", return_value=fake) as r, \
+                mock.patch.object(gui, "card_changes", return_value=("Kingler", [])):
             status, _, body = self.call("/api/render", {"id": "swsh3-51", "foil": True})
             data = json.loads(body)
             self.assertIsNone(data["foil"]["base"])
             self.assertEqual(data["foil"]["reverse"]["shader"], "FlatSilver")
             r.assert_called_once_with("swsh3-51", None, "hybrid", True, True)
             status, _, body = self.call("/api/zip", {"items": [{"id": "swsh3-51", "foil": True}]})
-        self.assertEqual(zipfile.ZipFile(io.BytesIO(body)).namelist(), ["swsh3-51-me.png", *files])
+        self.assertEqual(zipfile.ZipFile(io.BytesIO(body)).namelist(), ["swsh3-51-me.png", *files, "CHANGELOG.md"])
 
     def test_edit_errors_come_back_as_400(self):
         with mock.patch.object(gui, "read", return_value=("me", card())):
@@ -221,3 +226,43 @@ class Projects(unittest.TestCase):
     def test_names_stay_inside_the_folder(self):
         self.assertEqual(gui.project_file("Base Set, 1999").parent, gui.projects_dir())
         self.assertEqual(gui.project_file("Base Set, 1999").name, "base-set-1999.json")
+
+
+class Changes(unittest.TestCase):
+    def test_nothing_changed(self):
+        c = card()
+        self.assertEqual(edit.changes(c, edit.apply(c, edit.editable(c))), [])
+
+    def test_each_kind(self):
+        before = card(stage=2, attacks=[{"cost": ["Fighting"], "name": "Bedrock Breaker", "damage": "120", "effect": ""},
+                                        {"cost": [], "name": "Roar", "damage": "", "effect": "Switch."}])
+        after = edit.apply(before, {
+            "name": "Tyranitar", "hp": "190", "stage": 1, "evolves_from": "Larvitar", "portrait": "sv09-080",
+            "attacks": [{"cost": ["Fighting", "Fighting"], "name": "Bedrock Breaker", "damage": "150", "effect": ""},
+                        {"cost": ["Colorless"], "name": "Smash", "damage": "30", "effect": ""}],
+            "abilities": [{"name": "Sand Stream", "effect": "Each turn, hurt."}],
+            "weakness": {"type": "Fire", "value": "×2"}, "resistance": {"type": "Psychic", "value": "-30"}, "retreat": 3})
+        self.assertEqual(edit.changes(before, after), [
+            "HP: 180 → 190", "Stage: Stage 2 → Stage 1", "Evolves from: Pupitar → Larvitar", "Portrait: from sv09-080",
+            "Ability added: Sand Stream: “Each turn, hurt.”",
+            "Attack Bedrock Breaker: cost: {F} → {F}{F}; damage: 120 → 150",
+            "Attack Roar: name: Roar → Smash; cost: no cost → {C}; damage: none → 30; text: “Switch.” → none",
+            "Weakness: Grass ×2 → Fire ×2", "Resistance: none → Psychic -30", "Retreat: 4 → 3"])
+
+    def test_added_removed_reordered(self):
+        a1 = {"cost": [], "name": "A", "damage": "10", "effect": ""}
+        a2 = {"cost": [], "name": "B", "damage": "20", "effect": ""}
+        before = card(attacks=[a1, a2])
+        self.assertEqual(edit.changes(before, edit.apply(before, {"attacks": [a2, a1]})), ["Attack order: B, A"])
+        self.assertEqual(edit.changes(before, edit.apply(before, {"attacks": [a1]})), ["Attack removed: no cost B 20"])
+
+    def test_changelog_lists_changed_then_unchanged(self):
+        answers = {"swsh3-88": ("Tyranitar", ["Restyled as a Mega Evolution card", "HP: 180 → 190"]),
+                   "sv09-080": ("Larvitar", [])}
+        with mock.patch.object(gui, "card_changes", side_effect=lambda i, *a: answers[i]):
+            text = gui.changelog([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "sv09-080"}], "My set")
+        self.assertTrue(text.startswith("# My set: changelog"))
+        self.assertIn("## Tyranitar (swsh3-88)\n\n- Restyled as a Mega Evolution card\n- HP: 180 → 190", text)
+        self.assertIn("## Unchanged\n\n- Larvitar (sv09-080)", text)
+        with self.assertRaises(gui.UserError):
+            gui.changelog([])

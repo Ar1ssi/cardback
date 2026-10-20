@@ -9,12 +9,16 @@ API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
   GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available
   GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern", name, card: editable fields}
-  POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout,
+  POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout, changes,
                               foil?: {base, reverse: {png: base64 white plate (card size), shader, material} | null}}
+                              changes: what differs from the printed card, one line each (edit.changes)
+  GET  /api/original/ID.png   the printed card (the scan the render starts from), for comparing
   GET  /api/icon/TYPE.png     the energy icon used on cards (PNG)
   POST /api/set               a ptcg-sim custom-set export -> {cards: [{id, name, layout | skip}]}
-  POST /api/zip               {items: [{id, edits?, style?, attacks?, foil?}]} -> application/zip (with foil also
-                              the 1024x1024 front, the white plates and <card>-foil.json, see foil.files)
+  POST /api/zip               {items: [{id, edits?, style?, attacks?, foil?}], title?} -> application/zip (with foil
+                              also the 1024x1024 front, the white plates and <card>-foil.json, see foil.files), and
+                              CHANGELOG.md
+  POST /api/changelog         {items, title?} -> text/markdown: every card's changes from its printed card
   GET  /api/projects          {projects: [{name, saved, cards}]}, newest first
   GET  /api/projects?name=N   {name, saved, data}: a saved project (the page's card list, edits and options)
   POST /api/projects          {name, data} -> {name, saved}: save (overwrites a project of that name)
@@ -141,6 +145,51 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
     return result
 
 
+LAYOUT_NOTES = {"ex": "Restyled as a Scarlet & Violet ex card", "me": "Restyled as a Mega Evolution card"}
+
+
+def card_changes(card_id, edits=None, style="hybrid", attacks=True):
+    """-> (printed name, [what differs from the printed card]): the restyle itself, then edit.changes."""
+    layout, original = read(card_id)
+    card = edit.apply(original, edits) if edits else original
+    notes = []
+    if layout in LAYOUT_NOTES:
+        notes.append(LAYOUT_NOTES[layout] + (" (translucent type panel)" if layout == "ex" and style == "panel" else ""))
+        if not attacks:
+            notes.append("Abilities and attacks left off")
+    return tcg.card(card_id).get("name", card_id), notes + edit.changes(original, card)
+
+
+def changelog(items, title=""):
+    """Markdown: per card what was changed; cards left as printed listed together at the end."""
+    if not isinstance(items, list) or not items:
+        raise UserError("items: a non-empty list")
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines, unchanged = [f"# {title.strip() if isinstance(title, str) and title.strip() else 'Cards'}: changelog", "",
+                        f"Changes from each printed card, {stamp}.", ""], []
+    for it in items:
+        if not isinstance(it, dict):
+            raise UserError("items: expected objects")
+        name, changed = card_changes(it.get("id"), it.get("edits"), it.get("style", "hybrid"), it.get("attacks", True))
+        if changed:
+            lines += [f"## {name} ({it['id']})", "", *[f"- {c}" for c in changed], ""]
+        else:
+            unchanged.append(f"{name} ({it['id']})")
+    if unchanged:
+        lines += ["## Unchanged", "", *[f"- {u}" for u in unchanged], ""]
+    return "\n".join(lines)
+
+
+def original_png(card_id):
+    if not edit.valid_card_id(card_id):
+        raise UserError(f"{card_id!r} is not a TCGdex card id")
+    with _render_lock:                   # the first scan of a card is written to the cache
+        try:
+            return _png(tcg.scan(card_id), "RGBA")
+        except (ValueError, cache.DownloadError) as e:
+            raise UserError(str(e)) from e
+
+
 def holo_json(made):
     """The foil part of /api/render's answer: per printing its plate (base64 PNG) and shader, or null."""
     record, _, plates = made
@@ -179,7 +228,7 @@ def import_set(data):
     return {"name": data.get("name", ""), "cards": out}
 
 
-def zip_renders(items):
+def zip_renders(items, title=""):
     if not isinstance(items, list) or not items:
         raise UserError("items: a non-empty list")
     if len(items) > MAX_ZIP_ITEMS:
@@ -194,6 +243,7 @@ def zip_renders(items):
             z.writestr(f"{it['id']}-{layout}.png", png)
             for name, data in (made[1].items() if made else ()):
                 z.writestr(name, data)
+        z.writestr("CHANGELOG.md", changelog(items, title))
     return buf.getvalue()
 
 
@@ -311,6 +361,8 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/projects":
                 name = (parse_qs(url.query).get("name") or [None])[0]
                 self._json(load_project(name) if name is not None else list_projects())
+            elif url.path.startswith("/api/original/") and url.path.endswith(".png"):
+                self._send(HTTPStatus.OK, original_png(url.path[len("/api/original/"):-4]), "image/png")
             elif url.path.startswith("/api/icon/") and url.path.endswith(".png"):
                 self._send(HTTPStatus.OK, icon_png(url.path[len("/api/icon/"):-4]), "image/png")
             else:
@@ -325,14 +377,19 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/render":
                 png, notes, layout, made = render(body.get("id"), body.get("edits"), body.get("style", "hybrid"),
                                                   body.get("attacks", True), bool(body.get("foil")))
-                out = {"png": base64.b64encode(png).decode(), "warnings": notes, "layout": layout}
+                out = {"png": base64.b64encode(png).decode(), "warnings": notes, "layout": layout,
+                       "changes": card_changes(body.get("id"), body.get("edits"), body.get("style", "hybrid"),
+                                               body.get("attacks", True))[1]}
                 if made:
                     out["foil"] = holo_json(made)
                 self._json(out)
             elif url.path == "/api/set":
                 self._json(import_set(body))
             elif url.path == "/api/zip":
-                self._send(HTTPStatus.OK, zip_renders(body.get("items")), "application/zip")
+                self._send(HTTPStatus.OK, zip_renders(body.get("items"), body.get("title", "")), "application/zip")
+            elif url.path == "/api/changelog":
+                self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
+                           "text/markdown; charset=utf-8")
             elif url.path == "/api/projects":
                 self._json(save_project(body.get("name"), body.get("data")))
             elif url.path == "/api/projects/delete":

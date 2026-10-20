@@ -148,3 +148,100 @@ def apply(card, edits):
     if out.get("stage") and not out.get("evolves_from"):
         raise ValueError("evolves from: a Stage 1 or Stage 2 card names what it evolves from")
     return out
+
+
+# ---------------------------------------------------------------- what changed
+STAGE_NAMES = ("Basic", "Stage 1", "Stage 2")
+LETTER = {"Grass": "G", "Fire": "R", "Water": "W", "Lightning": "L", "Psychic": "P", "Fighting": "F",
+          "Darkness": "D", "Metal": "M", "Dragon": "N", "Colorless": "C"}     # as typed in effect text
+
+
+def _cost(cost):
+    return "".join(f"{{{LETTER.get(t, '?')}}}" for t in cost) or "no cost"
+
+
+def _quote(text):
+    return f"“{text}”" if text else "none"
+
+
+def _was(field, old, new):
+    return f"{field}: {old} → {new}"
+
+
+def _ability_diff(old, new):
+    out = [_was("name", old["name"], new["name"])] if old["name"] != new["name"] else []
+    if old["effect"] != new["effect"]:
+        out.append(_was("text", _quote(old["effect"]), _quote(new["effect"])))
+    return out
+
+
+def _attack_diff(old, new):
+    out = [_was("name", old["name"], new["name"])] if old["name"] != new["name"] else []
+    if old["cost"] != new["cost"]:
+        out.append(_was("cost", _cost(old["cost"]), _cost(new["cost"])))
+    if old["damage"] != new["damage"]:
+        out.append(_was("damage", old["damage"] or "none", new["damage"] or "none"))
+    if old["effect"] != new["effect"]:
+        out.append(_was("text", _quote(old["effect"]), _quote(new["effect"])))
+    return out
+
+
+def _attack_line(a):
+    damage = f" {a['damage']}" if a["damage"] else ""
+    return f"{_cost(a['cost'])} {a['name']}{damage}" + (f": {_quote(a['effect'])}" if a["effect"] else "")
+
+
+def _blocks(kind, old, new, diff, line):
+    """Abilities or attacks: paired by name, then what is left by position (a rename); the rest added or removed."""
+    key = lambda b: b["name"].casefold()
+    left, right, pairs = list(range(len(old))), list(range(len(new))), []
+    for j in list(right):
+        i = next((i for i in left if key(old[i]) == key(new[j])), None)
+        if i is not None:
+            pairs.append((i, j))
+            left.remove(i)
+            right.remove(j)
+    while left and right:
+        pairs.append((left.pop(0), right.pop(0)))
+    pairs.sort(key=lambda p: p[1])
+    out = []
+    for i, j in pairs:
+        d = diff(old[i], new[j])
+        if d:
+            out.append(f"{kind} {old[i]['name']}: " + "; ".join(d))
+    out += [f"{kind} removed: {line(old[i])}" for i in left]
+    out += [f"{kind} added: {line(new[j])}" for j in right]
+    order = [i for i, _ in pairs]
+    if order != sorted(order):
+        out.append(f"{kind} order: " + ", ".join(new[j]["name"] for _, j in pairs))
+    return out
+
+
+def changes(before, after):
+    """What differs between two card dicts, one line per change, in the order the card prints it."""
+    a, b = editable(before), editable(after)
+    out = []
+    name = lambda c: f"{c.get('prefix', '')} {c.get('name', '')}".strip()
+    if name(a) != name(b):
+        out.append(_was("Name", name(a), name(b)))
+    if a.get("hp") != b.get("hp"):
+        out.append(_was("HP", a.get("hp"), b.get("hp")))
+    if a.get("stage", 0) != b.get("stage", 0):
+        out.append(_was("Stage", STAGE_NAMES[a.get("stage", 0)], STAGE_NAMES[b.get("stage", 0)]))
+    if b.get("stage") and a.get("evolves_from") != b.get("evolves_from"):
+        out.append(_was("Evolves from", a.get("evolves_from") or "none", b.get("evolves_from")))
+    if b.get("stage") and a.get("portrait") != b.get("portrait"):
+        out.append(f"Portrait: from {b['portrait']}" if b.get("portrait") else "Portrait: found by name")
+    out += _blocks("Ability", a["abilities"], b["abilities"], _ability_diff, lambda x: f"{x['name']}: {_quote(x['effect'])}")
+    out += _blocks("Attack", a["attacks"], b["attacks"], _attack_diff, _attack_line)
+    for side in ("weakness", "resistance"):
+        old, new = a.get(side), b.get(side)
+        if old != new:
+            show = lambda v: f"{v['type']} {v['value']}" if v else "none"
+            out.append(_was(side.capitalize(), show(old), show(new)))
+    if a["retreat"] != b["retreat"]:
+        out.append(_was("Retreat", a["retreat"], b["retreat"]))
+    for key, label in (("illustrator", "Illustrator"), ("flavor", "Flavour text")):
+        if a.get(key) != b.get(key):
+            out.append(_was(label, _quote(a.get(key)), _quote(b.get(key))))
+    return out

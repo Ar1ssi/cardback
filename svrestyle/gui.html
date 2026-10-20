@@ -71,6 +71,18 @@
   .foil-info { font-size: 12px; color: var(--muted); margin-top: 6px; }
   .project { display: flex; gap: 6px; align-items: center; margin-left: auto; }
   .project select { width: auto; max-width: 220px; }
+  .viewbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; max-width: 560px; margin: 0 auto 8px; }
+  .viewbar label { display: flex; gap: 6px; align-items: center; margin: 0; }
+  .viewbar select { width: auto; }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 900px; margin: 0 auto; }
+  .compare.single { grid-template-columns: 1fr; max-width: 560px; }
+  .compare figure { margin: 0; }
+  .compare img { width: 100%; display: block; border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+  .compare figcaption { text-align: center; color: var(--muted); font-size: 12px; margin-top: 4px; }
+  #changesBox { max-width: 560px; margin: 12px auto 0; }
+  #changes { margin: 0; padding-left: 18px; }
+  #changes li { margin: 2px 0; }
+  .changed-count { color: var(--accent); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -96,7 +108,7 @@
   <div>
     <section id="setPanel" hidden>
       <h2><span id="setName">Cards</span>
-        <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
+        <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="changelogBtn" class="small" title="Every card's changes from its printed card, as Markdown">Changelog (.md)</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
       <div id="setList" class="setlist"></div>
       <p class="hint">Every card you load joins this list. Save the project (top right) to keep the list and your edits: it saves itself again after every change, and opens on its own next time.</p>
       <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
@@ -189,12 +201,26 @@
   <div class="preview">
     <div id="errors"></div>
     <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards. Scarlet &amp; Violet and Mega Evolution cards are edited in place.</div>
+    <div id="viewbar" class="viewbar" hidden>
+      <label for="viewSel">View <select id="viewSel">
+        <option value="edited">Edited</option><option value="printed">Printed card</option><option value="side">Side by side</option>
+      </select></label>
+      <span id="changeCount" class="badge"></span>
+    </div>
     <div id="stage" class="stage" hidden>
       <img id="preview" alt="Rendered card">
       <canvas id="foilCanvas" width="733" height="1024" aria-hidden="true" hidden></canvas>
       <img id="plateView" class="plate" alt="Holofoil white plate" hidden>
     </div>
+    <div id="compare" class="compare" hidden>
+      <figure><img id="printedImg" alt="Printed card"><figcaption>Printed</figcaption></figure>
+      <figure id="editedFig"><img id="editedImg" alt="Edited card"><figcaption>Edited</figcaption></figure>
+    </div>
     <div id="warnings"></div>
+    <section id="changesBox" hidden>
+      <h2><span>Changes from the printed card</span></h2>
+      <ul id="changes"></ul>
+    </section>
   </div>
 </main>
 
@@ -214,6 +240,8 @@ const state = {
   foilInfo: null,         // /api/render's foil answer for the card shown
   light: { x: 0.5, y: 0.35, pointer: false },
   raf: 0,
+  changes: {},            // id -> [what differs from the printed card], from the last render
+  rendered: new Set(),    // ids rendered since the page opened (✓ in the list)
   project: null,          // name of the saved project being worked on (autosaved), or null
   saveTimer: null,
 };
@@ -302,6 +330,7 @@ function fillForm() {
   $("style").value = state.options[id].style;
   $("showAttacks").value = state.options[id].attacks ? "1" : "0";
   drawBlocks();
+  drawChanges();
 }
 
 function drawStage() {
@@ -437,8 +466,10 @@ async function renderNow() {
     if (seq !== state.renderSeq) return;            // a newer render was asked for meanwhile
     state.lastPng = data.png;
     $("preview").src = `data:image/png;base64,${data.png}`;
-    $("stage").hidden = false; $("placeholder").hidden = true;
+    $("placeholder").hidden = true;
     $("downloadBtn").disabled = false;
+    state.changes[id] = data.changes || [];
+    drawChanges(); showView();
     $("downloadFoilBtn").disabled = !$("foilOn").checked;
     await setFoil(data.foil || null);
     showWarnings(data.warnings);
@@ -447,6 +478,39 @@ async function renderNow() {
   } catch (e) {
     if (seq === state.renderSeq) { status(""); showError(e.message); }
   } finally { if (seq === state.renderSeq) $("renderBtn").disabled = false; }
+}
+
+// ---------------------------------------------------------------- comparing
+function drawChanges() {
+  const list = state.current ? state.changes[state.current.id] : null;
+  $("changesBox").hidden = !list;
+  if (!list) return;
+  $("changes").replaceChildren(...(list.length ? list.map((c) => el("li", {}, c)) : [el("li", {}, "None: as printed.")]));
+  $("changeCount").textContent = list.length ? `${list.length} change${list.length === 1 ? "" : "s"}` : "as printed";
+}
+
+function showView() {
+  if (!state.current || !state.lastPng) return;
+  const view = $("viewSel").value;
+  $("viewbar").hidden = false;
+  $("stage").hidden = view !== "edited";
+  $("compare").hidden = view === "edited";
+  if (view === "edited") return;
+  const printed = `/api/original/${encodeURIComponent(state.current.id)}.png`;
+  if ($("printedImg").getAttribute("src") !== printed) $("printedImg").src = printed;
+  $("editedImg").src = $("preview").src;
+  $("editedFig").hidden = view === "printed";
+  $("compare").classList.toggle("single", view === "printed");
+}
+
+async function downloadChangelog() {
+  const items = state.setCards.filter((c) => !c.skip).map((c) => payload(c.id));
+  status("Writing the changelog…");
+  try {
+    const blob = await (await api("/api/changelog", { items, title: $("setName").textContent })).blob();
+    save(blob, `${($("setName").textContent || "cards").replace(/[^\w.-]+/g, "-")}-CHANGELOG.md`);
+    status("");
+  } catch (e) { status(""); showError(e.message); }
 }
 
 // ---------------------------------------------------------------- holofoil
@@ -637,8 +701,12 @@ function drawSet() {
       "data-id": c.id, class: c.skip ? "skip" : "", disabled: !!c.skip,
       onclick: () => loadCard(c.id) },
     el("span", {}, `${c.name} `, el("span", { class: "badge" }, c.id)),
-    el("span", { class: "badge" }, c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit" }[c.layout]))));
-  $("zipBtn").disabled = $("renderAllBtn").disabled = todo === 0;
+    el("span", {},
+      ...(state.changes[c.id] && state.changes[c.id].length ? [el("span", { class: "badge changed-count", title: state.changes[c.id].join("\n") },
+        `${state.changes[c.id].length} changed`), " "] : []),
+      el("span", { class: "badge" }, (c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit" }[c.layout])
+        + (state.rendered.has(c.id) ? " ✓" : ""))))));
+  $("zipBtn").disabled = $("renderAllBtn").disabled = $("changelogBtn").disabled = todo === 0;
   markActive();
 }
 
@@ -647,8 +715,8 @@ function markActive() {
     b.classList.toggle("active", !!state.current && b.dataset.id === state.current.id));
 }
 function markRendered(id) {
-  const b = document.querySelector(`#setList button[data-id="${CSS.escape(id)}"] .badge:last-child`);
-  if (b && !b.textContent.endsWith("✓")) b.textContent += " ✓";
+  state.rendered.add(id);
+  drawSet();
 }
 
 async function renderAll() {
@@ -657,7 +725,8 @@ async function renderAll() {
   try {
     for (const [i, c] of todo.entries()) {
       status(`Rendering ${i + 1}/${todo.length}: ${c.name}…`);
-      await api("/api/render", payload(c.id));
+      const data = await (await api("/api/render", payload(c.id))).json();
+      state.changes[c.id] = data.changes || [];
       markRendered(c.id);
     }
     status(`Rendered ${todo.length} cards.`);
@@ -670,7 +739,7 @@ async function downloadZip() {
   status(`Building zip of ${items.length} cards (renders any not done yet)…`);
   $("zipBtn").disabled = true;
   try {
-    const blob = await (await api("/api/zip", { items })).blob();
+    const blob = await (await api("/api/zip", { items, title: $("setName").textContent })).blob();
     save(blob, `${($("setName").textContent || "cards").replace(/[^\w.-]+/g, "-")}.zip`);
     status("");
   } catch (e) { status(""); showError(e.message); }
@@ -753,6 +822,8 @@ async function init() {
     } catch (e) { status(""); showError(e.message); }
   });
   $("renderAllBtn").addEventListener("click", renderAll);
+  $("changelogBtn").addEventListener("click", downloadChangelog);
+  $("viewSel").addEventListener("change", showView);
   $("zipBtn").addEventListener("click", downloadZip);
   $("openProjectBtn").addEventListener("click", () => openProject($("projectSel").value));
   $("projectSel").addEventListener("change", () => { if ($("projectSel").value) $("projectName").value = $("projectSel").value; });

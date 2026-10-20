@@ -96,6 +96,12 @@ foil textures as a zip (the custom-set zip includes them too). The preview re-re
 edit, in exactly the card layout the command line produces; download one PNG, or every card of an imported set as a
 zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
 
+Changes: every render lists what differs from the printed card (the restyle itself, name, HP, stage, "Evolves
+from", portrait, each ability and attack by name: cost, damage, text, added, removed, reordered; weakness,
+resistance, retreat, illustrator, flavour text); the card list counts them per card. View the card edited, as
+printed, or both side by side. "Changelog (.md)" writes every card's changes as Markdown, and each zip download
+holds the same CHANGELOG.md.
+
 Projects: every card you load joins the card list. Name the project and Save (top right) to keep the list, every
 card's edits and options, the card open and the holofoil switch; after that it saves itself 1.5 s after each change,
 and the page opens it again on its own next time. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
