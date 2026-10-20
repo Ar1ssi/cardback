@@ -29,6 +29,14 @@ class Apply(unittest.TestCase):
         self.assertEqual(out["weakness"], {"type": "Grass", "value": "×2"})
         self.assertIsNot(out, c)
 
+    def test_pokemon_gets_its_accent(self):
+        self.assertEqual(edit.printed("Your opponent's Active Pokemon"), "Your opponent’s Active Pokémon")
+        self.assertEqual(edit.printed("POKEMON CHECKUP, Pokemon's, pokemon-ex"), "POKÉMON CHECKUP, Pokémon’s, pokémon-ex")
+        self.assertEqual(edit.printed("Pokémon stays"), "Pokémon stays")
+        self.assertEqual(edit.printed("Slowpokemon"), "Slowpokemon")        # only the word itself
+        out = edit.apply(card(), {"attacks": [{"cost": [], "name": "Pokemon Power", "effect": "Heal each Pokemon."}]})
+        self.assertEqual((out["attacks"][0]["name"], out["attacks"][0]["effect"]), ("Pokémon Power", "Heal each Pokémon."))
+
     def test_attack_edits(self):
         out = edit.apply(card(), {"attacks": [
             {"cost": ["Darkness", "Colorless"], "name": "Big Bite", "damage": "50x", "effect": "Don't flip."},

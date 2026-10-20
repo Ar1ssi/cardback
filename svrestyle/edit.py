@@ -27,9 +27,13 @@ def valid_card_id(card_id):
     return isinstance(card_id, str) and CARD_ID.fullmatch(card_id) is not None
 
 
+POKEMON = re.compile(r"\b(pok)e(mon)", re.IGNORECASE)   # Pokemon, POKEMON, Pokemon's, Pokemon-ex
+
+
 def printed(text):
-    """Cards print a curly apostrophe."""
-    return (text or "").replace("'", "’")
+    """Cards print a curly apostrophe and an accented Pokémon."""
+    text = POKEMON.sub(lambda m: m[1] + ("É" if m[0][3] == "E" else "é") + m[2], text or "")
+    return text.replace("'", "’")
 
 
 def editable(card):

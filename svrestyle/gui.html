@@ -233,6 +233,16 @@ async function api(path, body) {
   return res;
 }
 
+// Cards print "Pokémon": fix the word as it is typed, keeping the caret (é replaces e, same length). The server
+// does the same to every edit (edit.printed), so pasted or imported text is covered too.
+function accentPokemon(input) {
+  const fixed = input.value.replace(/\b(pok)e(mon)/gi, (m, a, b) => a + (m[3] === "E" ? "É" : "é") + b);
+  if (fixed === input.value) return;
+  const [start, end] = [input.selectionStart, input.selectionEnd];
+  input.value = fixed;
+  input.setSelectionRange(start, end);
+}
+
 // ---------------------------------------------------------------- loading
 async function loadCard(id) {
   id = (id || "").trim();
@@ -563,6 +573,10 @@ function save(blob, filename) {
 // ---------------------------------------------------------------- wiring
 async function init() {
   state.meta = await (await api("/api/meta")).json();
+  // capture phase: runs before each field's own input handler, so edits store the accented text
+  document.addEventListener("input", (e) => {
+    if (e.target.matches("textarea, input[type=text]") && e.target.id !== "cardId") accentPokemon(e.target);
+  }, true);
   for (const sel of [$("weakType"), $("resType")]) {
     sel.replaceChildren(el("option", { value: "" }, "None"), ...state.meta.energy.map((t) => el("option", { value: t }, t)));
   }
