@@ -22,6 +22,7 @@ import functools
 import io
 import json
 import re
+import warnings
 from pathlib import Path
 
 import cv2
@@ -57,6 +58,27 @@ FOOTER_ZONE = (40, 935, 330, 996)   # x0, y0, x1, y1: illustrator, regulation ma
 ROW_REACH = 40     # px either side a filled pixel takes its row's value from
 EX_FILL_GROW = 5   # Absol's plate: its HP digits are a little bolder there than as set here
 BORDER_FOIL = 255  # the SV ex border on Absol's plate where its art does not spill over: all foil
+# A card's own foil field (field()): its plate with what is printed on it taken off.
+MARK_DARK = 48       # plate value below which a pixel is a cut-out (text, icons, art window), not foil
+MARK_GROW = 3        # px around cut-outs: their anti-aliased rims
+PEERS = 24           # plates a card's foil field is rebuilt from
+PEER_SIZE = 128      # px: plates are compared at this size
+PEER_SHARED = 0.12   # share of the card both plates must show foil on to be compared
+PEER_MATCH = 0.5     # correlation of two plates' detail for them to share foil shapes
+FIT_RADII = (16, 40, 90)   # px: windows a peer is fitted to the card in
+FIT_MIN = 0.15       # share of a window the card and the peer must both show foil on for the fit
+FIT_EPS = 25.0       # plate levels squared: keeps the gain sane on flat foil
+FIT_GAIN = 3.0
+FIT_TOL = 6.0        # plate levels: fits this much worse weigh e times less
+BRIDGE_SIGMAS = (6, 12, 24, 48, 96, 192)   # px: blurs that bridge what no peer shows
+OWN_FEATHER = 3      # px: soft edge between a card's own foil and the template's
+# How a card's own plate prints a kind of ink (ink_value)
+INK_MIN = 20         # px: less printed ink than this is not judged
+INK_CLEAR = 2        # px: the ground is read this far out from all the ink
+INK_SIGMA = 4        # px: and interpolated over this
+INK_VISIBLE = 24     # plate levels: ink this far from its ground shows on the plate (block compression: ~10)
+TAB_BIN = 8          # plate levels per histogram bin when finding the tab's own value
+INK_AREA = 10        # px around a kind's ink that its taking off may reach (modern REACH + MARK_GROW + rims)
 
 
 # ---------------------------------------------------------------- TCG Live data
@@ -128,6 +150,150 @@ def fill_rows(img, where, reach=ROW_REACH):
             else:
                 left[y, x] = True
     return fill(out, left) if left.any() else out
+
+
+def _plate_file(record):
+    name = record.get("_w")
+    png = Path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png") if name else None
+    return png if png and png.exists() else None
+
+
+def _thumb(png):
+    """A plate PNG at PEER_SIZE, card part only, float32 0..255."""
+    img = Image.open(png).convert("L").resize((PEER_SIZE, PEER_SIZE), Image.BOX)
+    a = np.asarray(img, np.float32)
+    x0 = round(tcg.BLEED_X * PEER_SIZE / TEX)
+    return a[:, x0:x0 + round(W * PEER_SIZE / TEX)]
+
+
+def _detail(thumb):
+    return thumb - cv2.GaussianBlur(thumb, (0, 0), 3)
+
+
+def _foil_at(thumb):
+    return cv2.erode((thumb >= MARK_DARK).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+
+
+def peers(record):
+    """Other printings of the same set and kind (base / reverse) whose plates have this one's foil shapes (the
+    detail correlates where neither is cut out): the same pattern under other cards' text. Most alike first."""
+    own_png = _plate_file(record)
+    if own_png is None:
+        return []
+    set_id = record["bundle"].split("_en_")[0]
+    own = _thumb(own_png)
+    own_ok, own_detail = _foil_at(own), _detail(own)
+    out = []
+    for bundle, records in _manifests().items():
+        if bundle == record["bundle"] or bundle.split("_en_")[0] != set_id:
+            continue
+        other = next((r for r in records if r["manifest"] == record["manifest"]), None)
+        png = _plate_file(other) if other and is_foil(other) else None
+        if png is None:
+            continue
+        thumb = _thumb(png)
+        both = own_ok & _foil_at(thumb)
+        if both.mean() < PEER_SHARED:
+            continue
+        a, b = own_detail[both], _detail(thumb)[both]
+        spread = np.sqrt((a * a).mean() * (b * b).mean())
+        alike = (a * b).mean() / spread if spread > 0.5 else 0
+        if alike >= PEER_MATCH:
+            out.append((alike, other))
+    out.sort(key=lambda t: -t[0])
+    return [r for _, r in out[:PEERS]]
+
+
+def _box(img, r):
+    return cv2.boxFilter(img, -1, (2 * r + 1, 2 * r + 1), normalize=False)
+
+
+def transfer(img, ok, others, radius):
+    """Predict img where it is not ok from other plates of the same pattern: around each pixel, each other plate is
+    fitted to img (gain and offset, on the pixels both show), and the fits are blended by how well they hold there.
+    -> (prediction, bool: predicted). others: [(plate, its ok)]."""
+    num = np.zeros((H, W), np.float32)
+    den = np.zeros((H, W), np.float32)
+    for other, other_ok in others:
+        m = (ok & other_ok).astype(np.float32)
+        n = _box(m, radius)
+        enough = n > FIT_MIN * (2 * radius + 1) ** 2
+        n = np.maximum(n, 1)
+        mo, mi = _box(other * m, radius) / n, _box(img * m, radius) / n
+        cov = _box(other * img * m, radius) / n - mo * mi
+        var = _box(other * other * m, radius) / n - mo * mo
+        gain = np.clip(cov / (var + FIT_EPS), 0, FIT_GAIN)
+        offset = mi - gain * mo
+        guess = gain * other + offset
+        err = _box(np.abs(img - (gain * other + offset)) * m, radius) / n
+        w = np.where(enough & other_ok, np.exp(-err / FIT_TOL), 0).astype(np.float32)
+        num += w * guess
+        den += w
+    have = den > 1e-3
+    return np.where(have, num / np.maximum(den, 1e-6), 0).astype(np.float32), have
+
+
+def bridge(img, gaps):
+    """Fill gaps with the foil around them, smoothly (normalised blurs, wider until every gap is reached): for the
+    art window, where inpainting draws streaks to the middle."""
+    out = img.copy()
+    known = ~gaps
+    left = gaps.copy()
+    for sigma in BRIDGE_SIGMAS:
+        value, weight = _smooth(img, known, sigma)
+        take = left & (weight > 0.02)
+        out[take] = value[take]
+        left &= ~take
+    out[left] = float(np.median(img[known])) if known.any() else 255
+    return out
+
+
+def _smooth(img, ok, sigma):
+    """Gaussian blur of img over the ok pixels only (normalised convolution), and how much ok each pixel saw."""
+    weight = cv2.GaussianBlur(ok.astype(np.float32), (0, 0), sigma)
+    value = cv2.GaussianBlur(np.where(ok, img, 0).astype(np.float32), (0, 0), sigma)
+    return value / np.maximum(weight, 1e-6), weight
+
+
+def field(record):
+    """The printing's own foil with everything printed on it taken off -> (plate, own: 0..1 how much of each pixel
+    is this printing's foil). Cut-outs (text, icons, figure) are filled from the same set's printings of the same
+    kind that share its foil shapes (peers), whose text and icons sit elsewhere, toned to this card's own foil
+    around each gap (transfer). What no peer shows either (the art window, a border without foil) is bridged
+    smoothly and is not own. Restyled plates keep this card's pattern and strength where it has them: the target
+    era's template says where the foil goes, and gives it where this card has none."""
+    def build():
+        img = plate(record)
+        marks = dilate(img < MARK_DARK, MARK_GROW)
+        if not marks.any():
+            return img, np.ones((H, W), np.float32)
+        others = []
+        for other in peers(record):
+            p = plate(other)
+            others.append((p, ~dilate(p < MARK_DARK, MARK_GROW)))
+        out = img.copy()
+        left = marks.copy()
+        for radius in FIT_RADII:                     # tight fits first; wider ones reach the middle of big gaps
+            if not others or not left.any():
+                break
+            guess, have = transfer(img, ~marks, others, radius)
+            take = left & have
+            out[take] = guess[take]
+            left &= ~take
+        own = cv2.GaussianBlur((~left).astype(np.float32), (0, 0), OWN_FEATHER)
+        if left.any():
+            out = bridge(out, left)
+        speckless = cv2.medianBlur(np.clip(out, 0, 255).astype(np.uint8), 5).astype(np.float32)
+        out[marks] = speckless[marks]        # peers' fits leave single-pixel misses on text rims
+        return out, own * 255
+
+    stem = f"field-{record['bundle']}-{record['manifest']}"
+    paths = [cache.path("assets", f"foil-v{ASSET_VERSION}", f"{stem}{end}.png") for end in ("", "-own")]
+    if not all(path.exists() for path in paths):
+        for path, img in zip(paths, build()):
+            Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).save(path)
+    img, own = (np.asarray(Image.open(path), np.float32) for path in paths)
+    return img, own / 255
 
 
 def cut(img, drawn, kinds):
@@ -215,17 +381,42 @@ def ex_stage_value():
     return float(np.median(plate(printings(EX_STAGE_REF)["base"])[pieces]))
 
 
-def retab(img, drawn):
-    """Old tab letters off the plate: where new ones were pasted, the tab's own value from just around them."""
+def _tab_letters(img, drawn):
+    """(bool HxW: the tab lettering the plate prints where a tab was pasted, the tab's own value) or None."""
     where = drawn.get("stage_tab", np.zeros((H, W), np.float32)) > 0.05
     box = np.zeros((H, W), bool)
     x0, y0, x1, y1 = stage.LETTER_BOX
     box[y0:y1, x0:x1] = True
-    around = dilate(where, 4) & ~dilate(where, 1) & box
-    if not around.any():
+    letters_at = box & where
+    if letters_at.sum() < INK_MIN:
+        return None
+    # the tab's own value: the commonest there (letters are thin strokes on it; the rim around differs)
+    counts = np.bincount(np.clip(img[letters_at] / TAB_BIN, 0, 255 // TAB_BIN).astype(int), minlength=256 // TAB_BIN + 1)
+    common = int(np.argmax(np.convolve(counts, np.ones(3), "same")))
+    near = letters_at & (np.abs(img / TAB_BIN - (common + 0.5)) <= 1.5)
+    tab = float(np.median(img[near]))
+    return letters_at & (np.abs(img - tab) > INK_VISIBLE), tab
+
+
+def tab_letter_value(img, drawn):
+    """The plate value of the tab's printed letters, or None when the plate does not show them."""
+    found = _tab_letters(img, drawn)
+    if found is None or found[0].sum() < INK_MIN:
+        return None
+    return float(np.median(img[found[0]]))
+
+
+def retab(img, drawn):
+    """Old tab letters off the plate where a new tab was pasted: the letters it prints and the new ones' place take
+    the tab's own value. The rest of the tab stays as printed."""
+    found = _tab_letters(img, drawn)
+    if found is None:
         return img
+    old, tab = found
+    new = drawn.get("stage_text", np.zeros((H, W), np.float32)) > 0.05
+    where = (dilate(old, 1) | new) & (drawn["stage_tab"] > 0.05)
     out = img.copy()
-    out[where] = np.median(img[around])
+    out[where] = tab
     return out
 
 
@@ -268,8 +459,12 @@ def me_holo_plate(card_id, card, drawn, alpha):
     return cut(out, drawn, STAGE_CUT) * (alpha / 255)
 
 
-def me_reverse_plate(card, drawn, alpha):
-    return cut(retab(me_reverse_template(card["stage"]), drawn), drawn, ME_REVERSE_CUT) * (alpha / 255)
+def me_reverse_plate(card_id, card, drawn, alpha):
+    """Mega Evolution reverse holo: where the template has foil, this card's own reverse foil (field)."""
+    template = me_reverse_template(card["stage"])
+    own_foil, own = field(printings(card_id)["reverse"])
+    mixed = own_foil * (template / 255) * own + template * (1 - own)
+    return cut(retab(mixed, drawn), drawn, ME_REVERSE_CUT) * (alpha / 255)
 
 
 # ---------------------------------------------------------------- textures
@@ -294,7 +489,7 @@ def build(card_id, layout, canvas, drawn, card):
         base, reverse = (EX_FOIL, ex_plate(card_id, drawn, alpha)), None
     else:
         base = (ME_HOLO, me_holo_plate(card_id, card, drawn, alpha)) if is_foil(old["base"]) else None
-        reverse = (ME_REVERSE, me_reverse_plate(card, drawn, alpha)) if old["reverse"] else None
+        reverse = (ME_REVERSE, me_reverse_plate(card_id, card, drawn, alpha)) if old["reverse"] else None
     pack = lambda p: None if p is None else (p[0], plate_texture(p[1]))
     return {"front": front_texture(canvas), "base": pack(base), "reverse": pack(reverse)}
 
@@ -348,41 +543,103 @@ def modern_front(card_id, canvas):
     return out
 
 
+def printed_ink(original, groups):
+    """What the card prints for the edited groups, by kind, as the composers set it (coverage 0..1)."""
+    from . import modern
+    out = {}
+    if "name" in groups:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")      # the printed name's fit was reported when the card was set
+            out.update(modern._drawn(modern._name, original))
+    if "stage" in groups and original["stage"]:
+        out.update(modern._drawn(modern._evolves, original))
+        cx, cy, r = meframe.PORTRAIT_DISC
+        yy, xx = np.mgrid[:H, :W]
+        out["portrait"] = np.clip(r - 0.5 - np.hypot(xx - cx, yy - cy), 0, 1).astype(np.float32)
+    return out
+
+
+def ink_value(img, cover, around):
+    """The plate value a printed kind of ink has where it is printed (cover), against the plate interpolated from
+    just around each stroke (outside `around`, all the ink): (value, ground), or None where the plate does not
+    show it (the foil runs through, as on most reverse holos' names)."""
+    core = cover > 0.5
+    if core.sum() < INK_MIN:
+        return None
+    ground, weight = _smooth(img, ~dilate(around, INK_CLEAR), INK_SIGMA)
+    judged = core & (weight > 0.05)
+    if judged.sum() < INK_MIN:
+        return None
+    if np.median(np.abs(img[judged] - ground[judged])) < INK_VISIBLE:
+        return None
+    return float(np.median(img[judged])), float(np.median(ground[judged]))
+
+
 def build_modern(card_id, card, canvas, drawn, original):
-    """Foil of a Scarlet & Violet / Mega Evolution card edited in place (modern.compose_card): its own printings.
-    Edits to the name or the Stage pieces re-make their part of each plate: what was taken off filled in, what was
-    set cut out (ex: everything printed, as on SV ex plates; reverse holo: what Mega Evolution reverse plates leave
-    out). Abilities, attacks and the weakness row keep the plates as printed (PLATE_KEPT): there the plate is the
-    card's own foil pattern, which a fill would smear (full-art ex: the text zone is art). Same shape as build()."""
+    """Foil of a Scarlet & Violet / Mega Evolution card edited in place (modern.compose_card): its own printings,
+    edited. Edits to the name or the Stage pieces re-make their part of each plate the way the card's own plate
+    prints that kind of ink (ink_value): ink the plate shows is taken off (cut-outs filled from the card's own
+    foil field, a lit ink from the plate around it) and set again at the printed value; ink the plate does not
+    show leaves it as printed. Kinds the card does not print (Stage pieces on a Basic made Stage) follow the era:
+    ex: cut out, as on SV ex plates; reverse holo: what Mega Evolution reverse plates leave out. Abilities,
+    attacks and the weakness row keep the plates as printed (PLATE_KEPT). Same shape as build()."""
     from . import modern
     alpha = canvas[..., 3]
     old = printings(card_id)
     groups = tuple(g for g in modern.changed(original, card) if g not in PLATE_KEPT)
-    taken_off = None
-    if groups:
-        mask, row = modern.taken_off(card_id, original, groups, card)
-        taken_off = mask | row
+    taken_off = modern.taken_off(card_id, original, groups, card) if groups else None
+    printed = printed_ink(original, groups)
+    shed = modern.stage_off(original, card) if "stage" in groups else np.zeros((H, W), bool)
     drawn = {k: v for k, v in drawn.items() if k not in PLATE_KEPT_KINDS}
+    if original["stage"]:
+        drawn.pop("stage", None)            # the card's own pieces, set again where they were: as printed
     out = {"front": modern_front(card_id, canvas), "base": None, "reverse": None}
     for key in ("base", "reverse"):
         record = old[key]
         if not is_foil(record):
             continue
         img = plate(record)
-        if taken_off is not None and taken_off.any():
-            img = fill(img, taken_off)
+        if shed.any():
+            img = fill(img, shed)
+        learned = {}
+        if taken_off is not None:
+            mask, row = taken_off
+            off = mask | row
+            around = np.zeros((H, W), bool)
+            for cover in printed.values():
+                around |= cover > 0.05
+            own_field = None
+            for kind, cover in printed.items():
+                value = ink_value(img, cover, around)
+                learned[kind] = value
+                if value is None:
+                    continue
+                area = off & dilate(cover > 0.05, INK_AREA)
+                if value[0] < value[1]:                       # cut out: the foil under it, from the field
+                    if own_field is None:
+                        own_field = field(record)[0]
+                    img = np.where(area, own_field, img)
+                else:                                          # lit ink on plainer ground
+                    img = fill(img, area)
+        letters = tab_letter_value(img, drawn) if original["stage"] else None
         img = retab(img, drawn)
+        if letters is not None and "stage_text" in drawn:
+            learned["stage_text"] = (letters, None)
+        for kind, value in learned.items():
+            if value is not None and kind in drawn and kind != "logo":
+                img = img * (1 - drawn[kind]) + value[0] * drawn[kind]
+        if card["family"] == "ex" and key == "base" and "logo" in drawn and learned.get("logo"):
+            before = printed["logo"]
+            cols = lambda a: np.flatnonzero(a.max(axis=0) > 0.5)
+            moved = np.roll(plate(record), int(cols(drawn["logo"])[0] - cols(before)[0]), axis=1)
+            img = img * (1 - drawn["logo"]) + moved * drawn["logo"]
+        rest = {k: v for k, v in drawn.items() if k not in learned}
         if card["family"] == "ex" and key == "base":
-            if "logo" in drawn:
-                before = modern._drawn(modern._name, original)["logo"]
-                cols = lambda a: np.flatnonzero(a.max(axis=0) > 0.5)
-                moved = np.roll(plate(record), int(cols(drawn["logo"])[0] - cols(before)[0]), axis=1)
-                img = img * (1 - drawn["logo"]) + moved * drawn["logo"]
-            img = cut(ex_stage(img, drawn), drawn, EX_CUT)
+            img = cut(ex_stage(img, rest), rest, EX_CUT)
         elif key == "reverse":
-            img = cut(img, drawn, ME_REVERSE_CUT)
+            img = cut(img, rest, ME_REVERSE_CUT)
         else:
-            img = cut(img, drawn, STAGE_CUT)
+            img = cut(img, rest, STAGE_CUT)
         spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)
         extra = {"etch": texture(record, record.get("_e")), "cf": texture(record, record.get("_cf"))}
         out[key] = (spec, plate_texture(img * (alpha / 255)), extra)

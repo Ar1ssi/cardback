@@ -192,11 +192,13 @@ class Portrait(unittest.TestCase):
 class Plates(unittest.TestCase):
     def test_retab_takes_the_tab_value_around_new_letters(self):
         img = np.full((H, W), 180, np.float32)
-        img[40:50, 30:60] = 0                         # old letters
+        img[40:50, 30:60:6] = 0                       # old letters: strokes
+        img[40:50, 31:60:6] = 0
         tab = np.zeros((H, W), np.float32)
-        tab[38:52, 28:62] = 1                         # where the new letters were pasted
+        tab[34:56, 24:66] = 1                         # where the new tab was pasted
         out = foil.retab(img, {"stage_tab": tab})
-        self.assertEqual(out[45, 45], 180)
+        self.assertEqual(out[45, 30], 180)
+        self.assertEqual(out[45, 33], 180)
         self.assertIs(foil.retab(img, {}), img)
 
 

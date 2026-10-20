@@ -47,6 +47,13 @@ if it had one. Plates start from the game's own: the old card's plate for the ar
 foil), Absol ex's or me1 Abra's / Meganium's for the frame; the composers record every stamp and sprite by kind
 (`layers.py`), so the HP, icons, badges and footer drawn on the card are cut out of the plate exactly.
 
+Every card's foil starts from its own plate in the extract. `foil.field` takes what is printed off it (text, icons,
+figure): the same set's printings of the same kind with the same foil shapes - a Sword & Shield Darkness reverse
+holo's symbols on chevrons, a Sun & Moon Grass reverse's leaves - show the foil under this card's text, and each is
+fitted to this card's own tone around every gap. What no card shows (the art window) is bridged smoothly. A
+restyled reverse holo is that field wherever the old card had foil, shaped by the Mega Evolution template (art
+window, cut-outs); where the old card had none (a plain border) it takes the template's.
+
 ### Scarlet & Violet / Mega Evolution cards: edited in place
 
 In the editor, a Scarlet & Violet or Mega Evolution Pokemon (regular or ex) keeps its own card: only what you edit is
@@ -56,8 +63,10 @@ attacks by what stands out from the panel in the text zone. LaMa rebuilds what w
 row, which is blended along its pixel rows (LaMa copies the labels into it). New blocks follow the Mega Evolution
 layout (regular cards; Scarlet & Violet regulars share it) or the Absol ex layout (ex), in the card's own text colour;
 an edited ex name keeps the card's own ex logo. With holofoil on, the card's own TCG Live printings are re-made: the
-same shaders, plates with what was taken off filled and what was set cut out, the etch carried over, and the front
-keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
+same shaders and the card's own plates, edited the way each plate prints that kind of ink: ink the plate shows (a
+cut-out name, an ex name's lit letters, the Stage tab's letters) is taken off and set again at the printed value;
+ink the plate runs through (most reverse holos' names and "Evolves from") leaves it as printed. The etch is
+carried over, and the front keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
 layout).
 
 ### Stage: Basic, Stage 1, Stage 2, Mega
