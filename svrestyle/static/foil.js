@@ -112,20 +112,25 @@ function createFoilMaterial(data, printing) {
     waits.push(t.ready);
     return t.texture;
   };
+  // What Unity binds where a material sets no texture: the property's declared default. Etch means different
+  // things per shader (SvHolo: white = not etched; FlatSilver: gray; SwHolo: black), so a card without one must
+  // get its shader's default: plain white on a FlatSilver card darkens it to 73 % in linear light.
+  const unbound = (prop) => {
+    const def = sh.props[prop]?.default;
+    return def === "black" ? PLAIN.black : def === "gray" ? PLAIN.gray : def === "bump" ? PLAIN.bump : PLAIN.white;
+  };
   const textureFor = (prop) => {
     if (prop === "_CardColorDiffuse") return cardTexture(printing.front, PLAIN.gray);
-    if (prop === "_CardEtch") return cardTexture(printing.textures.etch, PLAIN.white);
-    if (prop === "_CardWhitePlateMask") return cardTexture(printing.textures.wp, PLAIN.white);
-    if (prop === "_CardColdFoilMask") return cardTexture(printing.textures.cf, PLAIN.white);
+    if (prop === "_CardEtch") return cardTexture(printing.textures.etch, unbound(prop));
+    if (prop === "_CardWhitePlateMask") return cardTexture(printing.textures.wp, unbound(prop));
+    if (prop === "_CardColdFoilMask") return cardTexture(printing.textures.cf, unbound(prop));
     if (prop === "_CCPatternTex" && printing.cc) {        // cast-and-cure pattern the card's manifest names
       const cc = materialTexture(printing.cc);
       if (cc) return cc;
     }
     const bound = mat.tex?.[prop]?.name;
     const fromMaterial = bound ? materialTexture(bound) : null;
-    if (fromMaterial) return fromMaterial;
-    const def = sh.props[prop]?.default;
-    return def === "black" ? PLAIN.black : def === "gray" ? PLAIN.gray : def === "bump" ? PLAIN.bump : PLAIN.white;
+    return fromMaterial ?? unbound(prop);
   };
   const scaleOffset = (prop) => {
     const t = mat.tex?.[prop];
@@ -288,7 +293,6 @@ const clampUnit = (v) => (Number.isFinite(v) ? Math.min(Math.max(v, -1), 1) : 0)
 
 // ---------------------------------------------------------------- the view
 let renderer = null;
-
 /**
  * Draws `printing` on `canvas` until stop(). tilt(): {x, y} in [-1, 1] (the pointer's deflection; x turns the
  * card about its vertical axis). onError(message): WebGL, shader or texture failure (the view stops itself).
