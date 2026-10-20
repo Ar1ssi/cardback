@@ -12,6 +12,10 @@ The foil is the target era's:
   Mega Evolution's (me1 Abra for Basics, Meganium for Stage cards) with the reference card's icons, Ability
   badge, Ability name and footer filled in, then this card's cut out.
 
+Stage pieces (stage.py): SV ex plates print the tab, ring and strip in the frame's silver value (Alakazam ex's), with
+the tab's letters, the portrait and the "Evolves from" line left out; on every other plate they are left out. Where
+the tab's lettering changes, the plate first takes the tab's own value around it (retab).
+
 What a composer drew comes from layers.recording(): every stamp and sprite is recorded under its kind.
 """
 import functools
@@ -24,7 +28,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, frame, layers, mecompose, refs, swsh, tcg
+from . import cache, compose, frame, layers, mecompose, meframe, refs, stage, swsh, tcg
 from .imaging import dilate
 
 W, H = 733, 1024
@@ -38,8 +42,11 @@ ME_REVERSE = ("TPCi/Cards3D/HoloFoil/FlatSilver", "MAT_Cards3D_FlatSilver", None
 NON_FOIL = "NonFoil"      # in the material name of a non-foil printing (old bundles: Standard_NonFoil_J)
 
 # Drawn kinds left out of the foil (black on the plate).
-EX_CUT = ("hp", "type_icon", "icon", "row_icon", "badge", "ability_name", "text", "row_text", "footer")
-ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer")
+STAGE_CUT = ("stage", "stage_text", "portrait", "evolves")
+EX_CUT = ("hp", "type_icon", "icon", "row_icon", "badge", "ability_name", "text", "row_text", "footer",
+          "stage_text", "portrait", "evolves")
+ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer") + STAGE_CUT
+EX_STAGE_REF = "sv03.5-065"   # Alakazam ex (Stage 2): its plate gives the SV ex Stage pieces' foil value
 ME_REVERSE_REFS = {"basic": "me01-054", "stage": "me01-010"}   # Abra, Meganium: their reverse plates
 FILL_GROW = 4      # px around a reference card's own marks that are filled in when its plate becomes a template
 PANEL_INSET = 6    # the Mega Evolution text panel (meframe.PANEL) less its rim: all foil but the marks on it
@@ -198,6 +205,34 @@ def me_reverse_template(stage):
     return _cached(f"me-reverse-{which}.png", build)
 
 
+@functools.lru_cache(maxsize=1)
+def ex_stage_value():
+    """Plate value of the SV ex ring and strip (Alakazam ex)."""
+    pieces = (meframe.stage_sprite(2)[..., 3] > 240) & stage.part_mask(("ring", "strip"))
+    return float(np.median(plate(printings(EX_STAGE_REF)["base"])[pieces]))
+
+
+def retab(img, drawn):
+    """Old tab letters off the plate: where new ones were pasted, the tab's own value from just around them."""
+    where = drawn.get("stage_tab", np.zeros((H, W), np.float32)) > 0.05
+    box = np.zeros((H, W), bool)
+    x0, y0, x1, y1 = stage.LETTER_BOX
+    box[y0:y1, x0:x1] = True
+    around = dilate(where, 4) & ~dilate(where, 1) & box
+    if not around.any():
+        return img
+    out = img.copy()
+    out[where] = np.median(img[around])
+    return out
+
+
+def ex_stage(img, drawn):
+    """SV ex plate: the Stage pieces drawn take the frame's silver value."""
+    if "stage" not in drawn:
+        return img
+    return img * (1 - drawn["stage"]) + ex_stage_value() * drawn["stage"]
+
+
 # ---------------------------------------------------------------- masks per card
 def ex_plate(card_id, drawn, alpha):
     """White plate of a V card restyled as ex (compose.compose, hybrid)."""
@@ -213,7 +248,7 @@ def ex_plate(card_id, drawn, alpha):
     out = art * (1 - framed) + ex_template() * framed
     if "logo" in drawn:
         out = put_logo(out, drawn["logo"])
-    return cut(out, drawn, EX_CUT) * (alpha / 255)
+    return cut(ex_stage(retab(out, drawn), drawn), drawn, EX_CUT) * (alpha / 255)
 
 
 def me_holo_plate(card_id, card, drawn, alpha):
@@ -227,11 +262,11 @@ def me_holo_plate(card_id, card, drawn, alpha):
     x0, y0, x1, y1 = mecompose.meframe.ART
     out = np.zeros((H, W), np.float32)
     out[y0:y1, x0:x1] = old[y0:y1, x0:x1]
-    return cut(out, drawn, ("stage",)) * (alpha / 255)
+    return cut(out, drawn, STAGE_CUT) * (alpha / 255)
 
 
 def me_reverse_plate(card, drawn, alpha):
-    return cut(me_reverse_template(card["stage"]), drawn, ME_REVERSE_CUT) * (alpha / 255)
+    return cut(retab(me_reverse_template(card["stage"]), drawn), drawn, ME_REVERSE_CUT) * (alpha / 255)
 
 
 # ---------------------------------------------------------------- textures
@@ -325,15 +360,18 @@ def build_modern(card_id, card, canvas, drawn, taken_off, original):
         img = plate(record)
         if taken_off is not None and taken_off.any():
             img = fill(img, taken_off)
+        img = retab(img, drawn)
         if card["family"] == "ex" and key == "base":
             if "logo" in drawn:
                 before = modern._drawn(modern._name, original)["logo"]
                 cols = lambda a: np.flatnonzero(a.max(axis=0) > 0.5)
                 moved = np.roll(plate(record), int(cols(drawn["logo"])[0] - cols(before)[0]), axis=1)
                 img = img * (1 - drawn["logo"]) + moved * drawn["logo"]
-            img = cut(img, drawn, EX_CUT)
+            img = cut(ex_stage(img, drawn), drawn, EX_CUT)
         elif key == "reverse":
             img = cut(img, drawn, ME_REVERSE_CUT)
+        else:
+            img = cut(img, drawn, STAGE_CUT)
         spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)
         extra = {"etch": texture(record, record.get("_e")), "cf": texture(record, record.get("_cf"))}
         out[key] = (spec, plate_texture(img * (alpha / 255)), extra)

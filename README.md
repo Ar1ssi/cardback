@@ -60,6 +60,19 @@ same shaders, plates with what was taken off filled and what was set cut out, th
 keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
 layout).
 
+### Stage: Basic, Stage 1, Stage 2
+
+Every card in the editor (restyled ex, restyled Mega Evolution, edited in place) can be made Basic, Stage 1 or
+Stage 2 (`stage.py`). A Stage card gets the modern pieces top left: the STAGE tab, the silver ring with the
+pre-evolution's portrait, and the "Evolves from" strip (regular cards also the swoosh in the name bar); they sit at the
+same place on every SV / ME card, regular and ex. The portrait is lifted whole from a SV / ME card TCGdex lists as
+evolving from that Pokemon (they all print the same picture on the same disc); name a card id under "Portrait from
+card" to choose: a SV / ME Stage card gives its portrait, any other card the middle of its art. A card made Basic
+gets the BASIC tab and the pieces taken off (LaMa; the plain left border is blended top to bottom). Only the tab's
+lettering is swapped, so each card keeps its own tab and border. On the holofoil plates the ring and strip take the
+SV ex frame's silver value on ex cards and are left out elsewhere; the portrait, lettering and "Evolves from" line
+are cut out.
+
 ### Editor (GUI)
 
 ```sh
@@ -67,7 +80,8 @@ python -m svrestyle gui            # opens http://127.0.0.1:8765/ in your browse
 ```
 
 Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. For each
-card you can change the name (and regional prefix), HP, "Evolves from", illustrator and flavour text, add, remove and
+card you can change the name (and regional prefix), HP, stage, "Evolves from" and portrait, illustrator and flavour
+text, add, remove and
 reorder abilities and attacks, pick each attack's energy cost from the type icons, set its damage (a number with an
 optional +, × or −) and text, and set weakness (type and ×2 / +10…+40), resistance (type and −10…−40) and
 retreat (click + / −, or a retreat symbol to remove it). With `--tcglive DIR`, tick Holofoil to re-make the card's
@@ -100,6 +114,7 @@ How it works, module by module:
 - `meframe.py` - blank Mega Evolution frames: Mega Evolution cards of one type share the same bar, panel and footer
   texture, so each printed pixel of a base card is taken from another card of the type that has nothing printed
   there (LaMa only for what every card covers); plus the silver Stage 1 / Stage 2 pieces from Kadabra and Alakazam.
+- `stage.py` - Stage pieces, evolution portrait (found on TCGdex) and "Evolves from" line, for every layout.
 - `edit.py` / `gui.py` / `gui.html` - the editor: which fields can change and the checks on them, the local HTTP
   server, and the page.
 - `mecompose.py` - the Mega Evolution layout: art window, portrait, Pokedex line (PokeAPI), the vertical spacing of

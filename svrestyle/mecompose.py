@@ -12,7 +12,7 @@ import warnings
 import cv2
 import numpy as np
 
-from . import cache, compose, frame, inpaint, layers, meframe, tcg
+from . import cache, compose, frame, inpaint, meframe, stage, tcg
 from . import typeset as ts
 from .imaging import dilate, fill_holes, hsv, load_rgba, luminance, save_rgba
 
@@ -26,7 +26,6 @@ OLD_STAGE_OVERLAY = [(59, 100, 121, 167), (114, 100, 433, 127)]
 OLD_PORTRAIT = (30, 78, 114, 161)                 # inside the silver rim of the old portrait box
 PORTRAIT_SIZE = 90
 
-EVOLVES_X, EVOLVES_BASE, EVOLVES_SIZE = 143, 111, 17.5
 DEX_X, DEX_BASE, DEX_SIZE, DEX_TRACK = 366, 503.5, 15.0, 0.35
 FLAVOR_RIGHT, FLAVOR_LEFT, FLAVOR_SIZE, FLAVOR_PITCH, FLAVOR_CENTRE = 686, 276, 17.6, 22.5, 963.5
 
@@ -120,7 +119,7 @@ def read_card(card_id):
     return {
         "id": card_id, "type": types[0], "prefix": prefix, "name": name[len(prefix):].strip(),
         "hp": str(c.get("hp", "")), "stage": {"Basic": 0, "Stage1": 1, "Stage2": 2}[c["stage"]],
-        "evolves_from": printed(c.get("evolveFrom")), "abilities": c.get("abilities") or [],
+        "evolves_from": printed(c.get("evolveFrom")), "portrait": "", "abilities": c.get("abilities") or [],
         "attacks": c.get("attacks") or [], "weakness": (c.get("weaknesses") or [None])[0],
         "resistance": (c.get("resistances") or [None])[0], "retreat": int(c.get("retreat") or 0),
         "illustrator": c.get("illustrator") or "", "reg_mark": c.get("regulationMark") or "",
@@ -130,6 +129,8 @@ def read_card(card_id):
         "dex_line": species_line(c),
         # Mega Evolution cards (used to check the layout against the real print) keep their own portrait.
         "old_stage": c["stage"] != "Basic" and not card_id.startswith("me"),
+        # what the old portrait box shows (stage.portrait keeps it while the card still evolves from that)
+        "portrait_of": printed(c.get("evolveFrom")) if c["stage"] != "Basic" and not card_id.startswith("me") else None,
     }
 
 
@@ -171,20 +172,6 @@ def portrait_sprite(card):
     alpha = cv2.GaussianBlur((~background).astype(np.float32), (3, 3), 0.7)
     size = (PORTRAIT_SIZE, round(PORTRAIT_SIZE * crop.shape[0] / crop.shape[1]))
     return cv2.resize(crop, size, interpolation=cv2.INTER_CUBIC), cv2.resize(alpha, size, interpolation=cv2.INTER_LINEAR)
-
-
-def put_portrait(canvas, card):
-    rgb, alpha = portrait_sprite(card)
-    h, w = alpha.shape
-    cx, cy, r = meframe.PORTRAIT_DISC
-    x0, y0 = round(cx - w / 2), round(cy - h / 2)
-    yy, xx = np.mgrid[y0:y0 + h, x0:x0 + w]
-    disc = np.clip(r - 0.5 - np.hypot(xx - cx, yy - cy), 0, 1)
-    a = (alpha * disc)[..., None]
-    region = canvas[y0:y0 + h, x0:x0 + w, :3]
-    region[:] = region * (1 - a) + rgb * a
-    with layers.kind("stage"):
-        layers.record(a[..., 0], x0, y0)
 
 
 # ---------------------------------------------------------------- abilities and attacks
@@ -239,11 +226,6 @@ def name_and_hp(canvas, card, prof):
     compose.name_bar_text(canvas, card, prof, ex=False, name_right_limit=meframe.NAME_RIGHT_LIMIT)
 
 
-def evolves_from(canvas, card, ink):
-    ts.stamp(canvas, ts.coverage([dict(text=f"Evolves from {card['evolves_from']}", face=ts.BOLD_ITALIC,
-                                       size=EVOLVES_SIZE, x=EVOLVES_X, base=EVOLVES_BASE)]), ink)
-
-
 def dex_line(canvas, card):
     if card["dex_line"]:
         ts.stamp(canvas, ts.coverage([dict(text=card["dex_line"], face=ts.REGULAR, size=DEX_SIZE, x=DEX_X,
@@ -290,20 +272,12 @@ def compose_card(card_id, attacks=True, card=None):
     x0, y0, x1, y1 = meframe.ART
     canvas[y0:y1, x0:x1, :3] = art[y0:y1, x0:x1, :3]
     if card["stage"]:
-        sprite = meframe.stage_sprite(card["stage"])
-        a = sprite[..., 3:4] / 255
-        canvas[..., :3] = canvas[..., :3] * (1 - a) + sprite[..., :3] * a
-        with layers.kind("stage"):
-            layers.record(a[..., 0])
-        if card["old_stage"]:
-            put_portrait(canvas, card)
+        stage.draw(canvas, card, stage.REGULAR, own=lambda: portrait_sprite(card))
 
     panel_lum = float(np.median(luminance(canvas[meframe.PANEL[1]:meframe.PANEL[3], meframe.PANEL[0]:meframe.PANEL[2]])))
     white_text = panel_lum < 110
     fill = compose.WHITE if white_text else np.array(frame.DARK_INK, np.float32)
     name_and_hp(canvas, card, prof)
-    if card["stage"]:
-        evolves_from(canvas, card, np.array(frame.DARK_INK, np.float32))
     dex_line(canvas, card)
     shrink = None if not attacks else compose.text_block(canvas, card, fill, None, layout=me_layout, name_to_body=NAME_TO_BODY,
                                 fit_tracking=BODY_FIT_TRACK, red_edge=RED_ON_DARK if white_text else None,

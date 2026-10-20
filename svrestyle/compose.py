@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from . import cache, frame, layers, meframe, refs, swsh, tcg
+from . import cache, frame, layers, meframe, refs, stage, swsh, tcg
 from . import typeset as ts
 from .imaging import load_rgba, luminance, put_sprite, save_rgba
 
@@ -86,6 +86,7 @@ def read_card(card_id):
         "reg_mark": c.get("regulationMark") or "", "set_code": ((s.get("abbreviation") or {}).get("official")
                                                               or s.get("tcgOnline") or "").upper(),
         "number": number, "year": (s.get("releaseDate") or "")[:4],
+        "stage": 0, "evolves_from": "", "portrait": "",         # V cards are Basic; the editor can make them Stage
     }
 
 
@@ -368,6 +369,8 @@ def compose(card_id, opts, card=None):
         layers.record(np.maximum(fa, ba)[..., 0])
     canvas[..., 3] = tcg.scan(refs.ABSOL.card_id, refs.ABSOL.sha)[..., 3]     # rounded corners
     name_icon(canvas, card["type"])
+    if card.get("stage"):
+        stage.draw(canvas, card, stage.EX)
 
     name_xscale = name_bar_text(canvas, card, prof)
     white_text = hybrid or prof["light_text"]

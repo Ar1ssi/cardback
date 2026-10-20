@@ -9,6 +9,7 @@ import re
 
 ENERGY = ("Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal", "Dragon", "Colorless")
 MAX_ABILITIES, MAX_ATTACKS, MAX_COST, MAX_RETREAT = 2, 4, 5, 5
+STAGES = (0, 1, 2)                                   # Basic, Stage 1, Stage 2
 MAX_NAME, MAX_EFFECT, MAX_FLAVOR = 40, 400, 220
 
 DAMAGE = re.compile(r"(\d{1,4})?([+×x-])?")        # 120, 30+, 50×, 10-, or empty (no damage printed)
@@ -47,6 +48,8 @@ def editable(card):
         v = card.get(side)
         out[side] = {"type": v["type"], "value": v.get("value", "")} if v else None
     out["retreat"] = card["retreat"]
+    out["stage"] = card.get("stage", 0)
+    out["portrait"] = card.get("portrait", "")
     return out
 
 
@@ -131,4 +134,17 @@ def apply(card, edits):
         if not isinstance(r, int) or isinstance(r, bool) or not 0 <= r <= MAX_RETREAT:
             raise ValueError(f"retreat: a whole number from 0 to {MAX_RETREAT}")
         out["retreat"] = r
+    if "stage" in edits:
+        s = edits["stage"]
+        if not isinstance(s, int) or isinstance(s, bool) or s not in STAGES:
+            raise ValueError("stage: 0 (Basic), 1 (Stage 1) or 2 (Stage 2)")
+        out["stage"] = s
+    if "portrait" in edits:
+        p = edits["portrait"]
+        p = p.strip() if isinstance(p, str) else p
+        if p and not valid_card_id(p):
+            raise ValueError("portrait: a TCGdex card id (like sv03.5-064), or empty to find one by name")
+        out["portrait"] = p or ""
+    if out.get("stage") and not out.get("evolves_from"):
+        raise ValueError("evolves from: a Stage 1 or Stage 2 card names what it evolves from")
     return out

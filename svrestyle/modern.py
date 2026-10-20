@@ -3,6 +3,8 @@ was edited is taken off and set again in the same layouts the restyles use.
 
 - Name and HP, and the weakness row (weakness, resistance, retreat): the original is set again with the composers
   (they match these prints to a pixel or two, see tests) to find exactly where it is printed.
+- Stage, "Evolves from" and the evolution portrait: the Stage pieces sit at one place on every SV / ME card, so the
+  ones that changed are pasted over (stage.py); back to Basic they are taken off and the BASIC tab set.
 - Abilities and attacks: ex prints do not stack their blocks by one rule, so the old block is found on the card
   instead: everything in the text zone that stands out from the panel behind it (text, cost icons, the Ability
   badge). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular cards share
@@ -16,13 +18,13 @@ import warnings
 import cv2
 import numpy as np
 
-from . import cache, compose, edit, frame, inpaint, layers, mecompose, meframe, tcg
+from . import cache, compose, edit, frame, inpaint, layers, mecompose, meframe, stage, tcg
 from .imaging import dilate, fill_holes, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
 MODERN = ("sv", "me")
 GROUPS = {"name": ("prefix", "name", "hp"), "moves": ("abilities", "attacks"),
-          "row": ("weakness", "resistance", "retreat")}
+          "row": ("weakness", "resistance", "retreat"), "stage": ("stage", "evolves_from", "portrait")}
 
 # Abilities and attacks sit in this zone: x0, y0, x1, y1 (under the window bar / Pokedex strip, above the weakness
 # row).
@@ -34,6 +36,8 @@ MARK_GROW = 3        # px around everything taken off (anti-aliasing, keylines)
 REACH = 5            # px: name, HP and weakness-row print may sit this far from where the composers set them
 ROW_NEAR = 4         # REACH for the weakness row
 BAND_GAP, BAND_SAMPLE = 3, 6   # px: weakness-row gaps take their colour this far out, from this many pixels
+RING_SHADE = 4       # px: the ring's soft shadow on the card, past its cut-out
+BORDER_X = 26        # px: the plain silver card border on the left, which the Stage ring overlaps
 
 
 def is_modern(card_id):
@@ -59,10 +63,12 @@ def read_card(card_id):
     for b in (c.get("abilities") or []) + (c.get("attacks") or []):
         b["effect"] = edit.printed(b.get("effect"))
         b["name"] = edit.printed(b.get("name"))
+    evolves = edit.printed(c.get("evolveFrom")) if c["stage"] != "Basic" else ""
     return {
         "id": card_id, "family": "ex" if ex else "regular", "type": types[0], "prefix": prefix,
         "name": base[len(prefix):].strip(), "hp": str(c.get("hp", "")),
         "stage": {"Basic": 0, "Stage1": 1, "Stage2": 2}[c["stage"]],
+        "evolves_from": evolves, "portrait": "", "portrait_of": evolves or None,
         "abilities": c.get("abilities") or [], "attacks": c.get("attacks") or [],
         "weakness": (c.get("weaknesses") or [None])[0], "resistance": (c.get("resistances") or [None])[0],
         "retreat": int(c.get("retreat") or 0),
@@ -171,10 +177,38 @@ def card_logo(scan, original):
 
 
 # ---------------------------------------------------------------- editing
-def taken_off(card_id, original, groups):
+def _stage_kit(card):
+    return stage.REGULAR if card["family"] == "regular" else stage.EX
+
+
+def stage_parts(original, card):
+    """The Stage pieces an edited card has drawn (stage.draw's parts): all of them on a Basic made Stage, the tab
+    for another stage or back to Basic, the strip for a new "Evolves from", the disc for a new portrait."""
+    before, after = original["stage"], card["stage"]
+    if not after:
+        return ("tab",) if before else ()
+    if not before:
+        return _stage_kit(card)
+    renamed = card["evolves_from"] != original["evolves_from"]
+    return tuple(p for p, on in (("tab", after != before), ("strip", renamed),
+                                 ("disc", renamed or card.get("portrait") != original.get("portrait"))) if on)
+
+
+def stage_off(original, card):
+    """bool HxW: the Stage pieces (and their shadow) a card made Basic loses; empty otherwise."""
+    if not original["stage"] or card["stage"]:
+        return np.zeros((H, W), bool)
+    sprite = meframe.stage_sprite(original["stage"])
+    pieces = (sprite[..., 3] > 25) & stage.part_mask(tuple(p for p in _stage_kit(original) if p != "tab"))
+    return dilate(pieces | stage.under_tab(sprite), RING_SHADE)
+
+
+def taken_off(card_id, original, groups, card=None):
     """What the edited groups take off the card. -> (bool HxW for LaMa, bool HxW for the weakness row)"""
     scan = tcg.scan(card_id)
     mask, row = np.zeros((H, W), bool), np.zeros((H, W), bool)
+    if "stage" in groups and card is not None:
+        mask |= stage_off(original, card)
     if "name" in groups:
         mask |= ink_near(scan, _cover(_drawn(_name, original), ("name", "hp", "logo")))
     if "moves" in groups:
@@ -211,16 +245,16 @@ def fill_band(img, where, keep_out):
 def _sample(line, skip, x, step):
     """Median colour of BAND_SAMPLE unprinted pixels going from x in direction step, after BAND_GAP px."""
     picked, x = [], x + step * BAND_GAP
-    while 0 <= x < W and len(picked) < BAND_SAMPLE:
+    while 0 <= x < len(line) and len(picked) < BAND_SAMPLE:
         if not skip[x]:
             picked.append(line[x, :3])
         x += step
     return np.median(picked, axis=0) if picked else None
 
 
-def cleaned(card_id, original, groups):
+def cleaned(card_id, original, groups, card=None):
     """The scan with the edited groups taken off (cached). -> (RGBA float32, mask taken off)"""
-    mask, row = taken_off(card_id, original, groups)
+    mask, row = taken_off(card_id, original, groups, card)
     key = hashlib.sha256(mask.tobytes() + row.tobytes()).hexdigest()[:12]
     out = cache.path("art", f"modern-{card_id}-{'-'.join(groups)}-{key}.png")
     if out.exists():
@@ -229,6 +263,10 @@ def cleaned(card_id, original, groups):
     art = inpaint.inpaint(scan, mask) if mask.any() else scan.copy()
     if row.any():
         art = fill_band(art, row, ink_in(scan, (0, 860, W, 930), holes=False))
+    border = mask.copy()
+    border[:, BORDER_X:] = False
+    if border.any():                 # LaMa leaves blotches on the plain border: it shades only from top to bottom
+        art = fill_band(art.transpose(1, 0, 2), border.T, np.zeros((W, H), bool)).transpose(1, 0, 2)
     save_rgba(art, out)
     return art, mask | row
 
@@ -240,8 +278,11 @@ def compose_card(card_id, card, original=None):
     scan = tcg.scan(card_id)
     if not groups:
         return scan.copy(), {"card": card, "edited": [], "taken_off": None}
-    canvas, mask = cleaned(card_id, original, groups)
+    canvas, mask = cleaned(card_id, original, groups, card)
     canvas = canvas.copy()
+    if "stage" in groups:
+        own = lambda: stage.disc_sprite(card_id)
+        stage.draw(canvas, card, stage_parts(original, card), own if original["stage"] else None)
     if "name" in groups:
         logo = card_logo(scan, original) if card["family"] == "ex" else None
         _name(canvas, card, logo)

@@ -100,9 +100,13 @@
           <div class="narrow"><label for="hp">HP</label><input id="hp" type="text" inputmode="numeric"></div>
         </div>
         <div class="row">
-          <div data-me><label for="evolves_from">Evolves from</label><input id="evolves_from" type="text"></div>
-          <div data-restyle><label for="illustrator">Illustrator</label><input id="illustrator" type="text"></div>
+          <div class="narrow"><label for="stageSel">Stage</label>
+            <select id="stageSel"><option value="0">Basic</option><option value="1">Stage 1</option><option value="2">Stage 2</option></select></div>
+          <div data-stage><label for="evolves_from">Evolves from</label><input id="evolves_from" type="text"></div>
+          <div data-stage><label for="portrait">Portrait from card (optional)</label><input id="portrait" type="text" placeholder="found by name"></div>
         </div>
+        <p class="hint" data-stage>The portrait is the pre-evolution's picture from a Scarlet &amp; Violet or Mega Evolution card that evolves from it. Name a card id to choose: a Stage card gives its portrait, any other card the middle of its art.</p>
+        <div data-restyle><label for="illustrator">Illustrator</label><input id="illustrator" type="text"></div>
         <div data-me><label for="flavor">Flavour text</label><textarea id="flavor" rows="2"></textarea></div>
       </section>
 
@@ -270,13 +274,19 @@ function fillForm() {
   document.querySelectorAll("[data-me]").forEach((n) => (n.hidden = layout !== "me"));
   document.querySelectorAll("[data-ex]").forEach((n) => (n.hidden = layout !== "ex"));
   document.querySelectorAll("[data-restyle]").forEach((n) => (n.hidden = layout === "modern"));
-  for (const k of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor"]) $(k).value = card[k] ?? "";
+  for (const k of ["prefix", "name", "hp", "evolves_from", "portrait", "illustrator", "flavor"]) $(k).value = card[k] ?? "";
+  $("stageSel").value = String(card.stage || 0);
+  drawStage();
   setSide("weak", card.weakness, "×2");
   setSide("res", card.resistance, "-30");
   drawRetreat();
   $("style").value = state.options[id].style;
   $("showAttacks").value = state.options[id].attacks ? "1" : "0";
   drawBlocks();
+}
+
+function drawStage() {
+  document.querySelectorAll("[data-stage]").forEach((n) => (n.hidden = $("stageSel").value === "0"));
 }
 
 function setSide(prefix, side, fallback) {
@@ -370,7 +380,10 @@ function setRetreat(n) {
 function readForm() {
   const card = state.edits[state.current.id];
   for (const k of ["prefix", "name", "hp", "illustrator"]) card[k] = $(k).value;
-  if (state.current.layout === "me") { card.evolves_from = $("evolves_from").value; card.flavor = $("flavor").value; }
+  card.stage = Number($("stageSel").value);
+  card.evolves_from = $("evolves_from").value;
+  card.portrait = $("portrait").value.trim();
+  if (state.current.layout === "me") card.flavor = $("flavor").value;
   card.weakness = $("weakType").value ? { type: $("weakType").value, value: $("weakValue").value || "×2" } : null;
   card.resistance = $("resType").value ? { type: $("resType").value, value: $("resValue").value || "-30" } : null;
   state.options[state.current.id] = { style: $("style").value, attacks: $("showAttacks").value === "1" };
@@ -380,6 +393,8 @@ function changed() {
   if (!state.current) return;
   readForm();
   if (!$("autoRender").checked) return;
+  const card = state.edits[state.current.id];
+  if (card.stage && !card.evolves_from.trim()) { status("Type what it evolves from to render."); return; }
   clearTimeout(state.renderTimer);
   state.renderTimer = setTimeout(renderNow, 700);
 }
@@ -612,6 +627,12 @@ async function init() {
   $("retreatMore").addEventListener("click", () => setRetreat(state.edits[state.current.id].retreat + 1));
   for (const id of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor"])
     $(id).addEventListener("input", changed);
+  $("portrait").addEventListener("change", changed);         // a card id: render once it is typed in full
+  $("stageSel").addEventListener("change", () => {
+    drawStage();
+    if ($("stageSel").value !== "0" && !$("evolves_from").value.trim()) $("evolves_from").focus();
+    changed();
+  });
   for (const id of ["weakValue", "resValue", "style", "showAttacks"]) $(id).addEventListener("change", changed);
   for (const p of ["weak", "res"]) $(p + "Type").addEventListener("change", () => { drawSide(p); changed(); });
   $("foilOn").addEventListener("change", () => {
