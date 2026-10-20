@@ -79,7 +79,13 @@
   .compare figure { margin: 0; }
   .compare img { width: 100%; display: block; border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
   .compare figcaption { text-align: center; color: var(--muted); font-size: 12px; margin-top: 4px; }
-  #changesBox { max-width: 560px; margin: 12px auto 0; }
+  /* the changes sit beside the card, so they show without scrolling; under it when there is no room */
+  .cardrow { display: flex; gap: 14px; align-items: flex-start; }
+  .cardcol { flex: 0 1 900px; min-width: 0; }
+  .cardcol:has(> .stage:not([hidden])) { flex-basis: 560px; }
+  #changesBox { flex: 0 0 210px; margin: 0; position: sticky; top: 70px; max-height: calc(100vh - 90px); overflow: auto;
+                font-size: 13px; }
+  @media (max-width: 1250px) { .cardrow { flex-wrap: wrap; } #changesBox { flex: 1 1 100%; position: static; max-height: none; } }
   #changes { margin: 0; padding-left: 18px; }
   #changes li { margin: 2px 0; }
   .changed-count { color: var(--accent); }
@@ -110,7 +116,7 @@
       <h2><span id="setName">Cards</span>
         <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="changelogBtn" class="small" title="Every card's changes from its printed card, as Markdown">Changelog (.md)</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
       <div id="setList" class="setlist"></div>
-      <p class="hint">Every card you load joins this list. Save the project (top right) to keep the list and your edits: it saves itself again after every change, and opens on its own next time.</p>
+      <p class="hint">Every card you load joins this list. The list and your edits save themselves after every change (as a dated project until you name it, top right) and open on their own next time.</p>
       <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
     </section>
 
@@ -201,26 +207,30 @@
   <div class="preview">
     <div id="errors"></div>
     <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards. Scarlet &amp; Violet and Mega Evolution cards are edited in place.</div>
-    <div id="viewbar" class="viewbar" hidden>
-      <label for="viewSel">View <select id="viewSel">
-        <option value="edited">Edited</option><option value="printed">Printed card</option><option value="side">Side by side</option>
-      </select></label>
-      <span id="changeCount" class="badge"></span>
-    </div>
-    <div id="stage" class="stage" hidden>
-      <img id="preview" alt="Rendered card">
-      <canvas id="foilCanvas" width="733" height="1024" aria-hidden="true" hidden></canvas>
-      <img id="plateView" class="plate" alt="Holofoil white plate" hidden>
-    </div>
-    <div id="compare" class="compare" hidden>
-      <figure><img id="printedImg" alt="Printed card"><figcaption>Printed</figcaption></figure>
-      <figure id="editedFig"><img id="editedImg" alt="Edited card"><figcaption>Edited</figcaption></figure>
+    <div class="cardrow">
+      <div class="cardcol">
+        <div id="viewbar" class="viewbar" hidden>
+          <label for="viewSel">View <select id="viewSel">
+            <option value="edited">Edited</option><option value="printed">Printed card</option><option value="side">Side by side</option>
+          </select></label>
+          <span id="changeCount" class="badge"></span>
+        </div>
+        <div id="stage" class="stage" hidden>
+          <img id="preview" alt="Rendered card">
+          <canvas id="foilCanvas" width="733" height="1024" aria-hidden="true" hidden></canvas>
+          <img id="plateView" class="plate" alt="Holofoil white plate" hidden>
+        </div>
+        <div id="compare" class="compare" hidden>
+          <figure><img id="printedImg" alt="Printed card"><figcaption>Printed</figcaption></figure>
+          <figure id="editedFig"><img id="editedImg" alt="Edited card"><figcaption>Edited</figcaption></figure>
+        </div>
+      </div>
+      <section id="changesBox" hidden>
+        <h2><span>Changes from the printed card</span></h2>
+        <ul id="changes"></ul>
+      </section>
     </div>
     <div id="warnings"></div>
-    <section id="changesBox" hidden>
-      <h2><span>Changes from the printed card</span></h2>
-      <ul id="changes"></ul>
-    </section>
   </div>
 </main>
 
