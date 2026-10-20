@@ -102,7 +102,7 @@ class Portrait(unittest.TestCase):
             self.assertIs(stage.portrait(card(portrait="me01-055"), lambda: own), named)
             from_card.assert_called_once_with("me01-055")
             self.assertIs(stage.portrait(card(evolves_from="Ralts"), lambda: own), found)
-            find.assert_called_once_with("Ralts")
+            find.assert_called_once_with("Ralts", mega=False)
             self.assertIs(stage.portrait(card(), None), found)
 
     def test_named_card_stage_gives_disc_else_art(self):
@@ -115,13 +115,71 @@ class Portrait(unittest.TestCase):
 
     def test_find_falls_back_to_art_then_nothing(self):
         def search(field, name):
-            return [] if field == "evolveFrom" else [{"id": "swsh6-54", "localId": "54", "name": name}]
+            return [] if field in ("evolveFrom", "stage") else [{"id": "swsh6-54", "localId": "54", "name": name}]
         with mock.patch.object(stage, "_search", side_effect=search), \
                 mock.patch.object(stage, "_official", return_value=200), \
+                mock.patch.object(stage, "pokeapi_sprite", return_value=None), \
                 mock.patch.object(stage, "art_sprite", return_value="art"), self.assertWarns(UserWarning):
             self.assertEqual(stage.find("Galarian Slowpoke"), "art")
-        with mock.patch.object(stage, "_search", return_value=[]), self.assertWarns(UserWarning):
+        with mock.patch.object(stage, "_search", return_value=[]), \
+                mock.patch.object(stage, "pokeapi_sprite", return_value=None), self.assertWarns(UserWarning):
             self.assertIsNone(stage.find("Nobody"))
+
+    def test_source_order(self):
+        calls = []
+        def source(name, result):
+            def f(*a):
+                calls.append(name)
+                return result
+            return f
+        with mock.patch.object(stage, "_search", return_value=[]), \
+                mock.patch.object(stage, "find_xy_mega", side_effect=source("xy", "xy")), \
+                mock.patch.object(stage, "pokeapi_sprite", side_effect=source("artwork", "artwork")):
+            self.assertEqual(stage.find("Latias", mega=True), "xy")          # Mega: the XY Mega card first
+            self.assertEqual(calls, ["xy"])
+            calls.clear()
+            self.assertEqual(stage.find("Latias"), "xy")                     # others: after SV / ME evolutions
+        with mock.patch.object(stage, "_search", return_value=[]), \
+                mock.patch.object(stage, "find_xy_mega", return_value=None), \
+                mock.patch.object(stage, "pokeapi_sprite", return_value="artwork"):
+            self.assertEqual(stage.find("Latias", mega=True), "artwork")
+
+    def test_mega_card_names(self):
+        for name in ("Latias-EX", "M Latias EX", "Latias ex", "latias", "M Latias-EX"):
+            self.assertEqual(stage._base_name(name), "latias", name)
+        self.assertEqual(stage._base_name("Mr. Mime"), "mr. mime")
+        briefs = [{"id": "xy6-59", "localId": "59", "name": "M Latios EX"},
+                  {"id": "xy6-102", "localId": "102", "name": "M Latios EX"},
+                  {"id": "xy2-13", "localId": "13", "name": "M Charizard EX"}]
+        with mock.patch.object(stage, "_search", return_value=briefs), \
+                mock.patch.object(stage, "_official", return_value=98), \
+                mock.patch.object(stage, "xy_sprite", side_effect=lambda i: i):
+            self.assertEqual(stage.find_xy_mega("Latios-EX"), "xy6-59")     # the main-set card, not the secret rare
+            self.assertIsNone(stage.find_xy_mega("Latias"))
+
+    def test_xy_portrait_keys_the_gold_off(self):
+        scan = np.zeros((H, W, 4), np.float32)
+        cx, cy, r = stage.XY_DISC
+        yy, xx = np.mgrid[:H, :W]
+        d = np.hypot(xx - cx, yy - cy)
+        scan[d < r, :3] = (230, 180, 40)                                     # gold disc
+        scan[(np.abs(xx - cx) < 16) & (np.abs(yy - cy) < 16), :3] = 20        # figure outline
+        scan[(np.abs(xx - cx) < 13) & (np.abs(yy - cy) < 13), :3] = (60, 120, 220)
+        with mock.patch.object(stage.tcg, "scan", return_value=scan):
+            rgb, alpha = stage.xy_sprite("xy6-59")
+        c = alpha.shape[0] // 2
+        self.assertGreater(alpha[c, c], 0.9)                                  # the figure stays
+        self.assertLess(alpha[c, c + 30], 0.1)                                # the gold goes
+
+    def test_artwork_names(self):
+        urls = []
+        def fetch_json(url, dest):
+            urls.append(url.rsplit("/", 1)[1])
+            return {"sprites": {"other": {"official-artwork": {"front_default": None}}}}
+        with mock.patch.object(stage.cache, "fetch_json", side_effect=fetch_json):
+            for name in ("Galarian Slowpoke", "Farfetch’d", "Mr. Mime", "Nidoran♀", "Latias-EX"):
+                self.assertIsNone(stage.pokeapi_sprite(name))
+        self.assertEqual(urls, ["slowpoke-galar", "farfetchd", "mr-mime", "nidoran-f", "latias"])
 
     def test_portrait_stays_in_the_disc(self):
         canvas = np.zeros((H, W, 4), np.float32)

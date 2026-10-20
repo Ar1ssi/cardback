@@ -8,6 +8,9 @@ card TCGdex lists as evolving from that Pokemon. A card id can be named instead:
 portrait, any other card the middle of its art window.
 
 Besides Basic, Stage 1 and Stage 2 there is a custom stage, Mega (MEGA): the Stage 1 pieces with the tab reading MEGA.
+Its portrait comes first from the XY "M ... EX" cards, which print the Pokemon they evolve from on a gold disc: the
+figure is keyed off the gold and set on the modern silver disc. They are also the fallback for other stages when no
+SV / ME card evolves from the Pokemon; after them the Pokemon's official artwork (PokeAPI).
 """
 import functools
 import os
@@ -28,6 +31,13 @@ W, H = 733, 1024
 PORTRAIT_ERAS = ("sv", "me")      # card ids whose Stage cards print the portrait disc
 ART_ERAS = PORTRAIT_ERAS + ("swsh", "sm")    # card ids whose art window is meframe.ART
 MAX_TRIES = 3                     # candidate cards tried for a portrait before giving up
+XY_ERAS = ("xy", "g1")            # XY and Generations: their "M ... EX" cards (TCGdex stage MEGA)
+XY_DISC = (80.7, 112.9, 47.4)     # the gold portrait disc on those cards: centre x, y, radius (same on all measured)
+XY_GOLD = (30, 62, 0.35, 0.5)     # the disc's gold: hue range (degrees), least saturation and value
+XY_FLOOD = 14                     # per-channel step the gold background is flood-filled across (it shades radially)
+XY_RIM = 4                        # px inside the disc's edge kept off the figure (the disc's own rim line)
+ARTWORK_FILL = 0.8                # an official artwork's longer side, as a share of the disc's width
+DISC_RIM, DISC_SMOOTH = 2.5, 6.0  # px: the disc's own rim, kept; blur the light disc is evened out with
 
 # Parts of the stage sprite, by box (x0, y0, x1, y1); the ring is what is left. The strip's right end curls up
 # into the regular cards' swoosh; ex cards keep their own bar swoosh. The tab is only its lettering (BASIC, STAGE1,
@@ -47,11 +57,16 @@ MEGA = 3                          # the custom Mega stage
 # pointed A, same weight; cap height and "STAGE" width measured on me1 Kadabra); set like it: dark fill, white rim,
 # thin dark edge. Without Century Gothic, Gill Sans Bold.
 MEGA_FONT = "GOTHICB.TTF"
-MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR = 11.5, 1.4, 0.32     # px, width factor, slant (x per y)
+MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR = 12.0, 1.35, 0.32    # px, width factor, slant (x per y)
+MEGA_BOLD = 0.1                                          # px the fill is grown: the printed letters are a bit heavier
 OLD_LETTERS = 0.65                # HSV value under which a tab pixel may belong to STAGE1's letters
 LETTER_STANDS_OUT = 0.08          # how far (HSV value) letters and rim stand out from the tab around them
+LETTER_DARK = 0.4                 # HSV value under which a tab pixel is letter fill (the tab's lower band: 0.45+)
+MIN_CLEAN = 6                     # px of a row free of letters that give the row's shade
+WIPE_BOX = (20, 32, 117, 58)      # what is wiped: the lettering, short of the tab's slanted right end
 MEGA_LEFT, MEGA_BOTTOM = 28, 50                          # ink left x and last ink row, as STAGE on Kadabra
 MEGA_RIM, MEGA_EDGE = 1.3, 0.7                           # px: white rim, then the thin dark edge round it
+MEGA_GAP = 2                                             # px between letters at their closest (STAGE / BASIC: 2-3)
 MEGA_INK = {"fill": (70, 70, 74), "rim": (255, 252, 255), "edge": (96, 96, 100)}   # sampled on Kadabra's tab
 WORD_SS = 8                                              # supersampling for the tab lettering
 
@@ -140,8 +155,24 @@ def _font_file(name):
     return next((str(Path(d, name)) for d in dirs if d and Path(d, name).exists()), None)
 
 
-def _word(path, text, cap, xscale, shear, strokes):
-    """Coverage (h x w, 1x) of text grown by each stroke width, slanted and widened, and the fill's ink box."""
+def _glyph(font, ch, xscale, shear, strokes):
+    """One letter's coverage (h x w, 1x) grown by each stroke width, slanted and widened."""
+    w, h, base = int(font.getlength(ch)) + 30 * WORD_SS, 40 * WORD_SS, 30 * WORD_SS
+    out = []
+    for stroke in strokes:
+        img = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(img).text((8 * WORD_SS, base), ch, font=font, fill=255, anchor="ls",
+                                 stroke_width=round(stroke * WORD_SS), stroke_fill=255)
+        img = img.transform(img.size, Image.AFFINE, (1, -shear, shear * base, 0, 1, 0), Image.BICUBIC)
+        out.append(np.asarray(img.resize((max(1, round(w * xscale / WORD_SS)), h // WORD_SS), Image.BOX),
+                              np.float32) / 255)
+    return out
+
+
+def _word(path, text, cap, xscale, shear, strokes, gap):
+    """Coverage (h x w, 1x) of text grown by each stroke width, and the fill's ink box. Letters are set one by one,
+    each `gap` px from the last at their closest row, as the printed tabs space them (a font's own spacing is wider
+    at this weight and width)."""
     size = 4.0
     while True:                          # font size whose E is `cap` px tall
         box = ImageFont.truetype(path, round(size * WORD_SS)).getbbox("E")
@@ -149,17 +180,59 @@ def _word(path, text, cap, xscale, shear, strokes):
             break
         size += 0.25
     font = ImageFont.truetype(path, round(size * WORD_SS))
-    w, h, base = int(font.getlength(text)) + 30 * WORD_SS, 40 * WORD_SS, 30 * WORD_SS
-    out = []
-    for stroke in strokes:
-        img = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(img).text((8 * WORD_SS, base), text, font=font, fill=255, anchor="ls",
-                                 stroke_width=round(stroke * WORD_SS), stroke_fill=255)
-        img = img.transform(img.size, Image.AFFINE, (1, -shear, shear * base, 0, 1, 0), Image.BICUBIC)
-        out.append(np.asarray(img.resize((max(1, round(w * xscale / WORD_SS)), h // WORD_SS), Image.BOX),
-                              np.float32) / 255)
+    glyphs = [_glyph(font, ch, xscale, shear, strokes) for ch in text]
+    h = glyphs[0][0].shape[0]
+    out = [np.zeros((h, sum(g[0].shape[1] for g in glyphs)), np.float32) for _ in strokes]
+    right = np.full(h, -1)               # per row, the last column the word's fill reaches so far
+    for g in glyphs:
+        ink = g[0] > 0.5
+        left = np.where(ink.any(axis=1), ink.argmax(axis=1), -1)
+        rows = (left >= 0) & (right >= 0)
+        if rows.any():
+            x = int(np.max(right[rows] - left[rows])) + 1 + gap
+        else:                            # first letter, or no row shared with the last: by ink boxes
+            x = int(right.max() - left[left >= 0].min()) + 1 + gap if (right >= 0).any() else 0
+        for layer, src in zip(out, g):
+            region = layer[:, x:x + src.shape[1]]
+            np.maximum(region, src[:, :region.shape[1]], out=region)
+        cols = np.where(ink.any(axis=1), ink.shape[1] - 1 - ink[:, ::-1].argmax(axis=1), -1)
+        right = np.where(cols >= 0, np.maximum(right, x + cols), right)
     ys, xs = np.nonzero(out[0] > 0.5)
     return out, (xs.min(), ys.max())
+
+
+def _lettering(sprite):
+    """bool HxW: a tab's letters with their rim: dark, or standing out from the tab's shading around them."""
+    _, _, val = hsv(sprite[..., :3])
+    around = cv2.medianBlur(np.clip(val * 255, 0, 255).astype(np.uint8), 15).astype(np.float32) / 255
+    out = np.zeros((H, W), bool)
+    x0, y0, x1, y1 = WIPE_BOX
+    out[y0:y1, x0:x1] = ((np.abs(val - around) > LETTER_STANDS_OUT) | (val < LETTER_DARK))[y0:y1, x0:x1]
+    box = np.zeros((H, W), bool)
+    box[y0:y1, x0:x1] = True
+    return dilate(out, LETTER_GROW) & box
+
+
+def blank_tab(sprite):
+    """RGB 733x1024: sprite with its tab lettering taken off. The tab shades from top to bottom and evenly across
+    between its rounded ends, so a lettered pixel takes the median of its row's clean pixels there; rows the
+    letters leave too little of take theirs from the nearest rows above and below."""
+    letters = _lettering(sprite)
+    out = sprite[..., :3].copy()
+    x0, y0, x1, y1 = WIPE_BOX
+    rows, shades = [], []
+    for y in range(y0, y1):
+        clean = ~letters[y, x0:x1]
+        if clean.sum() >= MIN_CLEAN:
+            rows.append(y)
+            shades.append(np.median(sprite[y, x0:x1][clean, :3], axis=0))
+    if not rows:
+        return out
+    shades = np.array(shades)
+    for y in range(y0, y1):
+        shade = np.array([np.interp(y, rows, shades[:, c]) for c in range(3)])
+        out[y, x0:x1][letters[y, x0:x1]] = shade
+    return out
 
 
 def mega_tab():
@@ -175,19 +248,14 @@ def mega_tab():
     _, _, val = hsv(sprite[..., :3])
     lozenge = fill_holes((sprite[..., 3] > 128) | (box & (val < OLD_LETTERS))) & box
     sprite[lozenge, 3] = 255
-    # STAGE1 off: what stands out from the tab's own shading (letters, rim, edge) is filled from around it (TELEA:
-    # the tab's bevel shades smoothly, LaMa would be overkill for 3 px strokes)
-    v8 = np.clip(val * 255, 0, 255).astype(np.uint8)
-    around = cv2.medianBlur(v8, 15).astype(np.float32) / 255
-    old = dilate(lozenge & (np.abs(val - around) > LETTER_STANDS_OUT), 1) & lozenge
-    rgb = np.clip(sprite[..., :3], 0, 255).astype(np.uint8)
-    sprite[..., :3] = cv2.inpaint(rgb, old.astype(np.uint8), 3, cv2.INPAINT_TELEA).astype(np.float32)
+    sprite[..., :3] = np.where(lozenge[..., None], blank_tab(sprite), sprite[..., :3])
     path = _font_file(MEGA_FONT)
     if path is None:
         warnings.warn(f"{MEGA_FONT} (Century Gothic Bold) not found: the MEGA tab is set in Gill Sans Bold")
         path = f"{ts._font_dir}/{ts.BOLD}.otf"
     (fill, rim, edge), (left, bottom) = _word(path, "MEGA", MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR,
-                                              (0, MEGA_RIM, MEGA_RIM + MEGA_EDGE))
+                                              (MEGA_BOLD, MEGA_BOLD + MEGA_RIM, MEGA_BOLD + MEGA_RIM + MEGA_EDGE),
+                                              MEGA_GAP)
     dx, dy = MEGA_LEFT - left, MEGA_BOTTOM - bottom
     for layer, ink in ((edge, "edge"), (rim, "rim"), (fill, "fill")):
         a = np.zeros((H, W), np.float32)
@@ -270,40 +338,130 @@ def _reverse(card_id):
     return -(int(m.group(1)) + (0.5 if m.group(2) else 0)) if m else 0
 
 
+def xy_sprite(card_id):
+    """(rgb, alpha) of an XY "M ... EX" card's portrait: the figure on its gold disc, the gold keyed off (flood-filled
+    from the disc's edge: the figures are outlined, so the fill stops at them)."""
+    cx, cy, r = XY_DISC
+    x0, y0, size = round(cx - r), round(cy - r), round(2 * r)
+    rgb = tcg.scan(card_id)[y0:y0 + size, x0:x0 + size, :3]
+    hue, sat, val = hsv(rgb)
+    lo, hi, min_sat, min_val = XY_GOLD
+    gold = (hue > lo) & (hue < hi) & (sat > min_sat) & (val > min_val)
+    yy, xx = np.mgrid[:size, :size]
+    d = np.hypot(xx - (cx - x0), yy - (cy - y0))
+    u8 = np.ascontiguousarray(np.clip(rgb, 0, 255).astype(np.uint8))
+    flood = np.zeros((size + 2, size + 2), np.uint8)
+    step = (XY_FLOOD,) * 3
+    for y, x in zip(*np.nonzero(gold & (d > r - XY_RIM - 3) & (d < r - XY_RIM))):
+        if not flood[y + 1, x + 1]:
+            cv2.floodFill(u8, flood, (int(x), int(y)), 0, step, step, 4 | cv2.FLOODFILL_MASK_ONLY | (255 << 8))
+    background = flood[1:-1, 1:-1] > 0
+    background |= dilate(background, 2) & gold          # the gold fringe the anti-aliasing leaves round the figure
+    figure = (d < r - XY_RIM) & ~background
+    if figure.sum() < 0.05 * size * size:
+        raise ValueError(f"{card_id}: no portrait figure found on the gold disc")
+    return rgb, cv2.GaussianBlur(figure.astype(np.float32), (3, 3), 0.7)
+
+
+def _base_name(name):
+    """Latias-EX, M Latias EX, Latias ex -> latias."""
+    name = re.sub(r"^M\s+", "", name.strip())
+    return re.sub(r"[\s-]+(EX|ex|GX|V)$", "", name).strip().casefold()
+
+
+def find_xy_mega(name):
+    """(rgb, alpha) from the XY "M ... EX" card of the Pokemon called name, or None."""
+    base = _base_name(name)
+    briefs = [b for b in _search("stage", "MEGA") if _base_name(b.get("name", "")) == base]
+    return _first(rank(briefs, XY_ERAS), xy_sprite)[1]
+
+
+def pokeapi_sprite(name):
+    """(rgb, alpha) of the Pokemon's official artwork (PokeAPI), fitted inside the disc, or None if PokeAPI has no
+    such Pokemon."""
+    from . import mecompose                      # mecompose imports this module
+    words = name.strip().split(" ", 1)
+    region = mecompose.REGIONAL.get(words[0]) if len(words) == 2 else None
+    species = _base_name(words[1] if region else name)
+    slug = re.sub(r"[^a-z0-9-]+", "", species.replace("♀", "-f").replace("♂", "-m").replace(" ", "-"))
+    slug = f"{slug}-{region}" if region else slug
+    try:
+        mon = cache.fetch_json(f"{mecompose.POKEAPI}/pokemon/{slug}", cache.path("pokeapi", f"pokemon-{slug}.json"))
+        url = ((mon.get("sprites") or {}).get("other") or {}).get("official-artwork", {}).get("front_default")
+        if not url:
+            return None
+        art = np.asarray(Image.open(cache.fetch(url, cache.path("pokeapi", f"artwork-{slug}.png"))).convert("RGBA"),
+                         np.float32)
+    except cache.DownloadError:
+        return None
+    ys, xs = np.nonzero(art[..., 3] > 8)
+    art = art[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    side = 2 * meframe.PORTRAIT_DISC[2] * ARTWORK_FILL
+    scale = side / max(art.shape[:2])
+    size = (max(1, round(art.shape[1] * scale)), max(1, round(art.shape[0] * scale)))
+    art = cv2.resize(art, size, interpolation=cv2.INTER_AREA)
+    return art[..., :3], art[..., 3] / 255
+
+
 def from_card(card_id):
-    """(rgb, alpha) from a card the user named: its portrait if it is an SV / ME Stage card, else its art."""
+    """(rgb, alpha) from a card the user named: its portrait if it is an SV / ME Stage card or an XY Mega, else its
+    art."""
     c = tcg.card(card_id)
     if card_id.startswith(PORTRAIT_ERAS) and c.get("stage") in ("Stage1", "Stage2"):
         return disc_sprite(card_id)
+    if card_id.startswith(XY_ERAS) and c.get("stage") == "MEGA":
+        return xy_sprite(card_id)
     return art_sprite(card_id)
 
 
-def find(name):
-    """(rgb, alpha) of the Pokemon called name, or None (with a warning)."""
-    tried = 0
+def _first(ids, sprite):
+    """(card id, sprite(card id)) of the first card id that gives one, or (None, None)."""
+    for card_id in ids[:MAX_TRIES]:
+        try:
+            return card_id, sprite(card_id)
+        except (cache.DownloadError, ValueError):
+            continue
+    return None, None
+
+
+def find(name, mega=False):
+    """(rgb, alpha) of the Pokemon called name, or None (with a warning): the SV / ME portrait of a card evolving from
+    it, else its XY Mega portrait (tried first for mega), else its official artwork (PokeAPI), else the middle of
+    one of its cards' art."""
     try:
-        for ids, sprite in ((rank(_search("evolveFrom", name), PORTRAIT_ERAS), disc_sprite),
-                            (rank(_search("name", name), ART_ERAS), art_sprite)):
-            for card_id in ids[:MAX_TRIES]:
-                try:
-                    out = sprite(card_id)
-                except (cache.DownloadError, ValueError):
-                    continue
-                if sprite is art_sprite:
-                    warnings.warn(f"no Scarlet & Violet / Mega Evolution card evolves from {name}: the portrait is "
-                                  f"the middle of {card_id}'s art")
-                return out
-            tried += len(ids)
+        sources = [lambda: _first(rank(_search("evolveFrom", name), PORTRAIT_ERAS), disc_sprite)[1],
+                   lambda: find_xy_mega(name)]
+        for source in (sources[::-1] if mega else sources) + [lambda: pokeapi_sprite(name)]:
+            pic = source()
+            if pic is not None:
+                return pic
+        used, pic = _first(rank(_search("name", name), ART_ERAS), art_sprite)
     except cache.DownloadError as e:
         warnings.warn(f"portrait of {name}: TCGdex not reachable ({e})")
         return None
-    warnings.warn(f"no card of {name!r} found for the evolution portrait ({tried} tried); name a card in "
-                  f"'Portrait from card'")
-    return None
+    if pic is None:
+        warnings.warn(f"no card of {name!r} found for the evolution portrait; name a card in 'Portrait from card'")
+        return None
+    warnings.warn(f"no card portrait or artwork of {name} found: the portrait is the middle of {used}'s art")
+    return pic
+
+
+def smooth_disc(canvas):
+    """The light disc evened out (the empty Stage sprite disc keeps faint lines of the figure taken off it), for a
+    portrait that leaves some of it showing."""
+    cx, cy, r = meframe.PORTRAIT_DISC
+    x0, y0, size = round(cx - r) - 2, round(cy - r) - 2, round(2 * r) + 4
+    region = canvas[y0:y0 + size, x0:x0 + size, :3]
+    yy, xx = np.mgrid[y0:y0 + size, x0:x0 + size]
+    inside = (np.hypot(xx - cx, yy - cy) < r - DISC_RIM).astype(np.float32)
+    num = cv2.GaussianBlur(region * inside[..., None], (0, 0), DISC_SMOOTH)
+    den = cv2.GaussianBlur(inside, (0, 0), DISC_SMOOTH)[..., None]
+    region[:] = np.where(inside[..., None] > 0, num / np.maximum(den, 1e-3), region)
 
 
 def put_portrait(canvas, rgb, alpha):
-    """Centre a portrait sprite on the ring's disc; recorded as 'portrait'."""
+    """Centre a portrait sprite on the ring's disc (evened out first); recorded as 'portrait'."""
+    smooth_disc(canvas)
     h, w = alpha.shape
     cx, cy, r = meframe.PORTRAIT_DISC
     x0, y0 = round(cx - w / 2), round(cy - h / 2)
@@ -322,7 +480,7 @@ def portrait(card, own=None):
         return from_card(card["portrait"])
     if own and card["evolves_from"] == card.get("portrait_of"):
         return own()
-    return find(card["evolves_from"])
+    return find(card["evolves_from"], mega=card["stage"] == MEGA)
 
 
 # ---------------------------------------------------------------- text
@@ -374,9 +532,9 @@ def draw(canvas, card, parts, own=None, printed=False):
     paste(canvas, sprite, where)
     if "disc" in parts:
         pic = portrait(card, own)
+        if printed:                   # the old picture off first: a cut-out figure would not cover it
+            paste(canvas, sprite, part_mask(("disc",)))
         if pic is not None:
             put_portrait(canvas, *pic)
-        elif printed:                 # no picture found: an empty disc rather than the old one
-            paste(canvas, sprite, part_mask(("disc",)))
     if "strip" in parts:
         evolves_line(canvas, card["evolves_from"], min(EVOLVES_RIGHT, end - STRIP_PAD))
