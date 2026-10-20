@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card Restyle</title>
+<style>
+  :root {
+    --bg: #f4f3f1; --panel: #ffffff; --ink: #1f1d1d; --muted: #6b6766; --line: #dedad6;
+    --accent: #c01a20; --accent-ink: #ffffff; --chip: #efedea; --warn-bg: #fff6e0; --warn-ink: #7a5300;
+    --err-bg: #fde9e9; --err-ink: #8a1116; --focus: #2a6df4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161515; --panel: #201f1f; --ink: #ecebea; --muted: #a29e9b; --line: #36332f;
+      --accent: #e0464b; --accent-ink: #ffffff; --chip: #2b2928; --warn-bg: #3a2f12; --warn-ink: #f2d38a;
+      --err-bg: #3d1717; --err-ink: #ffb4b4; --focus: #7aa5ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  main { display: grid; grid-template-columns: minmax(340px, 560px) 1fr; gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 6px 0 3px; }
+  input[type=text], input[type=number], textarea, select { width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+  textarea { resize: vertical; min-height: 54px; }
+  input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.small { padding: 2px 7px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: end; }
+  .row > * { flex: 1; }
+  .row > .narrow { flex: 0 0 90px; }
+  .row > .tight { flex: 0 0 auto; }
+  .block { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: var(--bg); }
+  .block-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-weight: 600; }
+  .tools { display: flex; gap: 4px; }
+  .cost { display: flex; flex-wrap: wrap; gap: 4px; min-height: 30px; align-items: center; padding: 3px; border: 1px dashed var(--line); border-radius: 6px; }
+  .cost .empty { color: var(--muted); font-size: 12px; padding: 0 4px; }
+  .energy { width: 26px; height: 26px; border: 0; padding: 0; background: none; border-radius: 50%; cursor: pointer; }
+  .energy img { width: 26px; height: 26px; display: block; }
+  .palette { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+  .palette .energy { opacity: .85; }
+  .palette .energy:hover { opacity: 1; transform: scale(1.08); }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip); color: var(--muted); font-weight: 600; }
+  .preview { position: sticky; top: 70px; }
+  .preview img { width: 100%; max-width: 560px; display: block; margin: 0 auto; border-radius: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+  .placeholder { aspect-ratio: 733 / 1024; max-width: 560px; margin: 0 auto; border: 2px dashed var(--line); border-radius: 14px; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 20px; }
+  .msg { border-radius: 8px; padding: 8px 10px; margin: 8px 0; font-size: 13px; white-space: pre-wrap; }
+  .msg.warn { background: var(--warn-bg); color: var(--warn-ink); }
+  .msg.err { background: var(--err-bg); color: var(--err-ink); }
+  .status { color: var(--muted); font-size: 12px; min-height: 18px; }
+  .setlist { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+  .setlist button { display: flex; width: 100%; justify-content: space-between; gap: 8px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; text-align: left; }
+  .setlist button.active { background: var(--chip); font-weight: 600; }
+  .setlist .skip { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  .retreat { display: flex; align-items: center; gap: 8px; }
+  .retreat .icons { display: flex; gap: 2px; min-height: 22px; }
+  .retreat img { width: 20px; height: 20px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Card Restyle</h1>
+  <input id="cardId" type="text" placeholder="TCGdex id, e.g. swsh6-99 or sm10-19" style="max-width: 280px" aria-label="Card id">
+  <button id="loadBtn" class="primary">Load card</button>
+  <label class="tight" style="margin:0"><button id="importBtn" type="button">Import custom set…</button></label>
+  <input id="setFile" type="file" accept=".json,application/json" hidden>
+  <span id="status" class="status" role="status"></span>
+</header>
+
+<main>
+  <div>
+    <section id="setPanel" hidden>
+      <h2><span id="setName">Custom set</span>
+        <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
+      <div id="setList" class="setlist"></div>
+      <p class="hint">Cards already in the Scarlet &amp; Violet or Mega Evolution style are listed but skipped. Edits you make to a card are kept for the zip.</p>
+    </section>
+
+    <div id="editor" hidden>
+      <section>
+        <h2><span>Card <span id="layoutBadge" class="badge"></span></span><span id="cardTitle" class="badge"></span></h2>
+        <div class="row">
+          <div><label for="prefix">Prefix (Galarian, Hisuian…)</label><input id="prefix" type="text"></div>
+          <div><label for="name">Name</label><input id="name" type="text"></div>
+          <div class="narrow"><label for="hp">HP</label><input id="hp" type="text" inputmode="numeric"></div>
+        </div>
+        <div class="row">
+          <div data-me><label for="evolves_from">Evolves from</label><input id="evolves_from" type="text"></div>
+          <div><label for="illustrator">Illustrator</label><input id="illustrator" type="text"></div>
+        </div>
+        <div data-me><label for="flavor">Flavour text</label><textarea id="flavor" rows="2"></textarea></div>
+      </section>
+
+      <section>
+        <h2><span>Abilities</span><button id="addAbility" class="small">+ Ability</button></h2>
+        <div id="abilities"></div>
+      </section>
+
+      <section>
+        <h2><span>Attacks</span><button id="addAttack" class="small">+ Attack</button></h2>
+        <div id="attacks"></div>
+        <p class="hint">Click an energy below an attack to add it to the cost; click a cost symbol to remove it. Damage: a number, optionally followed by +, × or −.</p>
+      </section>
+
+      <section>
+        <h2><span>Weakness, resistance, retreat</span></h2>
+        <div class="row">
+          <div><label for="weakType">Weakness</label><select id="weakType"></select></div>
+          <div class="narrow"><label for="weakValue">Value</label><input id="weakValue" type="text" placeholder="×2"></div>
+        </div>
+        <div class="row">
+          <div><label for="resType">Resistance</label><select id="resType"></select></div>
+          <div class="narrow"><label for="resValue">Value</label><input id="resValue" type="text" placeholder="-30"></div>
+        </div>
+        <label for="retreat">Retreat cost</label>
+        <div class="retreat"><input id="retreat" type="number" min="0" max="5" style="width: 70px"><span id="retreatIcons" class="icons"></span></div>
+      </section>
+
+      <section>
+        <h2><span>Render</span></h2>
+        <div class="row">
+          <div data-ex><label for="style">ex layout</label>
+            <select id="style"><option value="hybrid">Full art (no panel)</option><option value="panel">Translucent type panel</option></select></div>
+          <div><label for="showAttacks">Abilities &amp; attacks</label>
+            <select id="showAttacks"><option value="1">Shown</option><option value="0">Left off the card</option></select></div>
+        </div>
+        <div class="row" style="margin-top: 10px">
+          <button id="renderBtn" class="primary">Render</button>
+          <button id="resetBtn">Reset to printed card</button>
+          <button id="downloadBtn" disabled>Download PNG</button>
+        </div>
+        <label style="display:flex; gap:6px; align-items:center; margin-top:8px"><input id="autoRender" type="checkbox" checked> Re-render automatically after edits</label>
+      </section>
+    </div>
+  </div>
+
+  <div class="preview">
+    <div id="errors"></div>
+    <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards.</div>
+    <img id="preview" alt="Rendered card" hidden>
+    <div id="warnings"></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = {
+  meta: null,
+  current: null,          // {id, layout, name, card (as loaded)}
+  edits: {},              // id -> edited card fields
+  options: {},            // id -> {style, attacks}
+  setCards: [],
+  renderTimer: null,
+  renderSeq: 0,
+  lastPng: null,
+};
+
+function el(tag, attrs = {}, ...children) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v === true) n.setAttribute(k, "");
+    else if (v !== false && v != null) n.setAttribute(k, v);
+  }
+  for (const c of children) n.append(c);
+  return n;
+}
+const icon = (type) => el("img", { src: `/api/icon/${encodeURIComponent(type)}.png`, alt: type, title: type });
+
+function status(text) { $("status").textContent = text || ""; }
+function showError(text) {
+  $("errors").replaceChildren(...(text ? [el("div", { class: "msg err" }, text)] : []));
+}
+function showWarnings(list) {
+  $("warnings").replaceChildren(...(list || []).map((w) => el("div", { class: "msg warn" }, w)));
+}
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try { msg = (await res.json()).error || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------- loading
+async function loadCard(id) {
+  id = (id || "").trim();
+  if (!id) return;
+  showError(""); status(`Loading ${id}…`);
+  try {
+    const data = await (await api(`/api/card?id=${encodeURIComponent(id)}`)).json();
+    state.current = data;
+    if (!state.edits[id]) state.edits[id] = structuredClone(data.card);
+    if (!state.options[id]) state.options[id] = { style: "hybrid", attacks: true };
+    $("cardId").value = id;
+    fillForm();
+    markActive();
+    status("");
+    await renderNow();
+  } catch (e) { status(""); showError(e.message); }
+}
+
+function fillForm() {
+  const { layout, name, id } = state.current;
+  const card = state.edits[id];
+  $("editor").hidden = false;
+  $("layoutBadge").textContent = layout === "ex" ? "→ Scarlet & Violet ex" : "→ Mega Evolution";
+  $("cardTitle").textContent = `${id} · ${name}`;
+  document.querySelectorAll("[data-me]").forEach((n) => (n.hidden = layout !== "me"));
+  document.querySelectorAll("[data-ex]").forEach((n) => (n.hidden = layout !== "ex"));
+  for (const k of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor"]) $(k).value = card[k] ?? "";
+  setSide("weak", card.weakness, "×2");
+  setSide("res", card.resistance, "-30");
+  $("retreat").value = card.retreat;
+  drawRetreat();
+  $("style").value = state.options[id].style;
+  $("showAttacks").value = state.options[id].attacks ? "1" : "0";
+  drawBlocks();
+}
+
+function setSide(prefix, side, fallback) {
+  $(prefix + "Type").value = side ? side.type : "";
+  $(prefix + "Value").value = side ? side.value : fallback;
+}
+
+// ---------------------------------------------------------------- abilities & attacks
+function blockTools(list, i, redraw) {
+  const move = (d) => { const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; redraw(); changed(); };
+  return el("span", { class: "tools" },
+    el("button", { class: "small", title: "Move up", "aria-label": "Move up", onclick: () => move(-1) }, "↑"),
+    el("button", { class: "small", title: "Move down", "aria-label": "Move down", onclick: () => move(1) }, "↓"),
+    el("button", { class: "small", title: "Remove", "aria-label": "Remove", onclick: () => { list.splice(i, 1); redraw(); changed(); } }, "✕"));
+}
+
+function textInput(obj, key, label, multiline) {
+  const id = `f${Math.random().toString(36).slice(2)}`;
+  const input = multiline ? el("textarea", { id, rows: 2 }) : el("input", { id, type: "text" });
+  input.value = obj[key] ?? "";
+  input.addEventListener("input", () => { obj[key] = input.value; changed(); });
+  return [el("label", { for: id }, label), input];
+}
+
+function drawBlocks() {
+  const card = state.edits[state.current.id];
+  const lim = state.meta.limits;
+  $("abilities").replaceChildren(...card.abilities.map((a, i) => el("div", { class: "block" },
+    el("div", { class: "block-head" }, `Ability ${i + 1}`, blockTools(card.abilities, i, drawBlocks)),
+    ...textInput(a, "name", "Name"), ...textInput(a, "effect", "Text", true))));
+  $("addAbility").disabled = card.abilities.length >= lim.abilities;
+
+  $("attacks").replaceChildren(...card.attacks.map((a, i) => {
+    const cost = el("div", { class: "cost", "aria-label": "Energy cost" });
+    const drawCost = () => cost.replaceChildren(...(a.cost.length ? a.cost.map((t, k) =>
+      el("button", { class: "energy", title: `Remove ${t}`, "aria-label": `Remove ${t}`,
+        onclick: () => { a.cost.splice(k, 1); drawCost(); changed(); } }, icon(t)))
+      : [el("span", { class: "empty" }, "No cost")]));
+    drawCost();
+    const palette = el("div", { class: "palette" }, ...state.meta.energy.map((t) =>
+      el("button", { class: "energy", title: `Add ${t}`, "aria-label": `Add ${t}`,
+        onclick: () => { if (a.cost.length >= lim.cost) return; a.cost.push(t); drawCost(); changed(); } }, icon(t))));
+    const m = /^(\d*)([+×x\-−]?)$/.exec(a.damage || "") || ["", "", ""];
+    const num = el("input", { type: "number", min: 0, max: 9999, step: 10, placeholder: "—", "aria-label": "Damage" });
+    num.value = m[1];
+    const suffix = el("select", { "aria-label": "Damage modifier" },
+      ...[["", "—"], ["+", "+"], ["×", "×"], ["-", "−"]].map(([v, t]) => el("option", { value: v }, t)));
+    suffix.value = m[2] === "x" ? "×" : m[2] === "−" ? "-" : m[2];
+    const setDamage = () => { a.damage = num.value ? num.value + suffix.value : ""; changed(); };
+    num.addEventListener("input", setDamage); suffix.addEventListener("change", setDamage);
+    return el("div", { class: "block" },
+      el("div", { class: "block-head" }, `Attack ${i + 1}`, blockTools(card.attacks, i, drawBlocks)),
+      el("label", {}, "Energy cost"), cost, palette,
+      el("div", { class: "row" },
+        el("div", {}, ...textInput(a, "name", "Name")),
+        el("div", { class: "narrow" }, el("label", {}, "Damage"), num),
+        el("div", { class: "narrow" }, el("label", {}, "Modifier"), suffix)),
+      ...textInput(a, "effect", "Text (optional)", true));
+  }));
+  $("addAttack").disabled = card.attacks.length >= lim.attacks;
+}
+
+function drawRetreat() {
+  const n = Math.max(0, Math.min(5, parseInt($("retreat").value || "0", 10) || 0));
+  $("retreatIcons").replaceChildren(...Array.from({ length: n }, () => icon("Colorless")));
+}
+
+// ---------------------------------------------------------------- edits
+function readForm() {
+  const card = state.edits[state.current.id];
+  for (const k of ["prefix", "name", "hp", "illustrator"]) card[k] = $(k).value;
+  if (state.current.layout === "me") { card.evolves_from = $("evolves_from").value; card.flavor = $("flavor").value; }
+  card.weakness = $("weakType").value ? { type: $("weakType").value, value: $("weakValue").value.trim() || "×2" } : null;
+  card.resistance = $("resType").value ? { type: $("resType").value, value: $("resValue").value.trim() || "-30" } : null;
+  card.retreat = Math.max(0, Math.min(5, parseInt($("retreat").value || "0", 10) || 0));
+  state.options[state.current.id] = { style: $("style").value, attacks: $("showAttacks").value === "1" };
+}
+
+function changed() {
+  if (!state.current) return;
+  readForm();
+  if (!$("autoRender").checked) return;
+  clearTimeout(state.renderTimer);
+  state.renderTimer = setTimeout(renderNow, 700);
+}
+
+function payload(id) {
+  const edits = state.edits[id];
+  const opt = state.options[id] || { style: "hybrid", attacks: true };
+  return { id, edits, style: opt.style, attacks: opt.attacks };
+}
+
+async function renderNow() {
+  if (!state.current) return;
+  readForm();
+  const seq = ++state.renderSeq;
+  const id = state.current.id;
+  showError(""); status("Rendering… (the first render of a card takes 10–20 s)");
+  $("renderBtn").disabled = true;
+  try {
+    const data = await (await api("/api/render", payload(id))).json();
+    if (seq !== state.renderSeq) return;            // a newer render was asked for meanwhile
+    state.lastPng = data.png;
+    $("preview").src = `data:image/png;base64,${data.png}`;
+    $("preview").hidden = false; $("placeholder").hidden = true;
+    $("downloadBtn").disabled = false;
+    showWarnings(data.warnings);
+    status("");
+    markRendered(id);
+  } catch (e) {
+    if (seq === state.renderSeq) { status(""); showError(e.message); }
+  } finally { if (seq === state.renderSeq) $("renderBtn").disabled = false; }
+}
+
+// ---------------------------------------------------------------- custom set
+async function importSet(file) {
+  showError("");
+  try {
+    const text = await file.text();
+    const data = await (await api("/api/set", JSON.parse(text))).json();
+    state.setCards = data.cards;
+    $("setName").textContent = data.name || file.name;
+    drawSet();
+    $("setPanel").hidden = false;
+    const first = state.setCards.find((c) => !c.skip);
+    if (first) loadCard(first.id);
+  } catch (e) { showError(`Import failed: ${e.message}`); }
+}
+
+function drawSet() {
+  const todo = state.setCards.filter((c) => !c.skip).length;
+  $("setList").replaceChildren(...state.setCards.map((c) => el("button", {
+      "data-id": c.id, class: c.skip ? "skip" : "", disabled: !!c.skip,
+      onclick: () => loadCard(c.id) },
+    el("span", {}, `${c.name} `, el("span", { class: "badge" }, c.id)),
+    el("span", { class: "badge" }, c.skip ? c.skip : c.layout === "ex" ? "ex" : "Mega Evolution"))));
+  $("zipBtn").disabled = $("renderAllBtn").disabled = todo === 0;
+  markActive();
+}
+
+function markActive() {
+  document.querySelectorAll("#setList button").forEach((b) =>
+    b.classList.toggle("active", !!state.current && b.dataset.id === state.current.id));
+}
+function markRendered(id) {
+  const b = document.querySelector(`#setList button[data-id="${CSS.escape(id)}"] .badge:last-child`);
+  if (b && !b.textContent.endsWith("✓")) b.textContent += " ✓";
+}
+
+async function renderAll() {
+  const todo = state.setCards.filter((c) => !c.skip);
+  $("renderAllBtn").disabled = true;
+  try {
+    for (const [i, c] of todo.entries()) {
+      status(`Rendering ${i + 1}/${todo.length}: ${c.name}…`);
+      await api("/api/render", payload(c.id));
+      markRendered(c.id);
+    }
+    status(`Rendered ${todo.length} cards.`);
+  } catch (e) { status(""); showError(e.message); }
+  finally { $("renderAllBtn").disabled = false; }
+}
+
+async function downloadZip() {
+  const items = state.setCards.filter((c) => !c.skip).map((c) => payload(c.id));
+  status(`Building zip of ${items.length} cards (renders any not done yet)…`);
+  $("zipBtn").disabled = true;
+  try {
+    const blob = await (await api("/api/zip", { items })).blob();
+    save(blob, `${($("setName").textContent || "cards").replace(/[^\w.-]+/g, "-")}.zip`);
+    status("");
+  } catch (e) { status(""); showError(e.message); }
+  finally { $("zipBtn").disabled = false; }
+}
+
+function save(blob, filename) {
+  const a = el("a", { href: URL.createObjectURL(blob), download: filename });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+// ---------------------------------------------------------------- wiring
+async function init() {
+  state.meta = await (await api("/api/meta")).json();
+  for (const sel of [$("weakType"), $("resType")]) {
+    sel.replaceChildren(el("option", { value: "" }, "None"), ...state.meta.energy.map((t) => el("option", { value: t }, t)));
+  }
+  $("loadBtn").addEventListener("click", () => loadCard($("cardId").value));
+  $("cardId").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCard($("cardId").value); });
+  $("importBtn").addEventListener("click", () => $("setFile").click());
+  $("setFile").addEventListener("change", (e) => { if (e.target.files[0]) importSet(e.target.files[0]); e.target.value = ""; });
+  $("renderBtn").addEventListener("click", renderNow);
+  $("resetBtn").addEventListener("click", () => {
+    if (!state.current) return;
+    state.edits[state.current.id] = structuredClone(state.current.card);
+    fillForm(); renderNow();
+  });
+  $("downloadBtn").addEventListener("click", async () => {
+    if (!state.lastPng) return;
+    const blob = await (await fetch(`data:image/png;base64,${state.lastPng}`)).blob();
+    save(blob, `${state.current.id}-${state.current.layout}.png`);
+  });
+  $("addAbility").addEventListener("click", () => {
+    state.edits[state.current.id].abilities.push({ name: "New Ability", effect: "Once during your turn, you may draw a card." });
+    drawBlocks(); changed();
+  });
+  $("addAttack").addEventListener("click", () => {
+    state.edits[state.current.id].attacks.push({ cost: ["Colorless"], name: "New Attack", damage: "30", effect: "" });
+    drawBlocks(); changed();
+  });
+  $("retreat").addEventListener("input", () => { drawRetreat(); changed(); });
+  for (const id of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor", "weakValue", "resValue"])
+    $(id).addEventListener("input", changed);
+  for (const id of ["weakType", "resType", "style", "showAttacks"]) $(id).addEventListener("change", changed);
+  $("renderAllBtn").addEventListener("click", renderAll);
+  $("zipBtn").addEventListener("click", downloadZip);
+  const q = new URLSearchParams(location.search).get("id");
+  if (q) loadCard(q);
+}
+init().catch((e) => showError(`Could not start: ${e.message}`));
+</script>
+</body>
+</html>

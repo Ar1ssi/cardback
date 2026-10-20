@@ -1,6 +1,7 @@
 """svrestyle command line.
 
   python -m svrestyle prepare --fonts DIR            check dependencies and fonts, download and build every asset
+  python -m svrestyle gui [--port 8765] --fonts DIR  editor in the browser: edit attacks, abilities, weakness...
   python -m svrestyle card ID [ID ...] --fonts DIR   render cards (TCGdex ids, e.g. swsh6-99)
       Pokemon V become Scarlet & Violet ex cards; regular Sun & Moon / Sword & Shield Pokemon become Mega
       Evolution regular cards.
@@ -82,6 +83,12 @@ def cmd_card(a):
         raise SystemExit(1)
 
 
+def cmd_gui(a):
+    from . import gui
+    fonts_dir(a.fonts)
+    gui.serve(a.port, open_browser=not a.no_browser)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="svrestyle", description="Restyle older cards: V -> Scarlet & Violet ex, "
                                                            "regular -> Mega Evolution")
@@ -97,5 +104,10 @@ def main(argv=None):
     pc.add_argument("--out", default="out")
     pc.add_argument("--debug", action="store_true", help="also write the art mask overlay and a JSON report")
     pc.set_defaults(func=cmd_card)
+    pg = sub.add_parser("gui", help="open the editor in your browser (served on 127.0.0.1)")
+    pg.add_argument("--fonts")
+    pg.add_argument("--port", type=int, default=8765)
+    pg.add_argument("--no-browser", action="store_true", help="just print the address")
+    pg.set_defaults(func=cmd_gui)
     a = p.parse_args(argv)
     a.func(a)

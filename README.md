@@ -24,6 +24,19 @@ python -m svrestyle card swsh3-88 sm10-19 sma-SV33      # Tyranitar, Kartana, Sh
 python -m unittest discover tests
 ```
 
+### Editor (GUI)
+
+```sh
+python -m svrestyle gui            # opens http://127.0.0.1:8765/ in your browser (--port, --no-browser)
+```
+
+Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. For each
+card you can change the name (and regional prefix), HP, "Evolves from", illustrator and flavour text, add, remove and
+reorder abilities and attacks, pick each attack's energy cost from the type icons, set its damage (a number with an
+optional +, × or −) and text, and set weakness (×2 or +20), resistance and retreat. The preview re-renders as you
+edit, in exactly the card layout the command line produces; download one PNG, or every card of an imported set as a
+zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
+
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.
 
@@ -43,6 +56,8 @@ How it works, module by module:
 - `meframe.py` - blank Mega Evolution frames: Mega Evolution cards of one type share the same bar, panel and footer
   texture, so each printed pixel of a base card is taken from another card of the type that has nothing printed
   there (LaMa only for what every card covers); plus the silver Stage 1 / Stage 2 pieces from Kadabra and Alakazam.
+- `edit.py` / `gui.py` / `gui.html` - the editor: which fields can change and the checks on them, the local HTTP
+  server, and the page.
 - `mecompose.py` - the Mega Evolution layout: art window, portrait, Pokedex line (PokeAPI), the vertical spacing of
   abilities and attacks fitted on 45 me1 cards, flavour text; text drawing is shared with `compose.py`.
 

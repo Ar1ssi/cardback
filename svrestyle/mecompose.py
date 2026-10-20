@@ -272,9 +272,10 @@ def flavor(canvas, card, ink):
 
 
 # ---------------------------------------------------------------- card
-def compose_card(card_id, attacks=True):
-    """-> (RGBA float32 733x1024, report dict). attacks=False leaves out abilities and attacks."""
-    card = read_card(card_id)
+def compose_card(card_id, attacks=True, card=None):
+    """-> (RGBA float32 733x1024, report dict). attacks=False leaves out abilities and attacks; card: read_card's
+    dict, possibly edited (default: read it)."""
+    card = card or read_card(card_id)
     prof = frame.profile(card["type"])
     canvas = meframe.template(card["type"]).copy()
     art = old_art(card)

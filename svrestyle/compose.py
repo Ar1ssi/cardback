@@ -213,8 +213,11 @@ def weakness_row(canvas, card, fill, edge, labels=True):
              dict(text="retreat", face=ts.MEDIUM, size=label, x=457, base=901)] if labels else []
     if card["weakness"]:
         value = card["weakness"].get("value", "×2").replace("x", "×")
-        items += [dict(text="×", face=ts.MEDIUM, size=27.0, x=146, base=905),
-                  dict(text=value.lstrip("×"), face=ts.COND_BOLD, size=31.5, x=161, base=907)]
+        if value.startswith("+"):                    # older cards: +20
+            items.append(dict(text=value, face=ts.COND_BOLD, size=31.5, x=146, base=907))
+        else:
+            items += [dict(text="×", face=ts.MEDIUM, size=27.0, x=146, base=905),
+                      dict(text=value.lstrip("×"), face=ts.COND_BOLD, size=31.5, x=161, base=907)]
     if card["resistance"]:
         value = card["resistance"].get("value", "-30").replace("-", "−")
         items.append(dict(text=value, face=ts.COND_BOLD, size=31.5, x=339, base=908))
@@ -275,9 +278,9 @@ def footer(canvas, card, white_text, rarity="double"):
                                        face=ts.REGULAR, size=12.6, x=367, base=1011, anchor="c")]), COPYRIGHT_GREY)
 
 
-def compose(card_id, opts):
-    """-> (RGBA float32 733x1024, report dict)."""
-    card = read_card(card_id)
+def compose(card_id, opts, card=None):
+    """-> (RGBA float32 733x1024, report dict). card: read_card's dict, possibly edited (default: read it)."""
+    card = card or read_card(card_id)
     art, clean_report = clean_art(card_id)
     prof = frame.profile(card["type"])
     hybrid = opts.style == "hybrid"

@@ -37,6 +37,13 @@ python -m svrestyle card <id> [<id> ...] --out <dir> [--style hybrid|panel] [--n
 - `--debug` (ex only): also writes `<name>-mask.png` (what was removed from the original, in green) and a JSON report.
 - The first render of a card runs LaMa (~15 s on CPU); its cleaned art is cached for later style changes.
 
+## 3b. Editor
+When the user wants to change a card's attacks, abilities, energy costs, damage, weakness, resistance, retreat, name
+or HP, or wants a point-and-click tool: `python -m svrestyle gui` (serves http://127.0.0.1:8765/; `--no-browser` in a
+headless session). The same edits go through `svrestyle.edit.apply` if you script them instead:
+`compose.compose(id, opts, card=edit.apply(compose.read_card(id), edits))` (ex) or
+`mecompose.compose_card(id, card=edit.apply(mecompose.read_card(id), edits))` (Mega Evolution).
+
 ## 4. Check before handing over
 Open the PNG and zoom (2-3x) on: the name bar, the text block, the weakness row and the area right under the
 name bar. Things to look for, and what to do:
