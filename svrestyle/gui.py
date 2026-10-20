@@ -1,17 +1,19 @@
 """Local web GUI: load a card, edit its name, HP, abilities, attacks (costs, damage, text), weakness, resistance and
-retreat, and render it in the ex or Mega Evolution layout; or import a custom-set export and restyle every older
-card in it. Standard library only; serves on 127.0.0.1.
+retreat, and render it in the ex or Mega Evolution layout, with its TCG Live holofoil re-made to fit the edits; or
+import a custom-set export and restyle every older card in it. Standard library only; serves on 127.0.0.1.
 
-  python -m svrestyle gui [--port 8765] [--fonts DIR] [--no-browser]
+  python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--no-browser]
 
 API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
-  GET  /api/meta              energy types, limits
+  GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available
   GET  /api/card?id=ID        {id, layout: "ex"|"me", name, card: editable fields}
-  POST /api/render            {id, edits?, style?, attacks?} -> {png: base64, warnings, layout}
+  POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout,
+                              foil?: {base, reverse: {png: base64 white plate (card size), shader, material} | null}}
   GET  /api/icon/TYPE.png     the energy icon used on cards (PNG)
   POST /api/set               a ptcg-sim custom-set export -> {cards: [{id, name, layout | skip}]}
-  POST /api/zip               {items: [{id, edits?, style?, attacks?}]} -> application/zip
+  POST /api/zip               {items: [{id, edits?, style?, attacks?, foil?}]} -> application/zip (with foil also
+                              the 1024x1024 front, the white plates and <card>-foil.json, see foil.files)
 """
 import base64
 import io
@@ -29,7 +31,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, edit, mecompose, meframe, tcg
+from . import cache, compose, edit, foil, layers, mecompose, meframe, tcg
 
 PAGE = Path(__file__).with_name("gui.html")
 MAX_BODY = 8 << 20
@@ -38,12 +40,19 @@ CURRENT_ERAS = ("sv", "me")          # already Scarlet & Violet / Mega Evolution
 STYLES = ("hybrid", "panel")
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
-_renders = OrderedDict()              # request key -> (png bytes, warnings); the last few, for zip downloads
+_renders = OrderedDict()              # request key -> Render; the last few, for zip downloads
 _RENDER_CACHE = 48
 
 
 class UserError(ValueError):
     """A problem with the request, shown to the user as is."""
+
+
+class Render(tuple):
+    """(png bytes, warnings, layout, holo). holo, when asked for: (foil.json record, {file name: bytes} as
+    foil.files writes them, {"base" | "reverse": white plate PNG at card size, for the preview})."""
+    def __new__(cls, png, notes, layout, holo=None):
+        return super().__new__(cls, (png, notes, layout, holo))
 
 
 # ---------------------------------------------------------------- cards
@@ -76,31 +85,52 @@ def card_summary(card_id):
             "type": card["type"], "card": edit.editable(card)}
 
 
-def render(card_id, edits=None, style="hybrid", attacks=True):
-    """-> (png bytes, warnings, layout); cached by request."""
+def _png(arr, mode=None):
+    buf = io.BytesIO()
+    Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
+    """-> Render; cached by request. holo: also re-make the card's TCG Live holofoil for this render: the plates
+    follow every edit (HP, costs, Ability badge, weakness, resistance and retreat icons are cut out where drawn)."""
     if style not in STYLES:
         raise UserError(f"style: one of {', '.join(STYLES)}")
-    key = json.dumps([card_id, edits, style, bool(attacks)], sort_keys=True, ensure_ascii=False)
+    if holo and not tcg.TCGLIVE:
+        raise UserError("holofoil needs a Pokemon TCG Live extract: start the GUI with --tcglive DIR "
+                        "(or set SVRESTYLE_TCGLIVE)")
+    key = json.dumps([card_id, edits, style, bool(attacks), bool(holo)], sort_keys=True, ensure_ascii=False)
     if key in _renders:
         _renders.move_to_end(key)
-        png, notes, layout = _renders[key]
-        return png, notes, layout
+        return _renders[key]
     layout, card = read(card_id)
     if edits:
         card = edit.apply(card, edits)
-    with _render_lock, warnings.catch_warnings(record=True) as caught:
+    with _render_lock, warnings.catch_warnings(record=True) as caught, layers.recording() as drawn:
         warnings.simplefilter("always")
         if layout == "ex":
             img, _ = compose.compose(card_id, compose.Options(style=style, attacks=bool(attacks)), card=card)
         else:
             img, _ = mecompose.compose_card(card_id, bool(attacks), card=card)
-    buf = io.BytesIO()
-    Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).save(buf, "PNG")
+        built = foil.build(card_id, layout, img, drawn, card) if holo else None
     notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
-    _renders[key] = (buf.getvalue(), notes, layout)
+    made = None
+    if built:
+        record, written = foil.files(built, f"{card_id}-{layout}", card_id)
+        plates = {k: _png(foil.card_space(built[k][1]), "L") for k in ("base", "reverse") if built[k]}
+        made = (record, written, plates)
+    result = Render(_png(img), notes, layout, made)
+    _renders[key] = result
     while len(_renders) > _RENDER_CACHE:
         _renders.popitem(last=False)
-    return buf.getvalue(), notes, layout
+    return result
+
+
+def holo_json(made):
+    """The foil part of /api/render's answer: per printing its plate (base64 PNG) and shader, or null."""
+    record, _, plates = made
+    return {k: {"png": base64.b64encode(plates[k]).decode(), "shader": record[k]["shader"].rsplit("/", 1)[-1],
+                "material": record[k]["material"]} if record[k] else None for k in ("base", "reverse")}
 
 
 def icon_png(type_name):
@@ -144,8 +174,11 @@ def zip_renders(items):
         for it in items:
             if not isinstance(it, dict):
                 raise UserError("items: expected objects")
-            png, _, layout = render(it.get("id"), it.get("edits"), it.get("style", "hybrid"), it.get("attacks", True))
+            png, _, layout, made = render(it.get("id"), it.get("edits"), it.get("style", "hybrid"),
+                                          it.get("attacks", True), bool(it.get("foil")))
             z.writestr(f"{it['id']}-{layout}.png", png)
+            for name, data in (made[1].items() if made else ()):
+                z.writestr(name, data)
     return buf.getvalue()
 
 
@@ -196,7 +229,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/meta":
                 self._json({"energy": list(edit.ENERGY), "styles": list(STYLES),
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
-                                       "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT}})
+                                       "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
+                            "weakness": list(edit.WEAKNESS_VALUES), "resistance": list(edit.RESISTANCE_VALUES),
+                            "foil": bool(tcg.TCGLIVE)})
             elif url.path == "/api/card":
                 self._json(card_summary((parse_qs(url.query).get("id") or [""])[0].strip()))
             elif url.path.startswith("/api/icon/") and url.path.endswith(".png"):
@@ -211,9 +246,12 @@ class Handler(BaseHTTPRequestHandler):
         def go():
             body = self._body()
             if url.path == "/api/render":
-                png, notes, layout = render(body.get("id"), body.get("edits"), body.get("style", "hybrid"),
-                                            body.get("attacks", True))
-                self._json({"png": base64.b64encode(png).decode(), "warnings": notes, "layout": layout})
+                png, notes, layout, made = render(body.get("id"), body.get("edits"), body.get("style", "hybrid"),
+                                                  body.get("attacks", True), bool(body.get("foil")))
+                out = {"png": base64.b64encode(png).decode(), "warnings": notes, "layout": layout}
+                if made:
+                    out["foil"] = holo_json(made)
+                self._json(out)
             elif url.path == "/api/set":
                 self._json(import_set(body))
             elif url.path == "/api/zip":

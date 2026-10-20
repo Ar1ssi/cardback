@@ -15,6 +15,7 @@ The foil is the target era's:
 What a composer drew comes from layers.recording(): every stamp and sprite is recorded under its kind.
 """
 import functools
+import io
 import json
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from .imaging import dilate
 
 W, H = 733, 1024
 TEX = 1024
-ASSET_VERSION = "1"
+ASSET_VERSION = "2"
 
 # (shader, material, cast-and-cure pattern), as TCG Live's MaterialManifests name them
 EX_FOIL = ("TPCi/Cards3D/HoloFoil/SunPillar", "MAT_Cards3D_SunPillar", "TEX_SouthernCross")
@@ -44,6 +45,7 @@ PANEL_INSET = 6    # the Mega Evolution text panel (meframe.PANEL) less its rim:
 FOOTER_ZONE = (40, 935, 330, 996)   # x0, y0, x1, y1: illustrator, regulation mark, set code, number, rarity
 ROW_REACH = 40     # px either side a filled pixel takes its row's value from
 EX_FILL_GROW = 5   # Absol's plate: its HP digits are a little bolder there than as set here
+BORDER_FOIL = 255  # the SV ex border on Absol's plate where its art does not spill over: all foil
 
 
 # ---------------------------------------------------------------- TCG Live data
@@ -146,11 +148,14 @@ def _absol():
 
 
 def ex_template():
-    """Absol ex's plate with its name, ex logo and HP filled in."""
+    """Absol ex's plate with its name, ex logo and HP filled in, and its border plain foil (Absol's art spills
+    over its border, and the plate with it)."""
     def build():
         absol, drawn = _absol()
         marks = (drawn["name"] > 0.1) | (drawn["logo"] > 0.1) | (drawn["hp"] > 0.1)
-        return fill(absol, dilate(marks, EX_FILL_GROW))
+        out = fill(absol, dilate(marks, EX_FILL_GROW))
+        out[:, :frame.INNER_X0] = out[:, frame.INNER_X1:] = out[frame.PANEL_Y1:] = BORDER_FOIL
+        return out
 
     return _cached("ex-template.png", build)
 
@@ -255,19 +260,37 @@ def build(card_id, layout, canvas, drawn, card):
     return {"front": front_texture(canvas), "base": pack(base), "reverse": pack(reverse)}
 
 
-def save(foil, out_dir, stem, card_id):
-    """Write <stem>-front.png, -wp.png, -wp-ph.png and <stem>-foil.json (file names relative to out_dir)."""
-    out_dir = Path(out_dir)
-    record = {"id": card_id, "tcglive": tcg.tcglive_id(card_id), "front": f"{stem}-front.png"}
-    Image.fromarray(foil["front"]).save(out_dir / record["front"])
+def files(foil, stem, card_id):
+    """-> (record, {file name: PNG bytes}): <stem>-front.png, -wp.png, -wp-ph.png; record is <stem>-foil.json's
+    content (file names in it relative to it)."""
+    out = {}
+
+    def png(name, arr):
+        buf = io.BytesIO()
+        Image.fromarray(arr).save(buf, "PNG")
+        out[name] = buf.getvalue()
+        return name
+
+    record = {"id": card_id, "tcglive": tcg.tcglive_id(card_id), "front": png(f"{stem}-front.png", foil["front"])}
     for key, suffix in (("base", "wp"), ("reverse", "wp-ph")):
         if foil[key] is None:
             record[key] = None
             continue
         (shader, material, pattern), img = foil[key]
-        name = f"{stem}-{suffix}.png"
-        Image.fromarray(img).save(out_dir / name)
-        record[key] = {"shader": shader, "material": material, "wp": name, "etch": None, "cf": None, "cc": pattern}
-    path = out_dir / f"{stem}-foil.json"
-    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    return path
+        record[key] = {"shader": shader, "material": material, "wp": png(f"{stem}-{suffix}.png", img),
+                       "etch": None, "cf": None, "cc": pattern}
+    out[f"{stem}-foil.json"] = json.dumps(record, indent=2).encode()
+    return record, out
+
+
+def save(foil, out_dir, stem, card_id):
+    """Write files() into out_dir; -> the -foil.json path."""
+    _, written = files(foil, stem, card_id)
+    for name, data in written.items():
+        (Path(out_dir) / name).write_bytes(data)
+    return Path(out_dir) / f"{stem}-foil.json"
+
+
+def card_space(texture):
+    """A 1024x1024 texture's card part (733x1024), for previews."""
+    return texture[:, tcg.BLEED_X:tcg.BLEED_X + W]

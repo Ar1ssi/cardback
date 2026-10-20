@@ -14,6 +14,9 @@ MAX_NAME, MAX_EFFECT, MAX_FLAVOR = 40, 400, 220
 DAMAGE = re.compile(r"(\d{1,4})?([+×x-])?")        # 120, 30+, 50×, 10-, or empty (no damage printed)
 WEAKNESS = re.compile(r"[×x+]\d{1,3}")              # ×2 (current), +20 (older cards)
 RESISTANCE = re.compile(r"[-−]\d{1,3}")              # -30
+# What cards print, offered as choices in the editor (any value the patterns accept still works).
+WEAKNESS_VALUES = ("×2", "+10", "+20", "+30", "+40")
+RESISTANCE_VALUES = ("-10", "-20", "-30", "-40")
 CARD_ID = re.compile(r"[a-z]{2,6}[0-9.]*[a-z]?-[A-Za-z0-9]{1,10}")   # swsh6-99, sv03.5-065, sma-SV33, swshp-SWSH055
 
 SCALAR = {"prefix": MAX_NAME, "name": MAX_NAME, "hp": 4, "illustrator": MAX_NAME, "evolves_from": MAX_NAME,

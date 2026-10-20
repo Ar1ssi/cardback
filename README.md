@@ -56,7 +56,12 @@ python -m svrestyle gui            # opens http://127.0.0.1:8765/ in your browse
 Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. For each
 card you can change the name (and regional prefix), HP, "Evolves from", illustrator and flavour text, add, remove and
 reorder abilities and attacks, pick each attack's energy cost from the type icons, set its damage (a number with an
-optional +, × or −) and text, and set weakness (×2 or +20), resistance and retreat. The preview re-renders as you
+optional +, × or −) and text, and set weakness (type and ×2 / +10…+40), resistance (type and −10…−40) and
+retreat (click + / −, or a retreat symbol to remove it). With `--tcglive DIR`, tick Holofoil to re-make the card's
+TCG Live foil with every render: the plates follow the edits (costs, Ability badge, weakness, resistance and retreat
+icons are cut out where they are drawn); preview the foil on the card (a rough stand-in for the game's shaders that
+follows the pointer) or the white plate itself, per printing (holo / reverse holo), and download the card with its
+foil textures as a zip (the custom-set zip includes them too). The preview re-renders as you
 edit, in exactly the card layout the command line produces; download one PNG, or every card of an imported set as a
 zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
 

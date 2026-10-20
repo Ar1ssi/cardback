@@ -60,9 +60,15 @@
   .setlist button.active { background: var(--chip); font-weight: 600; }
   .setlist .skip { color: var(--muted); }
   .hint { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
-  .retreat { display: flex; align-items: center; gap: 8px; }
-  .retreat .icons { display: flex; gap: 2px; min-height: 22px; }
-  .retreat img { width: 20px; height: 20px; }
+  .retreat { display: flex; align-items: center; gap: 6px; }
+  .retreat .icons { display: flex; gap: 2px; min-height: 26px; min-width: 60px; align-items: center; padding: 2px 4px; border: 1px dashed var(--line); border-radius: 6px; }
+  .retreat .icons .empty { color: var(--muted); font-size: 12px; }
+  .retreat .icons .energy, .retreat .icons .energy img { width: 22px; height: 22px; }
+  .side-icon { width: 30px; height: 30px; flex: 0 0 30px !important; align-self: end; margin-bottom: 4px; }
+  .stage { position: relative; max-width: 560px; margin: 0 auto; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 14px; pointer-events: none; mix-blend-mode: color-dodge; opacity: .8; }
+  .stage img.plate { border-radius: 14px; }
+  .foil-info { font-size: 12px; color: var(--muted); margin-top: 6px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -82,7 +88,7 @@
       <h2><span id="setName">Custom set</span>
         <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
       <div id="setList" class="setlist"></div>
-      <p class="hint">Cards already in the Scarlet &amp; Violet or Mega Evolution style are listed but skipped. Edits you make to a card are kept for the zip.</p>
+      <p class="hint">Cards already in the Scarlet &amp; Violet or Mega Evolution style are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
     </section>
 
     <div id="editor" hidden>
@@ -114,15 +120,36 @@
       <section>
         <h2><span>Weakness, resistance, retreat</span></h2>
         <div class="row">
+          <span id="weakIcon" class="side-icon"></span>
           <div><label for="weakType">Weakness</label><select id="weakType"></select></div>
-          <div class="narrow"><label for="weakValue">Value</label><input id="weakValue" type="text" placeholder="×2"></div>
+          <div class="narrow"><label for="weakValue">Value</label><select id="weakValue"></select></div>
         </div>
         <div class="row">
+          <span id="resIcon" class="side-icon"></span>
           <div><label for="resType">Resistance</label><select id="resType"></select></div>
-          <div class="narrow"><label for="resValue">Value</label><input id="resValue" type="text" placeholder="-30"></div>
+          <div class="narrow"><label for="resValue">Value</label><select id="resValue"></select></div>
         </div>
-        <label for="retreat">Retreat cost</label>
-        <div class="retreat"><input id="retreat" type="number" min="0" max="5" style="width: 70px"><span id="retreatIcons" class="icons"></span></div>
+        <label id="retreatLabel">Retreat cost</label>
+        <div class="retreat" role="group" aria-labelledby="retreatLabel">
+          <button id="retreatLess" class="small" aria-label="One less">−</button>
+          <span id="retreatIcons" class="icons"></span>
+          <button id="retreatMore" class="small" aria-label="One more">+</button>
+        </div>
+        <p class="hint">Click a retreat symbol to remove it. With holofoil on, the foil plates follow these icons.</p>
+      </section>
+
+      <section>
+        <h2><span>Holofoil</span><span id="foilBadge" class="badge"></span></h2>
+        <label style="display:flex; gap:6px; align-items:center; margin:0"><input id="foilOn" type="checkbox"> Re-make the TCG Live holofoil with every render</label>
+        <div class="row">
+          <div><label for="foilPrint">Printing</label>
+            <select id="foilPrint"><option value="base">Holo</option><option value="reverse">Reverse holo</option></select></div>
+          <div><label for="foilView">Preview</label>
+            <select id="foilView"><option value="foil">Foil on the card</option><option value="plate">White plate</option><option value="off">Card only</option></select></div>
+        </div>
+        <div id="foilInfo" class="foil-info"></div>
+        <p id="foilMissing" class="hint" hidden>Holofoil needs a Pokémon TCG Live extract: start the GUI with <code>--tcglive DIR</code>.</p>
+        <p class="hint">The white plate is where the foil shows (white) and where not (black): the art keeps the old card's plate with the Pokémon left out; the frame is the new era's, with what this card prints cut out. Move the pointer over the card to tilt the light.</p>
       </section>
 
       <section>
@@ -137,6 +164,7 @@
           <button id="renderBtn" class="primary">Render</button>
           <button id="resetBtn">Reset to printed card</button>
           <button id="downloadBtn" disabled>Download PNG</button>
+          <button id="downloadFoilBtn" disabled>Download with holofoil (.zip)</button>
         </div>
         <label style="display:flex; gap:6px; align-items:center; margin-top:8px"><input id="autoRender" type="checkbox" checked> Re-render automatically after edits</label>
       </section>
@@ -146,7 +174,11 @@
   <div class="preview">
     <div id="errors"></div>
     <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards.</div>
-    <img id="preview" alt="Rendered card" hidden>
+    <div id="stage" class="stage" hidden>
+      <img id="preview" alt="Rendered card">
+      <canvas id="foilCanvas" width="733" height="1024" aria-hidden="true" hidden></canvas>
+      <img id="plateView" class="plate" alt="Holofoil white plate" hidden>
+    </div>
     <div id="warnings"></div>
   </div>
 </main>
@@ -163,6 +195,10 @@ const state = {
   renderTimer: null,
   renderSeq: 0,
   lastPng: null,
+  plates: {},             // "base" | "reverse" -> {url: plate PNG data URL, mask: canvas, alpha = plate}
+  foilInfo: null,         // /api/render's foil answer for the card shown
+  light: { x: 0.5, y: 0.35, pointer: false },
+  raf: 0,
 };
 
 function el(tag, attrs = {}, ...children) {
@@ -226,7 +262,6 @@ function fillForm() {
   for (const k of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor"]) $(k).value = card[k] ?? "";
   setSide("weak", card.weakness, "×2");
   setSide("res", card.resistance, "-30");
-  $("retreat").value = card.retreat;
   drawRetreat();
   $("style").value = state.options[id].style;
   $("showAttacks").value = state.options[id].attacks ? "1" : "0";
@@ -235,7 +270,17 @@ function fillForm() {
 
 function setSide(prefix, side, fallback) {
   $(prefix + "Type").value = side ? side.type : "";
-  $(prefix + "Value").value = side ? side.value : fallback;
+  const values = $(prefix + "Value");
+  const value = side ? side.value.replace("x", "×").replace("−", "-") : fallback;
+  if (![...values.options].some((o) => o.value === value)) values.append(el("option", { value }, value));
+  values.value = value;
+  drawSide(prefix);
+}
+
+function drawSide(prefix) {
+  const type = $(prefix + "Type").value;
+  $(prefix + "Value").disabled = !type;
+  $(prefix + "Icon").replaceChildren(...(type ? [icon(type)] : []));
 }
 
 // ---------------------------------------------------------------- abilities & attacks
@@ -294,8 +339,20 @@ function drawBlocks() {
 }
 
 function drawRetreat() {
-  const n = Math.max(0, Math.min(5, parseInt($("retreat").value || "0", 10) || 0));
-  $("retreatIcons").replaceChildren(...Array.from({ length: n }, () => icon("Colorless")));
+  const card = state.edits[state.current.id];
+  const max = state.meta.limits.retreat;
+  $("retreatIcons").replaceChildren(...(card.retreat ? Array.from({ length: card.retreat }, () =>
+    el("button", { class: "energy", title: "Remove one", "aria-label": "Remove one retreat energy",
+      onclick: () => setRetreat(card.retreat - 1) }, icon("Colorless")))
+    : [el("span", { class: "empty" }, "Free")]));
+  $("retreatLess").disabled = card.retreat <= 0;
+  $("retreatMore").disabled = card.retreat >= max;
+}
+
+function setRetreat(n) {
+  const card = state.edits[state.current.id];
+  card.retreat = Math.max(0, Math.min(state.meta.limits.retreat, n));
+  drawRetreat(); changed();
 }
 
 // ---------------------------------------------------------------- edits
@@ -303,9 +360,8 @@ function readForm() {
   const card = state.edits[state.current.id];
   for (const k of ["prefix", "name", "hp", "illustrator"]) card[k] = $(k).value;
   if (state.current.layout === "me") { card.evolves_from = $("evolves_from").value; card.flavor = $("flavor").value; }
-  card.weakness = $("weakType").value ? { type: $("weakType").value, value: $("weakValue").value.trim() || "×2" } : null;
-  card.resistance = $("resType").value ? { type: $("resType").value, value: $("resValue").value.trim() || "-30" } : null;
-  card.retreat = Math.max(0, Math.min(5, parseInt($("retreat").value || "0", 10) || 0));
+  card.weakness = $("weakType").value ? { type: $("weakType").value, value: $("weakValue").value || "×2" } : null;
+  card.resistance = $("resType").value ? { type: $("resType").value, value: $("resValue").value || "-30" } : null;
   state.options[state.current.id] = { style: $("style").value, attacks: $("showAttacks").value === "1" };
 }
 
@@ -320,7 +376,7 @@ function changed() {
 function payload(id) {
   const edits = state.edits[id];
   const opt = state.options[id] || { style: "hybrid", attacks: true };
-  return { id, edits, style: opt.style, attacks: opt.attacks };
+  return { id, edits, style: opt.style, attacks: opt.attacks, foil: $("foilOn").checked };
 }
 
 async function renderNow() {
@@ -335,14 +391,106 @@ async function renderNow() {
     if (seq !== state.renderSeq) return;            // a newer render was asked for meanwhile
     state.lastPng = data.png;
     $("preview").src = `data:image/png;base64,${data.png}`;
-    $("preview").hidden = false; $("placeholder").hidden = true;
+    $("stage").hidden = false; $("placeholder").hidden = true;
     $("downloadBtn").disabled = false;
+    $("downloadFoilBtn").disabled = !$("foilOn").checked;
+    await setFoil(data.foil || null);
     showWarnings(data.warnings);
     status("");
     markRendered(id);
   } catch (e) {
     if (seq === state.renderSeq) { status(""); showError(e.message); }
   } finally { if (seq === state.renderSeq) $("renderBtn").disabled = false; }
+}
+
+// ---------------------------------------------------------------- holofoil
+const SHADERS = {
+  SunPillar: "SunPillar (Scarlet & Violet ex foil)",
+  SvHolo: "SvHolo (Mega Evolution holo, art window)",
+  FlatSilver: "FlatSilver (Mega Evolution reverse holo)",
+};
+const PRINTINGS = { base: "Holo", reverse: "Reverse holo" };
+
+// The plate as a mask: white where the foil shows, transparent where not.
+async function plateMask(url) {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  const c = el("canvas", { width: img.width, height: img.height });
+  const g = c.getContext("2d");
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height);
+  for (let i = 0; i < d.data.length; i += 4) {
+    d.data[i + 3] = d.data[i];
+    d.data[i] = d.data[i + 1] = d.data[i + 2] = 255;
+  }
+  g.putImageData(d, 0, 0);
+  return c;
+}
+
+async function setFoil(foil) {
+  state.foilInfo = foil;
+  state.plates = {};
+  for (const k of Object.keys(PRINTINGS)) {
+    if (!foil || !foil[k]) continue;
+    const url = `data:image/png;base64,${foil[k].png}`;
+    state.plates[k] = { url, mask: await plateMask(url) };
+  }
+  for (const o of $("foilPrint").options) o.disabled = !state.plates[o.value];
+  if (!state.plates[$("foilPrint").value]) {
+    const first = Object.keys(PRINTINGS).find((k) => state.plates[k]);
+    if (first) $("foilPrint").value = first;
+  }
+  drawFoilInfo();
+  showFoil();
+}
+
+function drawFoilInfo() {
+  const foil = state.foilInfo;
+  const on = $("foilOn").checked;
+  $("foilBadge").textContent = !on ? "" : !foil ? "not rendered" : foil.base || foil.reverse ? "on" : "no foil";
+  $("foilInfo").textContent = !on || !foil ? "" : Object.entries(PRINTINGS).map(([k, label]) =>
+    `${label}: ${foil[k] ? SHADERS[foil[k].shader] || foil[k].shader : "none (the old print had none)"}`).join(" · ");
+}
+
+function showFoil() {
+  const plate = state.plates[$("foilPrint").value];
+  const view = $("foilOn").checked && plate ? $("foilView").value : "off";
+  $("plateView").hidden = view !== "plate";
+  $("preview").hidden = view === "plate";
+  $("foilCanvas").hidden = view !== "foil";
+  if (view === "plate") $("plateView").src = plate.url;
+  cancelAnimationFrame(state.raf);
+  if (view === "foil") state.raf = requestAnimationFrame(drawFoil);
+}
+
+// A rough stand-in for the game's shaders, to check where the foil falls: rainbow bands and a glare that follow
+// the light, shown only where the plate is white.
+function drawFoil(t) {
+  const plate = state.plates[$("foilPrint").value];
+  if (!plate) return;
+  const c = $("foilCanvas");
+  const g = c.getContext("2d");
+  const L = state.light;
+  if (!L.pointer) {
+    L.x = 0.5 + 0.35 * Math.sin(t / 1900);
+    L.y = 0.4 + 0.25 * Math.cos(t / 2700);
+  }
+  const w = c.width, h = c.height;
+  g.globalCompositeOperation = "source-over";
+  g.clearRect(0, 0, w, h);
+  const bands = g.createLinearGradient(-w * L.x, -h * 0.2, w * (2 - L.x), h * 1.2);
+  for (let i = 0; i <= 12; i++) bands.addColorStop(i / 12, `hsla(${(i * 75 + L.y * 360) % 360}, 100%, 62%, .55)`);
+  g.fillStyle = bands;
+  g.fillRect(0, 0, w, h);
+  const glare = g.createRadialGradient(w * L.x, h * L.y, 0, w * L.x, h * L.y, w * 0.55);
+  glare.addColorStop(0, "rgba(255,255,255,.75)");
+  glare.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = glare;
+  g.fillRect(0, 0, w, h);
+  g.globalCompositeOperation = "destination-in";
+  g.drawImage(plate.mask, 0, 0, w, h);
+  state.raf = requestAnimationFrame(drawFoil);
 }
 
 // ---------------------------------------------------------------- custom set
@@ -418,6 +566,10 @@ async function init() {
   for (const sel of [$("weakType"), $("resType")]) {
     sel.replaceChildren(el("option", { value: "" }, "None"), ...state.meta.energy.map((t) => el("option", { value: t }, t)));
   }
+  $("weakValue").replaceChildren(...state.meta.weakness.map((v) => el("option", { value: v }, v)));
+  $("resValue").replaceChildren(...state.meta.resistance.map((v) => el("option", { value: v }, v.replace("-", "−"))));
+  $("foilOn").disabled = !state.meta.foil;
+  $("foilMissing").hidden = state.meta.foil;
   $("loadBtn").addEventListener("click", () => loadCard($("cardId").value));
   $("cardId").addEventListener("keydown", (e) => { if (e.key === "Enter") loadCard($("cardId").value); });
   $("importBtn").addEventListener("click", () => $("setFile").click());
@@ -441,10 +593,31 @@ async function init() {
     state.edits[state.current.id].attacks.push({ cost: ["Colorless"], name: "New Attack", damage: "30", effect: "" });
     drawBlocks(); changed();
   });
-  $("retreat").addEventListener("input", () => { drawRetreat(); changed(); });
-  for (const id of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor", "weakValue", "resValue"])
+  $("retreatLess").addEventListener("click", () => setRetreat(state.edits[state.current.id].retreat - 1));
+  $("retreatMore").addEventListener("click", () => setRetreat(state.edits[state.current.id].retreat + 1));
+  for (const id of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor"])
     $(id).addEventListener("input", changed);
-  for (const id of ["weakType", "resType", "style", "showAttacks"]) $(id).addEventListener("change", changed);
+  for (const id of ["weakValue", "resValue", "style", "showAttacks"]) $(id).addEventListener("change", changed);
+  for (const p of ["weak", "res"]) $(p + "Type").addEventListener("change", () => { drawSide(p); changed(); });
+  $("foilOn").addEventListener("change", () => {
+    if ($("foilOn").checked) { drawFoilInfo(); renderNow(); }
+    else { setFoil(null); $("downloadFoilBtn").disabled = true; }
+  });
+  for (const id of ["foilPrint", "foilView"]) $(id).addEventListener("change", showFoil);
+  $("stage").addEventListener("pointermove", (e) => {
+    const r = $("stage").getBoundingClientRect();
+    Object.assign(state.light, { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height, pointer: true });
+  });
+  $("stage").addEventListener("pointerleave", () => { state.light.pointer = false; });
+  $("downloadFoilBtn").addEventListener("click", async () => {
+    if (!state.current) return;
+    status("Building holofoil zip…");
+    try {
+      const blob = await (await api("/api/zip", { items: [payload(state.current.id)] })).blob();
+      save(blob, `${state.current.id}-${state.current.layout}-holofoil.zip`);
+      status("");
+    } catch (e) { status(""); showError(e.message); }
+  });
   $("renderAllBtn").addEventListener("click", renderAll);
   $("zipBtn").addEventListener("click", downloadZip);
   const q = new URLSearchParams(location.search).get("id");

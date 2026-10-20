@@ -112,7 +112,11 @@ class Http(unittest.TestCase):
         self.assertEqual((status, ctype.split(";")[0]), (200, "text/html"))
         self.assertIn(b"Card Restyle", body)
         status, _, body = self.call("/api/meta")
-        self.assertEqual(json.loads(body)["energy"], list(edit.ENERGY))
+        meta = json.loads(body)
+        self.assertEqual(meta["energy"], list(edit.ENERGY))
+        self.assertIn("+20", meta["weakness"])
+        self.assertIn("-30", meta["resistance"])
+        self.assertIn("foil", meta)
 
     def test_bad_requests(self):
         self.assertEqual(self.call("/api/card?id=../../etc/passwd")[0], 400)
@@ -121,18 +125,40 @@ class Http(unittest.TestCase):
         self.assertEqual(self.call("/nope")[0], 404)
         self.assertEqual(self.call("/api/render", {"id": "swsh3-88", "style": "comic"})[0], 400)
 
+    def test_holofoil_needs_an_extract(self):
+        with mock.patch.object(gui.tcg, "TCGLIVE", None):
+            status, _, body = self.call("/api/render", {"id": "swsh3-88", "foil": True})
+        self.assertEqual(status, 400)
+        self.assertIn("--tcglive", json.loads(body)["error"])
+
     def test_render_and_zip(self):
         gui._renders.clear()
-        fake = (b"\x89PNG fake", ["a warning"], "me")
+        fake = gui.Render(b"\x89PNG fake", ["a warning"], "me")
         with mock.patch.object(gui, "render", return_value=fake) as r:
             status, _, body = self.call("/api/render", {"id": "swsh3-88", "edits": {"retreat": 2}})
             self.assertEqual(status, 200)
             data = json.loads(body)
             self.assertEqual((data["layout"], data["warnings"]), ("me", ["a warning"]))
-            r.assert_called_once_with("swsh3-88", {"retreat": 2}, "hybrid", True)
+            self.assertNotIn("foil", data)
+            r.assert_called_once_with("swsh3-88", {"retreat": 2}, "hybrid", True, False)
             status, ctype, body = self.call("/api/zip", {"items": [{"id": "swsh3-88"}, {"id": "sm10-19"}]})
         self.assertEqual((status, ctype), (200, "application/zip"))
         self.assertEqual(zipfile.ZipFile(io.BytesIO(body)).namelist(), ["swsh3-88-me.png", "sm10-19-me.png"])
+
+    def test_render_and_zip_with_holofoil(self):
+        gui._renders.clear()
+        record = {"base": None, "reverse": {"shader": "TPCi/Cards3D/HoloFoil/FlatSilver",
+                                            "material": "MAT_Cards3D_FlatSilver"}}
+        files = {"swsh3-51-me-front.png": b"f", "swsh3-51-me-wp-ph.png": b"p", "swsh3-51-me-foil.json": b"{}"}
+        fake = gui.Render(b"\x89PNG fake", [], "me", (record, files, {"reverse": b"plate"}))
+        with mock.patch.object(gui, "render", return_value=fake) as r:
+            status, _, body = self.call("/api/render", {"id": "swsh3-51", "foil": True})
+            data = json.loads(body)
+            self.assertIsNone(data["foil"]["base"])
+            self.assertEqual(data["foil"]["reverse"]["shader"], "FlatSilver")
+            r.assert_called_once_with("swsh3-51", None, "hybrid", True, True)
+            status, _, body = self.call("/api/zip", {"items": [{"id": "swsh3-51", "foil": True}]})
+        self.assertEqual(zipfile.ZipFile(io.BytesIO(body)).namelist(), ["swsh3-51-me.png", *files])
 
     def test_edit_errors_come_back_as_400(self):
         with mock.patch.object(gui, "read", return_value=("me", card())):
