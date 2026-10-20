@@ -88,7 +88,7 @@
       <h2><span id="setName">Custom set</span>
         <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
       <div id="setList" class="setlist"></div>
-      <p class="hint">Cards already in the Scarlet &amp; Violet or Mega Evolution style are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
+      <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
     </section>
 
     <div id="editor" hidden>
@@ -101,7 +101,7 @@
         </div>
         <div class="row">
           <div data-me><label for="evolves_from">Evolves from</label><input id="evolves_from" type="text"></div>
-          <div><label for="illustrator">Illustrator</label><input id="illustrator" type="text"></div>
+          <div data-restyle><label for="illustrator">Illustrator</label><input id="illustrator" type="text"></div>
         </div>
         <div data-me><label for="flavor">Flavour text</label><textarea id="flavor" rows="2"></textarea></div>
       </section>
@@ -114,7 +114,7 @@
       <section>
         <h2><span>Attacks</span><button id="addAttack" class="small">+ Attack</button></h2>
         <div id="attacks"></div>
-        <p class="hint">Click an energy below an attack to add it to the cost; click a cost symbol to remove it. Damage: a number, optionally followed by +, × or −.</p>
+        <p class="hint">Click an energy below an attack to add it to the cost; click a cost symbol to remove it. Damage: a number, optionally followed by +, × or −. In text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols.</p>
       </section>
 
       <section>
@@ -157,7 +157,7 @@
         <div class="row">
           <div data-ex><label for="style">ex layout</label>
             <select id="style"><option value="hybrid">Full art (no panel)</option><option value="panel">Translucent type panel</option></select></div>
-          <div><label for="showAttacks">Abilities &amp; attacks</label>
+          <div data-restyle><label for="showAttacks">Abilities &amp; attacks</label>
             <select id="showAttacks"><option value="1">Shown</option><option value="0">Left off the card</option></select></div>
         </div>
         <div class="row" style="margin-top: 10px">
@@ -173,7 +173,7 @@
 
   <div class="preview">
     <div id="errors"></div>
-    <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards.</div>
+    <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards. Scarlet &amp; Violet and Mega Evolution cards are edited in place.</div>
     <div id="stage" class="stage" hidden>
       <img id="preview" alt="Rendered card">
       <canvas id="foilCanvas" width="733" height="1024" aria-hidden="true" hidden></canvas>
@@ -265,10 +265,11 @@ function fillForm() {
   const { layout, name, id } = state.current;
   const card = state.edits[id];
   $("editor").hidden = false;
-  $("layoutBadge").textContent = layout === "ex" ? "→ Scarlet & Violet ex" : "→ Mega Evolution";
+  $("layoutBadge").textContent = { ex: "→ Scarlet & Violet ex", me: "→ Mega Evolution", modern: "edited in place" }[layout];
   $("cardTitle").textContent = `${id} · ${name}`;
   document.querySelectorAll("[data-me]").forEach((n) => (n.hidden = layout !== "me"));
   document.querySelectorAll("[data-ex]").forEach((n) => (n.hidden = layout !== "ex"));
+  document.querySelectorAll("[data-restyle]").forEach((n) => (n.hidden = layout === "modern"));
   for (const k of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor"]) $(k).value = card[k] ?? "";
   setSide("weak", card.weakness, "×2");
   setSide("res", card.resistance, "-30");
@@ -524,7 +525,7 @@ function drawSet() {
       "data-id": c.id, class: c.skip ? "skip" : "", disabled: !!c.skip,
       onclick: () => loadCard(c.id) },
     el("span", {}, `${c.name} `, el("span", { class: "badge" }, c.id)),
-    el("span", { class: "badge" }, c.skip ? c.skip : c.layout === "ex" ? "ex" : "Mega Evolution"))));
+    el("span", { class: "badge" }, c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit" }[c.layout]))));
   $("zipBtn").disabled = $("renderAllBtn").disabled = todo === 0;
   markActive();
 }

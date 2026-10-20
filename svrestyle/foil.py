@@ -17,6 +17,7 @@ What a composer drew comes from layers.recording(): every stamp and sprite is re
 import functools
 import io
 import json
+import re
 from pathlib import Path
 
 import cv2
@@ -37,8 +38,8 @@ ME_REVERSE = ("TPCi/Cards3D/HoloFoil/FlatSilver", "MAT_Cards3D_FlatSilver", None
 NON_FOIL = "NonFoil"      # in the material name of a non-foil printing (old bundles: Standard_NonFoil_J)
 
 # Drawn kinds left out of the foil (black on the plate).
-EX_CUT = ("hp", "type_icon", "icon", "badge", "ability_name", "text", "row_text", "footer")
-ME_REVERSE_CUT = ("icon", "badge", "ability_name", "footer")
+EX_CUT = ("hp", "type_icon", "icon", "row_icon", "badge", "ability_name", "text", "row_text", "footer")
+ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer")
 ME_REVERSE_REFS = {"basic": "me01-054", "stage": "me01-010"}   # Abra, Meganium: their reverse plates
 FILL_GROW = 4      # px around a reference card's own marks that are filled in when its plate becomes a template
 PANEL_INSET = 6    # the Mega Evolution text panel (meframe.PANEL) less its rim: all foil but the marks on it
@@ -260,6 +261,85 @@ def build(card_id, layout, canvas, drawn, card):
     return {"front": front_texture(canvas), "base": pack(base), "reverse": pack(reverse)}
 
 
+# ---------------------------------------------------------------- Scarlet & Violet / Mega Evolution cards, edited in place
+def legacy_shader(name):
+    """Shader name as the client knows it (old bundles use pre-rename names); WebApp tools/assets/cards_import.py."""
+    if name.startswith("TPCi/Cards3D"):
+        return name
+    rep = {"Cards/": "TPCi/Cards3D/", "_Amplify": "", "_J": "", "SW": "Sw", "SV": "Sv", "Standard_": "",
+           "Foil/": "", "HoloFoil_": "HoloFoil/", "Cracked_Ice": "CrackedIce"}
+    return re.sub(r"(^Cards/)|(_J)|(_Amplify)|(Standard_)|(Foil/)|(HoloFoil_)|(SW)|(SV)|(Cracked_Ice)",
+                  lambda m: rep.get(m.group(0), m.group(0)), name)
+
+
+def material_name(f):
+    """MaterialManifest _f -> material name; WebApp tools/assets/cards_import.py."""
+    if f == "HoloFoil_SWSecret_J":
+        f = "HoloFoil_SwSecret_Amplify_J"
+    if f == "HoloFoil_SWHolo_J":
+        f = "HoloFoil_SwHolo_Amplify_J"
+    rep = {"HoloFoil": "", "Standard": "", "Amplify": "", "J": "", "SW": "Sw", "SV": "Sv", "_": ""}
+    return "MAT_Cards3D_" + re.sub(r"(HoloFoil)|(Standard)|(Amplify)|(J)|(_)|(SW)|(SV)", lambda m: rep[m.group(0)], f)
+
+
+def texture(record, name):
+    """A texture of the record's bundle at its own size (uint8 array), or None."""
+    if not name:
+        return None
+    png = Path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png")
+    if png.exists():
+        return _plain(Image.open(png))
+    import UnityPy
+    bundle = Path(tcg.TCGLIVE, "cardart", "bundles", record["bundle"])
+    img = next((o.read().image for o in UnityPy.load(str(bundle)).objects
+                if o.type.name == "Texture2D" and o.peek_name() == name), None)
+    return None if img is None else _plain(img)
+
+
+def _plain(img):
+    return np.asarray(img if img.mode in ("L", "RGB", "RGBA") else img.convert("RGBA"))
+
+
+def modern_front(card_id, canvas):
+    """The card's own 1024x1024 front (its real bleed) with the edited card in the middle."""
+    front = tcg.tcglive_front(card_id)
+    if front is None or front.size != (TEX, TEX):
+        return front_texture(canvas)
+    out = np.asarray(front.convert("RGB")).copy()
+    out[:, tcg.BLEED_X:tcg.BLEED_X + W] = np.clip(canvas[..., :3], 0, 255).astype(np.uint8)
+    return out
+
+
+def build_modern(card_id, card, canvas, drawn, taken_off, original):
+    """Foil of a Scarlet & Violet / Mega Evolution card edited in place (modern.compose_card): its own printings,
+    each plate with what was taken off filled in and what was set cut out (ex: everything printed, as on SV ex
+    plates; reverse holo: what Mega Evolution reverse plates leave out). Same shape as build()."""
+    from . import modern
+    alpha = canvas[..., 3]
+    old = printings(card_id)
+    out = {"front": modern_front(card_id, canvas), "base": None, "reverse": None}
+    for key in ("base", "reverse"):
+        record = old[key]
+        if not is_foil(record):
+            continue
+        img = plate(record)
+        if taken_off is not None and taken_off.any():
+            img = fill(img, taken_off)
+        if card["family"] == "ex" and key == "base":
+            if "logo" in drawn:
+                before = modern._drawn(modern._name, original)["logo"]
+                cols = lambda a: np.flatnonzero(a.max(axis=0) > 0.5)
+                moved = np.roll(plate(record), int(cols(drawn["logo"])[0] - cols(before)[0]), axis=1)
+                img = img * (1 - drawn["logo"]) + moved * drawn["logo"]
+            img = cut(img, drawn, EX_CUT)
+        elif key == "reverse":
+            img = cut(img, drawn, ME_REVERSE_CUT)
+        spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)
+        extra = {"etch": texture(record, record.get("_e")), "cf": texture(record, record.get("_cf"))}
+        out[key] = (spec, plate_texture(img * (alpha / 255)), extra)
+    return out
+
+
 def files(foil, stem, card_id):
     """-> (record, {file name: PNG bytes}): <stem>-front.png, -wp.png, -wp-ph.png; record is <stem>-foil.json's
     content (file names in it relative to it)."""
@@ -276,9 +356,13 @@ def files(foil, stem, card_id):
         if foil[key] is None:
             record[key] = None
             continue
-        (shader, material, pattern), img = foil[key]
+        (shader, material, pattern), img, *more = foil[key]
+        extra = more[0] if more else {}
         record[key] = {"shader": shader, "material": material, "wp": png(f"{stem}-{suffix}.png", img),
-                       "etch": None, "cf": None, "cc": pattern}
+                       "cc": pattern}
+        for tex in ("etch", "cf"):          # carried over unchanged from the card's own printing
+            name = f"{stem}-{suffix}-{tex}.png"
+            record[key][tex] = png(name, extra[tex]) if extra.get(tex) is not None else None
     out[f"{stem}-foil.json"] = json.dumps(record, indent=2).encode()
     return record, out
 

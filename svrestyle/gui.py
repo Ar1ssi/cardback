@@ -1,13 +1,14 @@
 """Local web GUI: load a card, edit its name, HP, abilities, attacks (costs, damage, text), weakness, resistance and
-retreat, and render it in the ex or Mega Evolution layout, with its TCG Live holofoil re-made to fit the edits; or
-import a custom-set export and restyle every older card in it. Standard library only; serves on 127.0.0.1.
+retreat, and render it in the ex or Mega Evolution layout (Scarlet & Violet and Mega Evolution cards: edited in
+place, see modern.py), with its TCG Live holofoil re-made to fit the edits; or import a custom-set export and
+restyle or edit every Pokemon in it. Standard library only; serves on 127.0.0.1.
 
   python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--no-browser]
 
 API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
   GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available
-  GET  /api/card?id=ID        {id, layout: "ex"|"me", name, card: editable fields}
+  GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern", name, card: editable fields}
   POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout,
                               foil?: {base, reverse: {png: base64 white plate (card size), shader, material} | null}}
   GET  /api/icon/TYPE.png     the energy icon used on cards (PNG)
@@ -31,12 +32,11 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, edit, foil, layers, mecompose, meframe, tcg
+from . import cache, compose, edit, foil, layers, mecompose, meframe, modern, tcg
 
 PAGE = Path(__file__).with_name("gui.html")
 MAX_BODY = 8 << 20
 MAX_ZIP_ITEMS = 60
-CURRENT_ERAS = ("sv", "me")          # already Scarlet & Violet / Mega Evolution: nothing to restyle
 STYLES = ("hybrid", "panel")
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
@@ -59,8 +59,8 @@ class Render(tuple):
 def layout_of(card_id):
     if not edit.valid_card_id(card_id):
         raise UserError(f"{card_id!r} is not a TCGdex card id (like swsh6-99 or sm10-19)")
-    if card_id.startswith(CURRENT_ERAS):
-        raise UserError(f"{card_id} is already a Scarlet & Violet / Mega Evolution card")
+    if modern.is_modern(card_id):
+        return "modern"
     try:
         data = tcg.card(card_id)
     except (ValueError, cache.DownloadError) as e:
@@ -70,8 +70,9 @@ def layout_of(card_id):
 
 def read(card_id):
     layout = layout_of(card_id)
+    reader = {"ex": compose.read_card, "me": mecompose.read_card, "modern": modern.read_card}[layout]
     try:
-        card = compose.read_card(card_id) if layout == "ex" else mecompose.read_card(card_id)
+        card = reader(card_id)
     except SystemExit as e:                     # the composers refuse unsupported cards this way
         raise UserError(str(e)) from e
     except cache.DownloadError as e:
@@ -103,16 +104,19 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
     if key in _renders:
         _renders.move_to_end(key)
         return _renders[key]
-    layout, card = read(card_id)
-    if edits:
-        card = edit.apply(card, edits)
+    layout, original = read(card_id)
+    card = edit.apply(original, edits) if edits else original
     with _render_lock, warnings.catch_warnings(record=True) as caught, layers.recording() as drawn:
         warnings.simplefilter("always")
-        if layout == "ex":
-            img, _ = compose.compose(card_id, compose.Options(style=style, attacks=bool(attacks)), card=card)
+        if layout == "modern":
+            img, report = modern.compose_card(card_id, card, original)
+            built = foil.build_modern(card_id, card, img, drawn, report["taken_off"], original) if holo else None
         else:
-            img, _ = mecompose.compose_card(card_id, bool(attacks), card=card)
-        built = foil.build(card_id, layout, img, drawn, card) if holo else None
+            if layout == "ex":
+                img, _ = compose.compose(card_id, compose.Options(style=style, attacks=bool(attacks)), card=card)
+            else:
+                img, _ = mecompose.compose_card(card_id, bool(attacks), card=card)
+            built = foil.build(card_id, layout, img, drawn, card) if holo else None
     notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
     made = None
     if built:
@@ -154,10 +158,10 @@ def import_set(data):
             continue
         seen.add(cid)
         entry = {"id": cid, "name": c.get("name", "")}
-        if cid.startswith(CURRENT_ERAS):
-            entry["skip"] = "already current"
-        elif c.get("supertype") not in (None, "Pokémon", "Pokemon"):
+        if c.get("supertype") not in (None, "Pokémon", "Pokemon"):
             entry["skip"] = "not a Pokémon"
+        elif modern.is_modern(cid):
+            entry["layout"] = "modern"
         else:
             entry["layout"] = "ex" if str(c.get("name", "")).endswith(" V") else "me"
         out.append(entry)

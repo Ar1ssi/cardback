@@ -8,6 +8,7 @@ import re
 import warnings
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from . import cache, frame, layers, meframe, refs, swsh, tcg
@@ -45,6 +46,8 @@ WEAK_ICON_X, RES_ICON_X, RETREAT_X0, RETREAT_PITCH = 126.7, 320.5, 540.2, 30
 SV_ROW_ICONS = {"weakness": (WEAK_ICON_X, ROW_Y, ROW_ICON_R), "resistance": (RES_ICON_X, ROW_Y, ROW_ICON_R),
                 "retreat": (RETREAT_X0, ROW_Y, ROW_ICON_R, RETREAT_PITCH)}
 COST_DY = 14                                    # cost icon centre below the attack name's cap top (Absol)
+INLINE_R = 0.32          # energy symbol in effect text: radius per px of body size (me01-003: 16 px at 24.9)
+INLINE_SYMBOL_R = 0.78   # the symbol lies inside this share of the icon radius (the rest is rim)
 NAME_ICON_R = refs.ICON_R + 1.0                 # Mega Evolution icon over the SV bar's own, covering its rim
 NAME_ICON_CLEAR = refs.ICON_R + 4.5             # the SV icon's glow reaches this far (Mew ex)
 BAR_ROWS = slice(487, 522)
@@ -112,11 +115,12 @@ def panel(art, gradient):
     return canvas
 
 
-def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LIMIT):
-    """Name (regional prefix smaller), ex logo when ex, and HP. -> horizontal squeeze applied to the name."""
+def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LIMIT, logo=None):
+    """Name (regional prefix smaller), ex logo when ex, and HP. -> horizontal squeeze applied to the name.
+    logo: (sprite, left x, right x) like frame.ex_logo(), which is the default."""
     ink = prof["ink"]
     edge = NAME_EDGE if prof["light_text"] else None
-    logo, logo_left, logo_right = frame.ex_logo()
+    logo, logo_left, logo_right = logo or frame.ex_logo()
     logo_room = (logo_right - logo_left) + EX_LOGO_GAP if ex else 0
     small = NAME_SIZE * PREFIX_RATIO
     gap = 8 if card["prefix"] else 0
@@ -170,6 +174,26 @@ def energy(type_name, cx, cy, r, canvas, kind="cost"):
         put_sprite(canvas, sprite, cx, cy, scale=scale)
 
 
+def inline_energy(type_name, cx, cy, r):
+    """Coverage of an energy symbol in effect text, as SV and Mega Evolution print it: a disc in the text's ink with
+    the type's symbol knocked out (cut from the Mega Evolution icon: what differs from its disc colour)."""
+    (crop, alpha, scx, scy, (ox, oy)), base_r = meframe.icon(type_name)
+    lum = luminance(crop)
+    yy, xx = np.mgrid[:crop.shape[0], :crop.shape[1]]
+    inner = np.hypot(xx + ox - scx, yy + oy - scy) < base_r * INLINE_SYMBOL_R
+    disc = np.median(lum[inner & (alpha > 0.9)])
+    symbol = np.clip((np.abs(lum - disc) - 25) / 40, 0, 1) * inner
+    shape = alpha * (1 - symbol)
+    scale = r / base_r
+    size = (max(1, round(shape.shape[1] * scale)), max(1, round(shape.shape[0] * scale)))
+    shape = cv2.resize(shape.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+    out = np.zeros((H, W), np.float32)
+    x0, y0 = round(cx - (scx - ox) * scale), round(cy - (scy - oy) * scale)
+    h, w = shape.shape
+    out[y0:y0 + h, x0:x0 + w] = shape[:max(0, H - y0), :max(0, W - x0)]
+    return out
+
+
 def sv_ex_layout(laid, pitch):
     """Absol ex: blocks stacked with a fixed gap and centred on the panel. laid: [(kind, block, lines)].
     -> (top of each block's name cap, whether it fits)"""
@@ -190,10 +214,11 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
     blocks = [("ability", a) for a in card["abilities"]] + [("attack", a) for a in card["attacks"]]
     if not blocks:
         return None
+    effects = [ts.energy_text(b.get("effect")) for _, b in blocks]     # (text with marks, symbol types)
     for k in SHRINK_STEPS:
         size, pitch = BODY_SIZE * k, round(BODY_PITCH * k)
-        laid = [(kind, b, ts.justify(b.get("effect") or "", size, BODY_FULL_W, BODY_TRACK, fit_tracking)
-                 if b.get("effect") else []) for kind, b in blocks]
+        laid = [(kind, b, ts.justify(text, size, BODY_FULL_W, BODY_TRACK, fit_tracking) if text else [])
+                for (kind, b), (text, _) in zip(blocks, effects)]
         tops, fits = layout(laid, pitch)
         if fits:
             break
@@ -201,8 +226,8 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
         warnings.warn(f"{card['id']}: abilities and attacks run taller than the panel holds")
     atk_cap = ts.cap_height(ATK_FACE, ATK_SIZE)
     body_cap = ts.cap_height(BODY_FACE, size)
-    items, red_items, icons = [], [], []
-    for (kind, b, lines), top in zip(laid, tops):
+    items, red_items, icons, symbols = [], [], [], np.zeros((H, W), np.float32)
+    for (kind, b, lines), top, (_, types) in zip(laid, tops, effects):
         if kind == "ability":
             badge, (bw, bh) = frame.ability_badge()
             with layers.kind("badge"):
@@ -226,10 +251,14 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
                     items.append(dict(text="×" if suffix in "×x" else suffix, face=ATK_FACE, size=DMG_SIZE,
                                       x=DMG_RIGHT + 1, base=top + atk_cap, xscale=DMG_XSCALE))
         body_top = top + name_to_body
+        marked = iter(types)
         for i, (runs, tracking) in enumerate(lines):
-            items += ts.line_items(runs, tracking, size, BODY_X, body_top + i * pitch + body_cap)
+            base, marks = body_top + i * pitch + body_cap, []
+            items += ts.line_items(runs, tracking, size, BODY_X, base, marks)
+            for cx in marks:
+                np.maximum(symbols, inline_energy(next(marked), cx, base - body_cap / 2, size * INLINE_R), out=symbols)
     with layers.kind("text"):
-        ts.stamp(canvas, ts.coverage(items), fill, edge)
+        ts.stamp(canvas, np.maximum(ts.coverage(items), symbols), fill, edge)
     if red_items:
         with layers.kind("ability_name"):
             ts.stamp(canvas, ts.coverage(red_items), ABILITY_RED, red_edge or (LIGHT_KEYLINE if edge else None))
@@ -256,7 +285,7 @@ def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS):
         items.append(dict(text=value, face=ts.COND_BOLD, size=31.5, x=339, base=908))
     with layers.kind("row_text"):
         ts.stamp(canvas, ts.coverage(items), fill, edge)
-    with layers.kind("icon"):
+    with layers.kind("row_icon"):
         for side in ("weakness", "resistance"):
             if card[side]:
                 energy(card[side]["type"], *icons[side], canvas)

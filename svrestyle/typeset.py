@@ -128,9 +128,33 @@ def runs_of(line_words):
     return runs
 
 
+# Energy symbols in effect text: TCGdex writes {G}, {R} ...; the text carries ENERGY_MARK in their place, which is
+# laid out as a gap ENERGY_ADVANCE x size wide and filled with the symbol afterwards (line_items' marks).
+ENERGY_CODES = {"G": "Grass", "R": "Fire", "W": "Water", "L": "Lightning", "P": "Psychic", "F": "Fighting",
+                "D": "Darkness", "M": "Metal", "N": "Dragon", "C": "Colorless"}
+ENERGY_MARK = ""
+ENERGY_ADVANCE = 0.68          # me01-003: a 16 px symbol between spaces in 24.9 px body text
+
+
+def energy_text(text):
+    """'Move a Basic {G} Energy' -> ('Move a Basic \\ue000 Energy', ['Grass'])"""
+    types = []
+
+    def mark(m):
+        types.append(ENERGY_CODES[m.group(1)])
+        return ENERGY_MARK
+    return re.sub(r"\{([" + "".join(ENERGY_CODES) + r"])\}", mark, text or ""), types
+
+
+def length(text, face, size):
+    """Width of text in px, energy marks included."""
+    return (font(face, size).getlength(text.replace(ENERGY_MARK, "")) / SS
+            + text.count(ENERGY_MARK) * ENERGY_ADVANCE * size)
+
+
 def runs_width(runs, size, tracking):
     chars = sum(len(t) for t, _ in runs)
-    return sum(font(f, size).getlength(t) / SS for t, f in runs) + tracking * max(0, chars - 1)
+    return sum(length(t, f, size) for t, f in runs) + tracking * max(0, chars - 1)
 
 
 def justify(text, size, full_width, natural_tracking, fit_tracking=None):
@@ -154,10 +178,17 @@ def justify(text, size, full_width, natural_tracking, fit_tracking=None):
     return lines
 
 
-def line_items(runs, tracking, size, x, base):
-    """Coverage items for one line of runs."""
+def line_items(runs, tracking, size, x, base, marks=None):
+    """Coverage items for one line of runs. marks: a list that gets the centre x of each energy mark, in order."""
     items, cursor = [], x
     for text, face in runs:
-        items.append(dict(text=text, face=face, size=size, x=cursor, base=base, tracking=tracking))
-        cursor += font(face, size).getlength(text) / SS + tracking * len(text)
+        for i, part in enumerate(text.split(ENERGY_MARK)):
+            if i:
+                advance = ENERGY_ADVANCE * size
+                if marks is not None:
+                    marks.append(cursor + advance / 2)
+                cursor += advance + tracking
+            if part:
+                items.append(dict(text=part, face=face, size=size, x=cursor, base=base, tracking=tracking))
+                cursor += font(face, size).getlength(part) / SS + tracking * len(part)
     return items

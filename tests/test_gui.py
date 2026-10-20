@@ -84,10 +84,12 @@ class ImportSet(unittest.TestCase):
             {"id": "swsh6-97", "name": "Galarian Moltres V", "supertype": "Pokémon"},
             {"id": "swsh3-88", "name": "Tyranitar", "supertype": "Pokémon"},
             {"id": "swsh3-88", "name": "Tyranitar", "supertype": "Pokémon"},
+            {"id": "me01-114", "name": "Boss's Orders", "supertype": "Trainer"},
             {"id": "../x", "name": "bad"}]}
         out = gui.import_set(data)["cards"]
         self.assertEqual([(c["id"], c.get("layout"), c.get("skip")) for c in out],
-                         [("sv09-080", None, "already current"), ("swsh6-97", "ex", None), ("swsh3-88", "me", None)])
+                         [("sv09-080", "modern", None), ("swsh6-97", "ex", None), ("swsh3-88", "me", None),
+                          ("me01-114", None, "not a Pokémon")])
 
     def test_rejects_other_json(self):
         with self.assertRaises(gui.UserError):
@@ -128,7 +130,6 @@ class Http(unittest.TestCase):
 
     def test_bad_requests(self):
         self.assertEqual(self.call("/api/card?id=../../etc/passwd")[0], 400)
-        self.assertEqual(self.call("/api/card?id=sv09-080")[0], 400)       # already current: nothing to do
         self.assertEqual(self.call("/api/icon/Fairy.png")[0], 400)
         self.assertEqual(self.call("/nope")[0], 404)
         self.assertEqual(self.call("/api/render", {"id": "swsh3-88", "style": "comic"})[0], 400)

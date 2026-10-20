@@ -47,6 +47,19 @@ if it had one. Plates start from the game's own: the old card's plate for the ar
 foil), Absol ex's or me1 Abra's / Meganium's for the frame; the composers record every stamp and sprite by kind
 (`layers.py`), so the HP, icons, badges and footer drawn on the card are cut out of the plate exactly.
 
+### Scarlet & Violet / Mega Evolution cards: edited in place
+
+In the editor, a Scarlet & Violet or Mega Evolution Pokemon (regular or ex) keeps its own card: only what you edit is
+taken off and set again (`modern.py`). Name/HP and the weakness row are found by setting the printed values again
+with the composers (they match these prints within a pixel or two) and taking what stands out there; abilities and
+attacks by what stands out from the panel in the text zone. LaMa rebuilds what was taken off, except the weakness
+row, which is blended along its pixel rows (LaMa copies the labels into it). New blocks follow the Mega Evolution
+layout (regular cards; Scarlet & Violet regulars share it) or the Absol ex layout (ex), in the card's own text colour;
+an edited ex name keeps the card's own ex logo. With holofoil on, the card's own TCG Live printings are re-made: the
+same shaders, plates with what was taken off filled and what was set cut out, the etch carried over, and the front
+keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
+layout).
+
 ### Editor (GUI)
 
 ```sh
