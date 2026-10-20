@@ -37,6 +37,16 @@ INK_CLOSE = 5        # px: joins glyph strokes and icon rims into whole shapes
 MARK_GROW = 3        # px around everything taken off (anti-aliasing, keylines)
 REACH = 5            # px: name, HP and weakness-row print may sit this far from where the composers set them
 ROW_NEAR = 4         # REACH for the weakness row
+WHOLE_REACH = 3      # x reach: a printed shape touching the reach is taken whole this far out
+RULE = 40            # px: a straight run of print at least this long is a bar's rule, not a glyph
+# LaMa sometimes invents a blot in a hole on a plain panel (sv04-128: a brown smudge where a Colorless energy was).
+GHOST_PLAIN = 9.0      # luminance spread of the panel around a blot below which the panel is plain
+GHOST_RING = (3, 9)    # px: that panel is read this far out from the blot
+GHOST_MIN = 80         # px: smaller standouts are the panel's own grain
+GHOST_MAX = 4000       # px: bigger standouts are not blots (art LaMa rebuilt)
+GHOST_GROW = 5         # px around a blot covered too: its soft edge is not caught as standing out
+CLEAN_VERSION = 3      # bump when cleaned() changes what it makes, so cached cleanups are made again
+ICON_SHADOW = 3        # px: a printed row icon's shadow reaches this far out (and down) from it
 BAND_GAP, BAND_SAMPLE = 3, 6   # px: weakness-row gaps take their colour this far out, from this many pixels
 RING_SHADE = 4       # px: the ring's soft shadow on the card, past its cut-out
 BORDER_X = 26        # px: the plain silver card border on the left, which the Stage ring overlaps
@@ -146,15 +156,24 @@ def ink_in(scan, box, holes=True):
 
 
 def ink_near(scan, cover, reach=REACH, holes=True):
-    """Where something set by the composers is really printed: the print that stands out near it, plus the set
+    """Where something set by the composers is really printed: the print that stands out near it, each shape of it
+    whole if it ends within WHOLE_REACH (the print can sit further off than ours, sv04-128's "-30"), plus the set
     shapes themselves (holes=False: the print only). cover: HxW coverage. -> bool HxW"""
     near = dilate(cover > 0.05, reach)
     if not near.any():
         return near
-    ys, xs = np.nonzero(near)
+    far = dilate(cover > 0.05, reach * WHOLE_REACH)
+    ys, xs = np.nonzero(far)
     m = MEDIAN          # the background estimate needs room around the print, or the print is its own background
     box = (max(0, xs.min() - m), max(0, ys.min() - m), min(W, xs.max() + m), min(H, ys.max() + m))
-    found = ink_in(scan, box, holes) & near
+    ink = ink_in(scan, box, holes) & near
+    strokes = ink_in(scan, box, holes=False)          # holes would join a bar's two rules into one band
+    rules = cv2.morphologyEx(strokes.astype(np.uint8), cv2.MORPH_OPEN, np.ones((1, RULE), np.uint8)) > 0
+    strokes &= ~dilate(rules, 1)                      # glyphs touching a rule are their own shapes
+    _, labels = cv2.connectedComponents(strokes.astype(np.uint8))
+    spills = np.unique(labels[strokes & ~far])        # what runs on past the print is not it: only its near part
+    whole = np.setdiff1d(np.unique(labels[strokes & near]), np.append(spills, 0))
+    found = ink | np.isin(labels, whole)
     return found | (cover > 0.05) if holes else found
 
 
@@ -222,8 +241,11 @@ def taken_off(card_id, original, groups, card=None):
         mask |= moves_ink(scan, original["family"])
     if "row" in groups:
         # tight: the weakness icon sits close to the end of its label
-        row = dilate(ink_near(scan, _cover(_drawn(_row, original, compose.WHITE), ("row_icon", "row_text")),
-                              ROW_NEAR), 1)
+        printed_row = _drawn(_row, original, compose.WHITE)
+        row = dilate(ink_near(scan, _cover(printed_row, ("row_icon", "row_text")), ROW_NEAR), 1)
+        # the icons' soft drop shadow, too faint to stand out, falls on the bar below them
+        icons = _cover(printed_row, ("row_icon",)) > 0.1
+        row |= dilate(icons | np.roll(icons, ICON_SHADOW, axis=0), ICON_SHADOW)
     if "stage" in groups and card is not None and original["stage"] and card["stage"]             and card["evolves_from"] != original["evolves_from"]:
         row |= dilate(ink_near(scan, _cover(_drawn(_evolves, original), ("evolves",)), ROW_NEAR), 1)
     return dilate(mask, MARK_GROW), row
@@ -261,15 +283,86 @@ def _sample(line, skip, x, step):
     return np.median(picked, axis=0) if picked else None
 
 
+def ghosts(art, mask):
+    """bool HxW: what stands out in the inpainted area the way printed ink does, in blots on a plain panel: LaMa's
+    inventions. Nothing printed is left there (it was all taken off), so on a plain panel nothing should stand out;
+    on art (a full-art card's text zone) standing out is the art, and is left alone."""
+    ys, xs = np.nonzero(mask)
+    if not len(ys):
+        return np.zeros((H, W), bool)
+    standing = ink_in(art, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)) & mask
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(standing.astype(np.uint8))
+    lum = luminance(art[..., :3])
+    out = np.zeros((H, W), bool)
+    for i in range(1, n):
+        if not GHOST_MIN <= stats[i, cv2.CC_STAT_AREA] <= GHOST_MAX:
+            continue
+        blot = labels == i
+        ring = dilate(blot, GHOST_RING[1]) & ~dilate(blot, GHOST_RING[0])
+        if ring.any() and float(lum[ring].std()) < GHOST_PLAIN:
+            out |= blot
+    return out
+
+
+def plain_panel(card_id, original):
+    """True when the text zone is a plain panel. A Pokemon ex's text box lies over its art, and an illustration
+    rare's art runs under the text, so standouts there are the art and ghosts() must not read them as blots."""
+    rarity = (tcg.card(card_id).get("rarity") or "").lower()
+    return original["family"] == "regular" and "illustration" not in rarity
+
+
+def patch_blots(art, blots, mask):
+    """Cover each blot with a patch of the plain panel beside it (LaMa, asked again, leaves a rim): the nearest
+    clean patch of the same shape, its light matched to the panel round the blot, the edge feathered."""
+    out = art.copy()
+    lum = luminance(art[..., :3])
+    ys, xs = np.nonzero(mask)
+    busy = ink_in(art, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)) | blots
+    n, labels = cv2.connectedComponents(blots.astype(np.uint8))
+    for i in range(1, n):
+        hole = dilate(labels == i, GHOST_GROW)
+        hy, hx = np.nonzero(hole)
+        y0, y1, x0, x1 = hy.min(), hy.max() + 1, hx.min(), hx.max() + 1
+        size = max(y1 - y0, x1 - x0)
+        ring = dilate(hole, GHOST_RING[1]) & ~hole
+        best = None
+        for step in (1, 2, 3):
+            for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                oy, ox = dy * (size + 4) * step, dx * (size + 4) * step
+                if not (0 <= y0 + oy and y1 + oy <= H and 0 <= x0 + ox and x1 + ox <= W):
+                    continue
+                src = np.roll(hole, (oy, ox), axis=(0, 1))
+                if (src & busy).any():
+                    continue
+                spread = float(lum[src].std())
+                if best is None or spread < best[0]:
+                    best = (spread, oy, ox)
+            if best:
+                break
+        if best is None:
+            continue
+        _, oy, ox = best
+        patch = np.roll(art[..., :3], (-oy, -ox), axis=(0, 1))       # the source moved onto the hole
+        src_ring = np.roll(ring, (oy, ox), axis=(0, 1))
+        patch = patch + (art[ring, :3].mean(axis=0) - art[src_ring, :3].mean(axis=0))
+        a = cv2.GaussianBlur(hole.astype(np.float32), (0, 0), 1.5)[..., None]
+        a[~dilate(hole, 3)] = 0
+        out[..., :3] = out[..., :3] * (1 - a) + patch * a
+    return out
+
+
 def cleaned(card_id, original, groups, card=None):
     """The scan with the edited groups taken off (cached). -> (RGBA float32, mask taken off)"""
     mask, row = taken_off(card_id, original, groups, card)
     key = hashlib.sha256(mask.tobytes() + row.tobytes()).hexdigest()[:12]
-    out = cache.path("art", f"modern-{card_id}-{'-'.join(groups)}-{key}.png")
+    out = cache.path("art", f"modern-v{CLEAN_VERSION}-{card_id}-{'-'.join(groups)}-{key}.png")
     if out.exists():
         return load_rgba(out), mask | row
     scan = tcg.scan(card_id)
     art = inpaint.inpaint(scan, mask) if mask.any() else scan.copy()
+    blots = ghosts(art, mask) if plain_panel(card_id, original) else None
+    if blots is not None and blots.any():
+        art = patch_blots(art, blots, mask)
     if row.any():
         art = fill_band(art, row, ink_in(scan, (0, 860, W, 930), holes=False))
     border = mask.copy()

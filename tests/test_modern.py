@@ -74,6 +74,16 @@ class FindingPrint(unittest.TestCase):
         self.assertFalse(ink[700, 200])
         self.assertFalse(ink[607, 20])               # outside the zone
 
+    def test_ink_near_takes_offset_print_whole_but_not_the_rule(self):
+        scan = np.full((H, W, 4), 200, np.float32)
+        scan[880:900, 350:362, :3] = 20             # a printed glyph, set further left than ours
+        scan[870:872, 100:600, :3] = 20             # the bar's rule above it
+        cover = np.zeros((H, W), np.float32)
+        cover[880:900, 360:372] = 1                  # where the composer sets the glyph
+        found = modern.ink_near(scan, cover, reach=4)
+        self.assertTrue(found[890, 351])             # beyond the reach, but part of the glyph that reaches
+        self.assertFalse(found[871, 120])            # the rule far from the glyph stays
+
     def test_ink_colour(self):
         scan = np.full((H, W, 4), 60, np.float32)
         where = np.zeros((H, W), bool)
@@ -94,6 +104,33 @@ class FindingPrint(unittest.TestCase):
         out = modern.fill_band(img, where, np.zeros((H, W), bool))
         self.assertTrue(100 <= out[890, 285, 0] < out[890, 315, 0] <= 200)
         self.assertEqual(out[870, 285, 0], 0)        # rows outside the gap untouched
+
+    def test_blot_on_plain_panel_is_patched_from_the_panel(self):
+        art = np.full((H, W, 4), 200, np.float32)
+        mask = np.zeros((H, W), bool)
+        mask[580:660, 100:400] = True                # the taken-off area
+        art[610:626, 240:256, :3] = 60               # a blot LaMa made up there
+        blots = modern.ghosts(art, mask)
+        self.assertTrue(blots[618, 248])
+        self.assertFalse(blots[590, 120])
+        out = modern.patch_blots(art, blots, mask)
+        self.assertAlmostEqual(float(out[618, 248, 0]), 200, delta=2)
+
+    def test_specks_are_left_as_grain(self):
+        art = np.full((H, W, 4), 200, np.float32)
+        mask = np.zeros((H, W), bool)
+        mask[580:660, 100:400] = True
+        art[618:621, 248:251, :3] = 60               # 9 px: under GHOST_MIN
+        self.assertFalse(modern.ghosts(art, mask).any())
+
+    def test_only_plain_panels_are_read_for_blots(self):
+        def rarity(r):
+            return mock.patch.object(modern.tcg, "card", return_value={"rarity": r})
+        with rarity("Uncommon"):
+            self.assertTrue(modern.plain_panel("sv04-128", card()))
+            self.assertFalse(modern.plain_panel("sv08-076", card(family="ex")))
+        with rarity("Special illustration rare"):
+            self.assertFalse(modern.plain_panel("sv03.5-199", card()))
 
 
 class EnergyInText(unittest.TestCase):

@@ -58,9 +58,10 @@ window, cut-outs); where the old card had none (a plain border) it takes the tem
 
 In the editor, a Scarlet & Violet or Mega Evolution Pokemon (regular or ex) keeps its own card: only what you edit is
 taken off and set again (`modern.py`). Name/HP and the weakness row are found by setting the printed values again
-with the composers (they match these prints within a pixel or two) and taking what stands out there; abilities and
-attacks by what stands out from the panel in the text zone. LaMa rebuilds what was taken off, except the weakness
-row, which is blended along its pixel rows (LaMa copies the labels into it). New blocks follow the Mega Evolution
+with the composers (they match these prints within a few pixels) and taking what stands out there, each printed
+shape whole; abilities and attacks by what stands out from the panel in the text zone. LaMa rebuilds what was taken
+off, except the weakness row, which is blended along its pixel rows (LaMa copies the labels into it). On a plain
+panel, a blot LaMa makes up in a hole is covered with the panel beside it. New blocks follow the Mega Evolution
 layout (regular cards; Scarlet & Violet regulars share it) or the Absol ex layout (ex), in the card's own text colour;
 an edited ex name keeps the card's own ex logo. With holofoil on, the card's own TCG Live printings are re-made: the
 same shaders and the card's own plates, edited the way each plate prints that kind of ink: ink the plate shows (a
