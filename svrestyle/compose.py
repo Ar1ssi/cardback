@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import cache, frame, refs, swsh, tcg
+from . import cache, frame, meframe, refs, swsh, tcg
 from . import typeset as ts
 from .imaging import load_rgba, luminance, put_sprite, save_rgba
 
@@ -41,6 +41,12 @@ SHRINK_STEPS = (1.0, 0.95, 0.9, 0.85, 0.8)
 
 ROW_ICON_R, ROW_Y = 12.8, 895.6
 WEAK_ICON_X, RES_ICON_X, RETREAT_X0, RETREAT_PITCH = 126.7, 320.5, 540.2, 30
+# Weakness-row icons: (x, y, radius) for weakness and resistance, (x0, y, radius, pitch) for retreat.
+SV_ROW_ICONS = {"weakness": (WEAK_ICON_X, ROW_Y, ROW_ICON_R), "resistance": (RES_ICON_X, ROW_Y, ROW_ICON_R),
+                "retreat": (RETREAT_X0, ROW_Y, ROW_ICON_R, RETREAT_PITCH)}
+COST_DY = 14                                    # cost icon centre below the attack name's cap top (Absol)
+NAME_ICON_R = refs.ICON_R + 1.0                 # Mega Evolution icon over the SV bar's own, covering its rim
+NAME_ICON_CLEAR = refs.ICON_R + 4.5             # the SV icon's glow reaches this far (Mew ex)
 BAR_ROWS = slice(487, 522)
 
 
@@ -136,9 +142,27 @@ def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LI
     return xscale
 
 
-def energy(type_name, cx, cy, r, canvas):
-    prof = frame.profile(type_name)
-    put_sprite(canvas, prof["icon"], cx, cy, scale=r / prof["icon_r"])
+def name_icon(canvas, type_name):
+    """Swap the SV bar's type icon for the Mega Evolution one. Some SV icons (Psychic) have a wide glow, so the old
+    icon is first painted over with the bar colour from a ring just outside it."""
+    cx, cy = refs.TYPES[type_name].icon
+    yy, xx = np.mgrid[:H, :W]
+    d = np.hypot(xx - cx, yy - cy)
+    ring = (d > NAME_ICON_CLEAR + 2) & (d < NAME_ICON_CLEAR + 5) & (yy < 104)
+    bar = np.median(canvas[ring, :3], axis=0)
+    a = np.clip(NAME_ICON_CLEAR + 0.5 - d, 0, 1)[..., None]
+    canvas[..., :3] = canvas[..., :3] * (1 - a) + bar * a
+    energy(type_name, cx, cy, NAME_ICON_R, canvas, kind="name")
+
+
+def energy(type_name, cx, cy, r, canvas, kind="cost"):
+    """A Mega Evolution energy icon ('cost' or 'name' style) of radius r, rim included, centred on (cx, cy)."""
+    sprite, base_r = meframe.icon(type_name, kind)
+    scale = r / base_r
+    if abs(scale - 1) < 0.03:            # cost icons are drawn at their scanned size: paste them unresampled
+        put_sprite(canvas, sprite, cx, cy, snap=True)
+    else:
+        put_sprite(canvas, sprite, cx, cy, scale=scale)
 
 
 def sv_ex_layout(laid, pitch):
@@ -155,7 +179,7 @@ def sv_ex_layout(laid, pitch):
 
 
 def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_TO_BODY, fit_tracking=None,
-               red_edge=None):
+               red_edge=None, cost_r=COST_R, cost_dy=COST_DY):
     """Abilities then attacks, placed by layout(laid, pitch); body text shrinks until the layout fits.
     red_edge: keyline under the red Ability names (default: a white one when the text has an edge)."""
     blocks = [("ability", a) for a in card["abilities"]] + [("attack", a) for a in card["attacks"]]
@@ -182,8 +206,8 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
         else:
             cost = b.get("cost") or []
             for i, t in enumerate(cost):
-                icons.append((t, COST_X0 + COST_PITCH * i, top + 14))
-            name_x = max(ATK_X, COST_X0 + COST_PITCH * (len(cost) - 1) + COST_R + 14) if cost else ATK_X
+                icons.append((t, COST_X0 + COST_PITCH * i, top + cost_dy))
+            name_x = max(ATK_X, COST_X0 + COST_PITCH * (len(cost) - 1) + cost_r + 14) if cost else ATK_X
             items.append(dict(text=b["name"], face=ATK_FACE, size=ATK_SIZE, x=name_x, base=top + atk_cap,
                               xscale=ATK_XSCALE))
             dmg = str(b.get("damage") or "")
@@ -202,11 +226,11 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
     if red_items:
         ts.stamp(canvas, ts.coverage(red_items), ABILITY_RED, red_edge or (LIGHT_KEYLINE if edge else None))
     for t, cx, cy in icons:
-        energy(t, cx, cy, COST_R, canvas)
+        energy(t, cx, cy, cost_r, canvas)
     return size / BODY_SIZE
 
 
-def weakness_row(canvas, card, fill, edge, labels=True):
+def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS):
     label = 22.0 * 69 / ts.text_width("weakness", ts.MEDIUM, 22.0)      # Absol's "weakness" ink is 69 px wide
     items = [dict(text="weakness", face=ts.MEDIUM, size=label, x=41, base=901),
              dict(text="resistance", face=ts.MEDIUM, size=label, x=229, base=901),
@@ -222,12 +246,12 @@ def weakness_row(canvas, card, fill, edge, labels=True):
         value = card["resistance"].get("value", "-30").replace("-", "−")
         items.append(dict(text=value, face=ts.COND_BOLD, size=31.5, x=339, base=908))
     ts.stamp(canvas, ts.coverage(items), fill, edge)
-    if card["weakness"]:
-        energy(card["weakness"]["type"], WEAK_ICON_X, ROW_Y, ROW_ICON_R, canvas)
-    if card["resistance"]:
-        energy(card["resistance"]["type"], RES_ICON_X, ROW_Y, ROW_ICON_R, canvas)
+    for side in ("weakness", "resistance"):
+        if card[side]:
+            energy(card[side]["type"], *icons[side], canvas)
+    x0, y, r, pitch = icons["retreat"]
     for i in range(card["retreat"]):
-        energy("Colorless", RETREAT_X0 + RETREAT_PITCH * i, ROW_Y, ROW_ICON_R, canvas)
+        energy("Colorless", x0 + pitch * i, y, r, canvas)
 
 
 def rarity_mark(symbol, x, y=980.5):
@@ -296,6 +320,7 @@ def compose(card_id, opts, card=None):
     ba = bar[..., 3:4] / 255
     canvas[..., :3] = canvas[..., :3] * (1 - ba) + bar[..., :3] * ba
     canvas[..., 3] = tcg.scan(refs.ABSOL.card_id, refs.ABSOL.sha)[..., 3]     # rounded corners
+    name_icon(canvas, card["type"])
 
     name_xscale = name_bar_text(canvas, card, prof)
     white_text = hybrid or prof["light_text"]

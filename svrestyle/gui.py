@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, edit, frame, mecompose, tcg
+from . import cache, compose, edit, mecompose, meframe, tcg
 
 PAGE = Path(__file__).with_name("gui.html")
 MAX_BODY = 8 << 20
@@ -106,7 +106,7 @@ def render(card_id, edits=None, style="hybrid", attacks=True):
 def icon_png(type_name):
     if type_name not in edit.ENERGY:
         raise UserError(f"unknown energy type {type_name!r}")
-    crop, alpha, *_ = frame.profile(type_name)["icon"]
+    (crop, alpha, *_), _ = meframe.icon(type_name)
     rgba = np.dstack([np.clip(crop, 0, 255), alpha * 255]).astype(np.uint8)
     buf = io.BytesIO()
     Image.fromarray(rgba, "RGBA").save(buf, "PNG")

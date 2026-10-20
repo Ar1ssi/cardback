@@ -7,11 +7,13 @@ stage_sprite(n)   the silver Stage 1 / Stage 2 pieces (tab, bar swoosh, evolutio
 
 Positions are at 733x1024, measured on the pokemontcg.io me1 scans.
 """
+import functools
+
 import cv2
 import numpy as np
 
 from . import cache, inpaint, tcg
-from .imaging import dilate, fill_holes, hsv, load_rgba, luminance, save_rgba
+from .imaging import dilate, disc_sprite, fill_holes, hsv, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
 ASSET_VERSION = "1"
@@ -53,6 +55,19 @@ COPYRIGHT = (120, 998, 620, 1021)
 # Where each band's fill may take its colour from (row between its lines, panel above the border, border).
 CONTEXT = {ROW_VALUES[0]: (30, 880, 703, 910), FOOTER: (30, 914, 703, 995), COPYRIGHT: (0, 998, W, 1024)}
 ICON_ZONE = (620, 18, 712, 104)           # name-bar type icon search box
+# Mega Evolution energy icons, used on every restyled card. The name-bar type icon (bevelled) sits at the same place
+# on every me1 Basic: centre x, y and radius of its outer rim, measured on all ten types. Attack costs, weakness,
+# resistance and retreat use the flatter cost icon, lifted from the first cost slot of a me1 attack; Dragon never
+# appears in a cost, so it uses its name-bar icon everywhere.
+ICON = (669.2, 60.8, 26.3)
+COST_ICONS = {
+    "Grass": ("me01-001", 70.92, 653.66, 18.78), "Colorless": ("me01-004", 70.98, 653.65, 18.46),
+    "Fire": ("me01-019", 71.03, 728.25, 18.70), "Water": ("me01-039", 70.89, 653.49, 18.86),
+    "Lightning": ("me01-045", 70.94, 673.98, 18.39), "Psychic": ("me01-054", 70.79, 653.65, 18.55),
+    "Fighting": ("me01-068", 70.79, 728.14, 18.70), "Darkness": ("me01-089", 70.90, 673.98, 18.19),
+    "Metal": ("me01-096", 70.92, 674.00, 18.44),
+}
+ICON_TRIM = 0.2          # px trimmed off the rim, which is blended with the card behind it
 NAME_RIGHT_LIMIT = 520                    # names stay left of the bar's two-tone wave / Stage swoosh
 # Stage pieces: the tab, the bar swoosh, and the portrait ring + "Evolves from" strip (Kadabra/Alakazam).
 STAGE_TAB = (0, 14, 142, 68)
@@ -238,6 +253,19 @@ def stage_sprite(stage):
     sprite[..., 3] = cv2.GaussianBlur(alpha.astype(np.float32), (3, 3), 0.6) * 255
     save_rgba(sprite, out)
     return sprite
+
+
+@functools.lru_cache(maxsize=None)
+def icon(type_name, kind="cost"):
+    """(sprite, radius): the Mega Evolution energy icon of a type ('cost' or 'name' style; see imaging.disc_sprite)
+    and its radius as measured on the scan, to scale from."""
+    if type_name not in TYPES:
+        raise ValueError(f"no Mega Evolution energy icon for type {type_name!r}")
+    if kind == "cost" and type_name in COST_ICONS:
+        card_id, cx, cy, r = COST_ICONS[type_name]
+    else:
+        card_id, (cx, cy, r) = TYPES[type_name], ICON
+    return disc_sprite(tcg.scan(card_id), cx, cy, r - ICON_TRIM), r
 
 
 def build_all():

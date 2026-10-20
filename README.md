@@ -53,6 +53,9 @@ How it works, module by module:
   (type-independent), and per type the name bar (name/HP removed), energy icon, panel palette and ink colour.
 - `compose.py` / `typeset.py` - lays out name, HP, abilities, attacks (justified effect text, italic reminder
   text, damage), weakness row and footer, with constants measured on SV scans.
+- Energy icons (attack costs, weakness, resistance, retreat, and the ex name-bar type icon) are the Mega Evolution
+  ones on both layouts, lifted from real me1 scans (`meframe.COST_ICONS`, `meframe.ICON`); on the Mega Evolution
+  layout they also take Mega Evolution's sizes and positions.
 - `meframe.py` - blank Mega Evolution frames: Mega Evolution cards of one type share the same bar, panel and footer
   texture, so each printed pixel of a base card is taken from another card of the type that has nothing printed
   there (LaMa only for what every card covers); plus the silver Stage 1 / Stage 2 pieces from Kadabra and Alakazam.

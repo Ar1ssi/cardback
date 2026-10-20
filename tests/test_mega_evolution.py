@@ -50,6 +50,18 @@ class Layout(unittest.TestCase):
         self.assertFalse(icon_tops(["A8", "E6"])[1])
 
 
+class EnergyIcons(unittest.TestCase):
+    def test_every_type_has_a_mega_evolution_icon(self):
+        from svrestyle import edit, meframe
+        self.assertEqual(set(edit.ENERGY), set(meframe.TYPES))
+        # cost icons come from real attack costs; only Dragon (never a cost) falls back to its name-bar icon
+        self.assertEqual(set(meframe.TYPES) - set(meframe.COST_ICONS), {"Dragon"})
+        for t, (card_id, x, y, r) in meframe.COST_ICONS.items():
+            self.assertTrue(card_id.startswith("me"), t)
+            self.assertAlmostEqual(x, 71, delta=1)          # the first cost slot
+            self.assertAlmostEqual(r, 18.5, delta=0.5)
+
+
 class Footer(unittest.TestCase):
     def test_numbers(self):
         self.assertEqual(mecompose.card_number("SV33", 94), "SV33/SV94")

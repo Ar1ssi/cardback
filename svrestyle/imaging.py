@@ -59,9 +59,12 @@ def disc_sprite(img, cx, cy, r):
     return img[y0:y1, x0:x1, :3].copy(), alpha, cx, cy, (x0, y0)
 
 
-def put_sprite(canvas, sprite, cx, cy, scale=1.0):
-    """Paste a sprite so its reference point lands on (cx, cy), optionally scaled, keeping sub-pixel position."""
+def put_sprite(canvas, sprite, cx, cy, scale=1.0, snap=False):
+    """Paste a sprite so its reference point lands on (cx, cy), optionally scaled, keeping sub-pixel position.
+    snap: at scale 1, land on the nearest whole pixel instead, so the sprite is not resampled (stays sharp)."""
     crop, alpha, scx, scy, (ox, oy) = sprite
+    if snap and scale == 1.0:
+        cx, cy = round(cx - (scx - ox)) + (scx - ox), round(cy - (scy - oy)) + (scy - oy)
     if scale != 1.0:
         size = (max(1, round(crop.shape[1] * scale)), max(1, round(crop.shape[0] * scale)))
         crop = cv2.resize(crop, size, interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
