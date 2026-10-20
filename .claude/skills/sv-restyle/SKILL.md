@@ -6,7 +6,8 @@ description: Re-make older Pokemon cards in the current look. A Sword & Shield P
 # SV restyle: older cards -> Scarlet & Violet ex / Mega Evolution regular
 
 Everything is done by `python -m svrestyle` in this repo. Card text comes from TCGdex, the Pokedex line from
-PokeAPI, scans from pokemontcg.io (733x1024). The layout follows the card: Pokemon V -> SV ex (frame built from the SV
+PokeAPI, scans from pokemontcg.io (733x1024) or, when the user has one, a Pokemon TCG Live extract (`--tcglive DIR`
+or `SVRESTYLE_TCGLIVE`: the game's own 1024x1024 card fronts, cropped to the same 733x1024). The layout follows the card: Pokemon V -> SV ex (frame built from the SV
 scans in `svrestyle/refs.py`); regular Pokemon -> Mega Evolution regular card (frame built from me1/me2 scans listed
 in `svrestyle/meframe.py`). Cards already from Scarlet & Violet or Mega Evolution need nothing.
 
@@ -18,6 +19,10 @@ in `svrestyle/meframe.py`). Cards already from Scarlet & Violet or Mega Evolutio
    Gill Sans Bold, Gill Sans Bold Italic, Gill Sans Heavy Italic, GillSans Condensed Bold.
 3. `python -m svrestyle prepare` - downloads the LaMa model (205 MB, checksum-verified) and the reference scans,
    and builds the frame assets into `~/.cache/svrestyle` (about a minute). Later runs reuse the cache.
+4. If the user has a Pokemon TCG Live extract (a folder with `cardart/bundles/<set>_en_<NNN>` and/or
+   `WebApp/assets/cards/<set>_<N>.webp`), set `SVRESTYLE_TCGLIVE=<folder>` (or pass `--tcglive <folder>` to every
+   command, prepare included). Bundles are decoded with UnityPy when it is installed, else the .webp copies are used.
+   Scans, assets and cleaned art from it are cached under `<cache>/tcglive/`, apart from the web ones.
 
 ## 2. Find the card id
 TCGdex ids: `curl -s "https://api.tcgdex.net/v2/en/cards?name=<name>"` and pick the `swsh*`/`sm*` entry with a

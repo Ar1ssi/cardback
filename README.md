@@ -17,12 +17,24 @@ Give it TCGdex card ids; it picks the layout from the card:
 ```sh
 pip install -r requirements.txt            # torch: --index-url https://download.pytorch.org/whl/cpu
 export SVRESTYLE_FONTS=/path/to/gill-sans  # licensed fonts, not in this repo
+export SVRESTYLE_TCGLIVE=/path/to/TCGLive_Extract   # optional: scans from Pokemon TCG Live (see below)
 python -m svrestyle prepare                # once: model + reference scans + frame assets (~/.cache/svrestyle)
 python -m svrestyle card swsh6-99 --no-attacks          # Galarian Slowking V -> ex, full art, no attacks
 python -m svrestyle card swsh9-040 swsh1-138 --style panel
 python -m svrestyle card swsh3-88 sm10-19 sma-SV33      # Tyranitar, Kartana, Shiny Vault Kartana -> Mega Evolution
 python -m unittest discover tests
 ```
+
+### Scans from Pokemon TCG Live
+
+By default scans come from pokemontcg.io. With `--tcglive DIR` (any command) or `SVRESTYLE_TCGLIVE=DIR`, they are
+taken from a Pokemon TCG Live extract instead: the game's 1024x1024 card fronts, decoded from
+`DIR/cardart/bundles/<set>_en_<NNN>` (needs `pip install UnityPy`) or read from `DIR/WebApp/assets/cards/<set>_<N>.webp`.
+A front is the 733x1024 card at the same scale plus 145 px of bleed on each side, so it is cropped, given the printed
+card's rounded corners and used with the same layout constants; the reference cards the frames are built from come
+from it too. TCGdex ids map to TCG Live ids by rule (`swsh6-99` -> `swsh6_99`, `sv03.5-065` -> `sv3-5_65`) plus
+`tcg.TCGLIVE_SETS` (`sma-SV33` -> `sm11-5_102`, `swshp-SWSH055` -> `swshbsp_55`). A card the extract lacks falls back
+to pokemontcg.io with a warning. Everything built from these scans is cached under `<cache>/tcglive/`.
 
 ### Editor (GUI)
 

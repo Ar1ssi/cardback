@@ -10,6 +10,9 @@ from pathlib import Path
 
 CACHE = Path(os.environ.get("SVRESTYLE_CACHE", Path.home() / ".cache" / "svrestyle"))
 USER_AGENT = "svrestyle/1.0"
+# Scans, built assets and cleaned art depend on where the scans come from (tcg.TCGLIVE): keep the two apart.
+BY_SOURCE = ("scans", "assets", "art")
+SOURCE = "tcglive" if os.environ.get("SVRESTYLE_TCGLIVE") else ""
 
 
 class DownloadError(RuntimeError):
@@ -17,7 +20,7 @@ class DownloadError(RuntimeError):
 
 
 def path(*parts):
-    p = CACHE.joinpath(*parts)
+    p = CACHE.joinpath(SOURCE, *parts) if SOURCE and parts[0] in BY_SOURCE else CACHE.joinpath(*parts)
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 

@@ -8,6 +8,8 @@
       --style hybrid|panel   ex only. hybrid (default): art runs behind the text; panel: SV translucent panel
       --no-attacks           leave out abilities and attacks (names, text, costs, damage)
       --out DIR              where PNGs go (default ./out); --debug also writes the art-cleaning mask overlay
+  every command: --tcglive DIR   take scans from a Pokemon TCG Live extract (its 1024x1024 card fronts) instead of
+                                 pokemontcg.io; or set SVRESTYLE_TCGLIVE. Cached apart from web scans.
 """
 import argparse
 import json
@@ -109,5 +111,10 @@ def main(argv=None):
     pg.add_argument("--port", type=int, default=8765)
     pg.add_argument("--no-browser", action="store_true", help="just print the address")
     pg.set_defaults(func=cmd_gui)
+    for sp in (pp, pc, pg):
+        sp.add_argument("--tcglive", metavar="DIR", help="take card scans from this Pokemon TCG Live extract "
+                                                         "(1024x1024 fronts; or set SVRESTYLE_TCGLIVE)")
     a = p.parse_args(argv)
+    if a.tcglive:
+        tcg.TCGLIVE, cache.SOURCE = a.tcglive, "tcglive"
     a.func(a)

@@ -23,6 +23,22 @@ class PokemonTcgId(unittest.TestCase):
             tcg.pokemontcg_id("not a card")
 
 
+class TcgLiveId(unittest.TestCase):
+    def test_sets_by_rule(self):
+        self.assertEqual(tcg.tcglive_id("swsh6-099"), "swsh6_99")
+        self.assertEqual(tcg.tcglive_id("sv03.5-065"), "sv3-5_65")
+        self.assertEqual(tcg.tcglive_id("me01-054"), "me1_54")
+        self.assertEqual(tcg.tcglive_id("swsh12-089"), "swsh12_89")
+
+    def test_promos_and_subsets(self):
+        self.assertEqual(tcg.tcglive_id("swshp-SWSH055"), "swshbsp_55")
+        self.assertEqual(tcg.tcglive_id("sma-SV33"), "sm11-5_102")
+
+    def test_no_extract_means_no_front(self):
+        with mock.patch.object(tcg, "TCGLIVE", None):
+            self.assertIsNone(tcg.tcglive_front("swsh6-99"))
+
+
 class ReminderTextItalics(unittest.TestCase):
     def test_parentheses_are_italic(self):
         out = ts.words("Heal 30. (Don't apply Weakness.) Then draw.")
