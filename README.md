@@ -60,14 +60,16 @@ same shaders, plates with what was taken off filled and what was set cut out, th
 keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
 layout).
 
-### Stage: Basic, Stage 1, Stage 2
+### Stage: Basic, Stage 1, Stage 2, Mega
 
 Every card in the editor (restyled ex, restyled Mega Evolution, edited in place) can be made Basic, Stage 1 or
 Stage 2 (`stage.py`). A Stage card gets the modern pieces top left: the STAGE tab, the silver ring with the
 pre-evolution's portrait, and the "Evolves from" strip (regular cards also the swoosh in the name bar); they sit at the
 same place on every SV / ME card, regular and ex. The portrait is lifted whole from a SV / ME card TCGdex lists as
 evolving from that Pokemon (they all print the same picture on the same disc); name a card id under "Portrait from
-card" to choose: a SV / ME Stage card gives its portrait, any other card the middle of its art. A card made Basic
+card" to choose: a SV / ME Stage card gives its portrait, any other card the middle of its art. Mega is a custom stage: the
+Stage 1 pieces (ring, portrait, "Evolves from") with the tab reading MEGA, set in Century Gothic Bold widened and
+slanted to match the printed BASIC / STAGE lettering (`GOTHICB.TTF`; without it Gill Sans Bold). A card made Basic
 gets the BASIC tab and the pieces taken off (LaMa; the plain left border is blended top to bottom). A Stage card
 keeps its own strip (Mega ex cards end it under their "Mega-Evolved form of" badge): only the old line is blended
 away along the strip's rows. The line is set like the print, which is not Gill Sans: Segoe UI Bold Italic narrowed

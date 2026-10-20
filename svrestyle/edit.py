@@ -9,7 +9,7 @@ import re
 
 ENERGY = ("Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal", "Dragon", "Colorless")
 MAX_ABILITIES, MAX_ATTACKS, MAX_COST, MAX_RETREAT = 2, 4, 5, 5
-STAGES = (0, 1, 2)                                   # Basic, Stage 1, Stage 2
+STAGES = (0, 1, 2, 3)                                # Basic, Stage 1, Stage 2, Mega (custom: stage.MEGA)
 MAX_NAME, MAX_EFFECT, MAX_FLAVOR = 40, 400, 220
 
 DAMAGE = re.compile(r"(\d{1,4})?([+×x-])?")        # 120, 30+, 50×, 10-, or empty (no damage printed)
@@ -137,7 +137,7 @@ def apply(card, edits):
     if "stage" in edits:
         s = edits["stage"]
         if not isinstance(s, int) or isinstance(s, bool) or s not in STAGES:
-            raise ValueError("stage: 0 (Basic), 1 (Stage 1) or 2 (Stage 2)")
+            raise ValueError("stage: 0 (Basic), 1 (Stage 1), 2 (Stage 2) or 3 (Mega)")
         out["stage"] = s
     if "portrait" in edits:
         p = edits["portrait"]
@@ -146,12 +146,12 @@ def apply(card, edits):
             raise ValueError("portrait: a TCGdex card id (like sv03.5-064), or empty to find one by name")
         out["portrait"] = p or ""
     if out.get("stage") and not out.get("evolves_from"):
-        raise ValueError("evolves from: a Stage 1 or Stage 2 card names what it evolves from")
+        raise ValueError("evolves from: a Stage 1, Stage 2 or Mega card names what it evolves from")
     return out
 
 
 # ---------------------------------------------------------------- what changed
-STAGE_NAMES = ("Basic", "Stage 1", "Stage 2")
+STAGE_NAMES = ("Basic", "Stage 1", "Stage 2", "Mega")
 LETTER = {"Grass": "G", "Fire": "R", "Water": "W", "Lightning": "L", "Psychic": "P", "Fighting": "F",
           "Darkness": "D", "Metal": "M", "Dragon": "N", "Colorless": "C"}     # as typed in effect text
 

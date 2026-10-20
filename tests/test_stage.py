@@ -30,8 +30,19 @@ class Editing(unittest.TestCase):
         self.assertEqual((out["stage"], out["evolves_from"], out["portrait"]), (2, "Kadabra", "sv03.5-064"))
         self.assertEqual(edit.apply(card(), {"stage": 0, "evolves_from": ""})["stage"], 0)
 
+    def test_mega_stage(self):
+        out = edit.apply(card(), {"stage": 3, "evolves_from": "Kadabra"})
+        self.assertEqual(out["stage"], stage.MEGA)
+        self.assertEqual(edit.changes(card(), out), ["Stage: Stage 1 → Mega", "Evolves from: Abra → Kadabra"])
+        self.assertEqual(modern.stage_parts(card(), card(stage=3)), ("tab",))
+        with self.assertRaises(ValueError):
+            edit.apply(card(), {"stage": 3, "evolves_from": ""})
+        with mock.patch.object(stage, "mega_tab", return_value="mega") as tab:
+            self.assertEqual(stage.sprite_of(stage.MEGA), "mega")
+        tab.assert_called_once_with()
+
     def test_rejections(self):
-        for edits in ({"stage": 3}, {"stage": True}, {"stage": "1"}, {"evolves_from": ""},
+        for edits in ({"stage": 4}, {"stage": True}, {"stage": "1"}, {"evolves_from": ""},
                       {"stage": 2, "evolves_from": "  "}, {"portrait": "../x"}, {"portrait": 5}):
             with self.subTest(edits), self.assertRaises(ValueError):
                 edit.apply(card(), edits)
