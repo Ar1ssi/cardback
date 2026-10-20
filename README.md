@@ -130,10 +130,16 @@ holds the same CHANGELOG.md.
 
 Projects: every card you load joins the card list; the Cards panel adds several by id at once (commas or spaces;
 those TCGdex does not know, or that are not Pokémon, stay in the box with the reason) and × takes one out with its
-edits (Undo puts it back). The page saves itself 1.5 s after each change - the list, every
+edits (Undo puts it back). The page saves itself 0.3 s after each change - the list, every
 card's edits and options, the card open and the holofoil switch - and opens it again on its own next time. Work
 with no name yet is saved as "<set> <date time>" (or "Untitled <date time>"); type a name and Save to rename it. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
 or deleted from the same bar, from any browser that reaches the server.
+
+Working together: everyone with the same project open edits one copy. Each change goes to the server as a patch of
+only the cards and fields that changed, and the others' pages take it in about half a second (long polls, which
+pass through Cloudflare quick tunnels; event streams do not). Two people editing different fields, or different
+cards, both keep their work; the same field at once, the later one wins. Text being typed is never overwritten
+while it is unsent. The header shows how many people have the project open.
 
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.

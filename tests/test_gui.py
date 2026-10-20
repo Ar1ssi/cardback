@@ -134,6 +134,29 @@ class Http(unittest.TestCase):
         self.assertEqual(self.call("/nope")[0], 404)
         self.assertEqual(self.call("/api/render", {"id": "swsh3-88", "style": "comic"})[0], 400)
 
+    def test_project_poll(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gui.cache, "CACHE", Path(tmp)):
+            status, _, body = self.call("/api/projects/poll?name=Poll%20test&after=-1&client=b")
+            hello = json.loads(body)
+            self.assertEqual((status, hello["hello"], hello["events"], hello["viewers"]), (200, {"rev": 0}, [], 1))
+            answer = {}
+            waiting = threading.Thread(target=lambda: answer.update(json.loads(self.call(
+                f"/api/projects/poll?name=Poll%20test&after={hello['seq']}&client=b")[2])))
+            waiting.start()
+            status, _, body = self.call("/api/projects/patch", {"name": "Poll test", "client": "a",
+                                                                "patch": {"setName": "S"}})
+            self.assertEqual((status, json.loads(body)["rev"]), (200, 1))
+            waiting.join(5)
+            self.assertFalse(waiting.is_alive())                 # answered on the patch, not after POLL_WAIT
+            self.assertEqual(answer["events"], [{"event": "patch",
+                                                 "data": {"rev": 1, "client": "a", "patch": {"setName": "S"}}}])
+            self.assertEqual(self.call("/api/projects/leave", {"name": "Poll test", "client": "b"})[0], 200)
+        self.assertEqual(self.call("/api/projects/poll?name=../x&after=-1&client=b")[0], 400)
+        self.assertEqual(self.call("/api/projects/poll?name=x&after=soon&client=b")[0], 400)
+        self.assertEqual(self.call("/api/projects/poll?name=x&after=-1")[0], 400)
+
     def test_holofoil_needs_an_extract(self):
         with mock.patch.object(gui.tcg, "TCGLIVE", None):
             status, _, body = self.call("/api/render", {"id": "swsh3-88", "foil": True})
@@ -249,6 +272,67 @@ class Projects(unittest.TestCase):
     def test_names_stay_inside_the_folder(self):
         self.assertEqual(gui.project_file("Base Set, 1999").parent, gui.projects_dir())
         self.assertEqual(gui.project_file("Base Set, 1999").name, "base-set-1999.json")
+
+    def test_patches_change_only_what_they_name(self):
+        base = {"cards": [{"id": "a"}, {"id": "b"}], "edits": {"a": {"name": "A", "hp": "60"}},
+                "options": {"a": {"style": "hybrid"}}, "setName": "S"}
+        out = gui.apply_patch(base, {"cards": {"removed": ["b"], "added": [{"index": 0, "card": {"id": "c"}}]},
+                                     "edits": {"a": {"hp": "70", "weakness": None}, "c": {"name": "C"}},
+                                     "options": {"a": None}})
+        self.assertEqual([c["id"] for c in out["cards"]], ["c", "a"])
+        self.assertEqual(out["edits"]["a"], {"name": "A", "hp": "70", "weakness": None})   # null is a value
+        self.assertEqual(out["edits"]["c"], {"name": "C"})
+        self.assertNotIn("a", out["options"])
+        self.assertEqual(out["setName"], "S")
+        self.assertEqual(base["edits"]["a"]["hp"], "60")                                   # a copy
+        again = gui.apply_patch(out, {"cards": {"added": [{"index": 5, "card": {"id": "a"}}]}})
+        self.assertEqual([c["id"] for c in again["cards"]], ["c", "a"])                    # no duplicates
+        for bad in ([], {"cards": []}, {"edits": []}, {"edits": {"a": 3}}, {"cards": {"added": [{"card": {}}]}}):
+            with self.subTest(bad), self.assertRaises(gui.UserError):
+                gui.apply_patch(base, bad)
+
+    def test_two_people_editing_one_card_keep_both_fields(self):
+        gui.patch_project("Shared", {"cards": {"added": [{"index": 0, "card": {"id": "a"}}]},
+                                     "edits": {"a": {"name": "A", "hp": "60"}}})
+        gui.patch_project("Shared", {"edits": {"a": {"name": "Alpha"}}}, client="one")
+        out = gui.patch_project("Shared", {"edits": {"a": {"hp": "90"}}}, client="two")
+        self.assertEqual(out["rev"], 3)
+        self.assertEqual(gui.load_project("Shared")["data"]["edits"]["a"], {"name": "Alpha", "hp": "90"})
+        self.assertEqual(gui.save_project("Shared", {"cards": []})["rev"], 4)
+
+    def test_open_pages_hear_patches_saves_renames_and_deletes(self):
+        seq = gui.poll_project("Live", -1, "me")["seq"]
+        gui.patch_project("Live", {"setName": "L"}, client="me")
+        gui.save_project("Live", {"cards": []}, client="me")
+        news = gui.poll_project("Live", seq, "me")
+        self.assertEqual([(e["event"], e["data"].get("rev")) for e in news["events"]], [("patch", 1), ("replaced", 2)])
+        with mock.patch.object(gui, "POLL_WAIT", 0):
+            seq = news["seq"]
+            other = gui.HUB.poll("live", -1, "other", lambda: 2, wait=0)
+            self.assertEqual((other["hello"], other["viewers"]), ({"rev": 2}, 2))
+            news = gui.HUB.poll("live", seq, "me", lambda: 2, wait=0)
+            self.assertEqual(news["events"], [{"event": "viewers", "data": {"viewers": 2}}])
+            gui.leave_project("Live", "other")
+            gui.delete_project("Live", renamed="Live 2", client="me")
+            news = gui.HUB.poll("live", news["seq"], "me", lambda: 0, wait=0)
+            self.assertEqual([e["event"] for e in news["events"]], ["viewers", "renamed"])
+            self.assertEqual(news["events"][1]["data"], {"to": "Live 2", "client": "me"})
+            self.assertEqual(news["viewers"], 1)
+
+    def test_a_page_away_too_long_reads_the_project_again(self):
+        with mock.patch.object(gui, "EVENT_LOG", 3):
+            hub = gui.Hub()
+            start = hub.poll("k", -1, "me", lambda: 0, wait=0)["seq"]
+            for i in range(5):
+                hub.publish("k", "patch", {"rev": i})
+            self.assertEqual(hub.poll("k", start, "me", lambda: 5, wait=0)["hello"], {"rev": 5})
+            self.assertEqual(hub.poll("k", 999, "me", lambda: 5, wait=0)["hello"], {"rev": 5})   # server restarted
+
+    def test_quiet_pages_stop_counting(self):
+        hub = gui.Hub()
+        hub.poll("k", -1, "a", lambda: 0, wait=0)
+        with mock.patch.object(gui.time, "monotonic", return_value=gui.time.monotonic() + gui.VIEWER_GONE + 1):
+            self.assertEqual(hub.poll("k", -1, "b", lambda: 0, wait=0)["viewers"], 1)
 
 
 class Changes(unittest.TestCase):

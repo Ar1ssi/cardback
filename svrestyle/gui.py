@@ -25,11 +25,21 @@ API (JSON in and out unless noted):
                               CHANGELOG.md
   POST /api/changelog         {items, title?} -> text/markdown: every card's changes from its printed card
   GET  /api/projects          {projects: [{name, saved, cards}]}, newest first
-  GET  /api/projects?name=N   {name, saved, data}: a saved project (the page's card list, edits and options)
-  POST /api/projects          {name, data} -> {name, saved}: save (overwrites a project of that name)
-  POST /api/projects/delete   {name} -> {deleted: name}
+  GET  /api/projects?name=N   {name, saved, rev, data}: a saved project (the page's card list, edits and options)
+  POST /api/projects          {name, data, client?} -> {name, saved, rev}: save (overwrites a project of that name)
+  POST /api/projects/patch    {name, patch, client?} -> {name, saved, rev}: change only what the patch names (see
+                              apply_patch), making the project if there is none
+  POST /api/projects/delete   {name, renamed?, client?} -> {deleted: name}
+  GET  /api/projects/poll?name=N&after=SEQ&client=C  long poll for what happens to the project: answers when there
+                              is news past SEQ (or after POLL_WAIT s with none) -> {seq, viewers, events: [{event,
+                              data}]}: patch {rev, client, patch}, replaced {rev, client}, renamed {to, client},
+                              deleted {client}, viewers {viewers}. after=-1 (or a SEQ it no longer has) -> {seq,
+                              viewers, events: [], hello: {rev}} at once: the page reads the project again if its
+                              rev differs. (Long polls, not an event stream: Cloudflare quick tunnels hold streams.)
+  POST /api/projects/leave    {name, client}: the page is closing (it stops counting as a viewer at once)
 
-Projects are JSON files under the cache folder (SVRESTYLE_CACHE/projects), so work resumes after a restart.
+Projects are JSON files under the cache folder (SVRESTYLE_CACHE/projects), so work resumes after a restart. Each
+save or patch raises the project's rev; a page that missed some (reconnecting) reads the project again.
 """
 import base64
 import datetime
@@ -40,10 +50,11 @@ import json
 import os
 import re
 import threading
+import time
 import warnings
 import webbrowser
 import zipfile
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -69,6 +80,9 @@ MAX_ZIP_ITEMS = 60
 STYLES = ("hybrid", "panel")
 PROJECT_NAME = re.compile(r"\w[\w .,'()&+#-]{0,59}")
 MAX_PROJECT = 4 << 20                 # bytes of one saved project
+POLL_WAIT = 20                        # s a poll waits for news before answering with none (tunnels cut at ~100 s)
+VIEWER_GONE = POLL_WAIT + 25          # s without a poll after which a page no longer counts as having it open
+EVENT_LOG = 200                       # events each project keeps for pages catching up
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _renders = OrderedDict()              # request key -> Render; the last few, for zip downloads
@@ -359,32 +373,202 @@ def load_project(name):
     f = project_file(name)
     if not f.exists():
         raise UserError(f"no saved project {name.strip()!r}")
-    return json.loads(f.read_text(encoding="utf-8"))
+    p = json.loads(f.read_text(encoding="utf-8"))
+    p.setdefault("rev", 0)
+    return p
 
 
-def save_project(name, data):
-    """Write the project atomically (a half-written file would lose the work it was saving)."""
-    if not isinstance(data, dict) or not isinstance(data.get("cards", []), list)             or not isinstance(data.get("edits", {}), dict):
-        raise UserError("project data: an object with a \"cards\" list and an \"edits\" object")
-    f = project_file(name)
+def _check_data(data):
+    if not isinstance(data, dict) or not isinstance(data.get("cards", []), list) \
+            or not isinstance(data.get("edits", {}), dict) or not isinstance(data.get("options", {}), dict):
+        raise UserError("project data: an object with a \"cards\" list and \"edits\" and \"options\" objects")
+
+
+def _rev(f):
+    try:
+        return int(json.loads(f.read_text(encoding="utf-8")).get("rev", 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+def _write(f, name, data, rev):
+    """Write the project atomically (a half-written file would lose the work it was saving). Under _project_lock."""
     saved = datetime.datetime.now().isoformat(timespec="seconds")
-    text = json.dumps({"name": name.strip(), "saved": saved, "data": data}, ensure_ascii=False)
+    text = json.dumps({"name": name, "saved": saved, "rev": rev, "data": data}, ensure_ascii=False)
     if len(text.encode()) > MAX_PROJECT:
         raise UserError(f"project too large (over {MAX_PROJECT >> 20} MB)")
     f.parent.mkdir(parents=True, exist_ok=True)
-    with _project_lock:
-        tmp = f.with_suffix(f".tmp{threading.get_ident()}")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, f)
-    return {"name": name.strip(), "saved": saved}
+    tmp = f.with_suffix(f".tmp{threading.get_ident()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, f)
+    return {"name": name, "saved": saved, "rev": rev}
 
 
-def delete_project(name):
+def save_project(name, data, client=None):
+    _check_data(data)
     f = project_file(name)
-    if not f.exists():
-        raise UserError(f"no saved project {name.strip()!r}")
-    f.unlink()
+    with _project_lock:
+        out = _write(f, name.strip(), data, _rev(f) + 1 if f.exists() else 1)
+        HUB.publish(f.stem, "replaced", {"rev": out["rev"], "client": client})
+    return out
+
+
+def apply_patch(data, patch):
+    """The project data with a page's changes made. patch: {cards?: {removed: [id], added: [{index, card}]},
+    edits?: {id: {field: value} | null}, options?: {id: object | null}, setName?, foil?, current?}. A card's edits
+    change field by field, so two people editing different fields of one card both keep theirs; null drops a card's
+    edits or options. The page's applyPatch does the same."""
+    if not isinstance(patch, dict):
+        raise UserError("patch: an object")
+    out = json.loads(json.dumps(data))
+    out.setdefault("cards", [])
+    cards = patch.get("cards")
+    if cards is not None:
+        if not isinstance(cards, dict) or not isinstance(cards.get("removed", []), list) \
+                or not isinstance(cards.get("added", []), list):
+            raise UserError("patch cards: {removed: [id], added: [{index, card}]}")
+        gone = set(cards.get("removed", []))
+        out["cards"] = [c for c in out["cards"] if c.get("id") not in gone]
+        for add in cards.get("added", []):
+            card = add.get("card") if isinstance(add, dict) else None
+            if not isinstance(card, dict) or not isinstance(card.get("id"), str):
+                raise UserError("patch cards added: {index, card: {id, ...}}")
+            if any(c.get("id") == card["id"] for c in out["cards"]):
+                continue
+            index = add.get("index") if isinstance(add.get("index"), int) else len(out["cards"])
+            out["cards"].insert(max(0, min(index, len(out["cards"]))), card)
+    for key in ("edits", "options"):
+        changes = patch.get(key)
+        if changes is None:
+            continue
+        if not isinstance(changes, dict):
+            raise UserError(f"patch {key}: an object by card id")
+        held = out.setdefault(key, {})
+        for card_id, value in changes.items():
+            if value is None:
+                held.pop(card_id, None)
+            elif not isinstance(value, dict):
+                raise UserError(f"patch {key} {card_id}: an object or null")
+            elif key == "edits":
+                held[card_id] = {**(held.get(card_id) or {}), **value}
+            else:
+                held[card_id] = value
+    for key in ("setName", "foil", "current"):
+        if key in patch:
+            out[key] = patch[key]
+    return out
+
+
+def patch_project(name, patch, client=None):
+    f = project_file(name)
+    with _project_lock:
+        held = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"data": {"version": 1}}
+        data = apply_patch(held.get("data") or {}, patch)
+        _check_data(data)
+        out = _write(f, name.strip(), data, int(held.get("rev", 0)) + 1)
+        HUB.publish(f.stem, "patch", {"rev": out["rev"], "client": client, "patch": patch})
+    return out
+
+
+def delete_project(name, renamed=None, client=None):
+    """renamed: the name the work was saved under instead, so the others with it open move there."""
+    f = project_file(name)
+    if renamed is not None:
+        project_file(renamed)                    # checks the name
+    with _project_lock:
+        if not f.exists():
+            raise UserError(f"no saved project {name.strip()!r}")
+        f.unlink()
+        if renamed is not None:
+            HUB.publish(f.stem, "renamed", {"to": renamed.strip(), "client": client})
+        else:
+            HUB.publish(f.stem, "deleted", {"client": client})
     return {"deleted": name.strip()}
+
+
+class Room:
+    def __init__(self):
+        self.seq = 0
+        self.log = deque(maxlen=EVENT_LOG)    # (seq, event, data)
+        self.viewers = {}                     # client -> time of its last poll
+
+
+class Hub:
+    """What happens to each open project (by project file stem), for the pages polling it."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._rooms = {}
+
+    def _room(self, key):
+        return self._rooms.setdefault(key, Room())
+
+    def _append(self, room, event, data):
+        room.seq += 1
+        room.log.append((room.seq, event, data))
+        self._cond.notify_all()
+
+    def _viewers(self, room, client=None):
+        """Count the pages polling, `client` now one of them; a change in the count is news too."""
+        now = time.monotonic()
+        before = len(room.viewers)
+        for c, seen in list(room.viewers.items()):
+            if now - seen > VIEWER_GONE:
+                del room.viewers[c]
+        if client is not None:
+            room.viewers[client] = now
+        if len(room.viewers) != before:
+            self._append(room, "viewers", {"viewers": len(room.viewers)})
+        return len(room.viewers)
+
+    def publish(self, key, event, data):
+        with self._cond:
+            self._append(self._room(key), event, data)
+
+    def leave(self, key, client):
+        with self._cond:
+            room = self._room(key)
+            if room.viewers.pop(client, None) is not None:
+                self._append(room, "viewers", {"viewers": len(room.viewers)})
+
+    def poll(self, key, after, client, rev, wait=POLL_WAIT):
+        """-> {seq, viewers, events} once there are events past `after` or `wait` s pass; with hello {rev: rev()}
+        at once when `after` is not a point this log can go on from (a new page, a restarted server, a page that
+        was away longer than the log is long)."""
+        deadline = time.monotonic() + wait
+        with self._cond:
+            room = self._room(key)
+            self._viewers(room, client)
+            oldest = room.log[0][0] if room.log else room.seq + 1
+            if after < 0 or after > room.seq or after < oldest - 1:
+                return {"seq": room.seq, "viewers": len(room.viewers), "events": [], "hello": {"rev": rev()}}
+            while True:
+                news = [{"event": e, "data": d} for n, e, d in room.log if n > after]
+                left = deadline - time.monotonic()
+                if news or left <= 0:
+                    break
+                self._cond.wait(left)
+            room.viewers[client] = time.monotonic()
+            return {"seq": room.seq, "viewers": len(room.viewers), "events": news}
+
+
+HUB = Hub()
+
+
+def poll_project(name, after, client):
+    if not isinstance(client, str) or not 1 <= len(client) <= 80:
+        raise UserError("poll: a client id")
+    try:
+        after = int(after)
+    except (TypeError, ValueError):
+        raise UserError("poll: after=SEQ") from None
+    f = project_file(name)
+    return HUB.poll(f.stem, after, client, lambda: _rev(f) if f.exists() else 0)
+
+
+def leave_project(name, client):
+    HUB.leave(project_file(name).stem, client)
+    return {"left": name.strip()}
 
 
 # ---------------------------------------------------------------- HTTP
@@ -444,6 +628,10 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/projects":
                 name = (parse_qs(url.query).get("name") or [None])[0]
                 self._json(load_project(name) if name is not None else list_projects())
+            elif url.path == "/api/projects/poll":
+                q = parse_qs(url.query)
+                self._json(poll_project((q.get("name") or [""])[0], (q.get("after") or ["-1"])[0],
+                                        (q.get("client") or [""])[0]))
             elif url.path.startswith("/api/original/") and url.path.endswith(".png"):
                 self._send(HTTPStatus.OK, original_png(url.path[len("/api/original/"):-4]), "image/png")
             elif url.path.startswith("/api/icon/") and url.path.endswith(".png"):
@@ -485,9 +673,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
                            "text/markdown; charset=utf-8")
             elif url.path == "/api/projects":
-                self._json(save_project(body.get("name"), body.get("data")))
+                self._json(save_project(body.get("name"), body.get("data"), body.get("client")))
+            elif url.path == "/api/projects/patch":
+                self._json(patch_project(body.get("name"), body.get("patch"), body.get("client")))
             elif url.path == "/api/projects/delete":
-                self._json(delete_project(body.get("name")))
+                self._json(delete_project(body.get("name"), body.get("renamed"), body.get("client")))
+            elif url.path == "/api/projects/leave":
+                self._json(leave_project(body.get("name"), body.get("client")))
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         self._guard(go)

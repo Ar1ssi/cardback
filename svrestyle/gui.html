@@ -114,6 +114,7 @@
   </span>
   <span id="status" class="status" role="status"></span>
   <span id="saved" class="status"></span>
+  <span id="viewers" class="status" hidden></span>
 </header>
 
 <main>
@@ -268,6 +269,14 @@ const state = {
   project: null,          // name of the saved project being worked on (autosaved), or null
   autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
+  synced: null,           // the project as the server holds it, as far as this page knows (projectData's shape)
+  rev: 0,                 // the server's revision of it
+  listening: 0,           // turn of the poll loop for the project's news (listen); a new turn ends the old loop
+  pollAbort: null,        // AbortController of the poll in flight
+  listeningTo: null,      // the project polled for, told when the page stops
+  sending: false,         // a patch is on its way
+  pushAgain: false,       // a change came while it was: send again after
+  resyncAfter: false,     // the project is to be read again once the patch on its way is in
 };
 const LAST_PROJECT = "svrestyle.project";
 
@@ -611,10 +620,64 @@ async function showFoil() {
 
 // ---------------------------------------------------------------- projects
 // A project is what the page holds: the card list, every card's edits and options, the card open and the foil
-// switch. Saved on the server (GET/POST /api/projects), re-saved 1.5 s after each change.
+// switch. It lives on the server (/api/projects), and everyone with it open edits the same copy: each change goes
+// out SYNC_DELAY after it is made, as a patch of only the cards and fields that changed, and the server passes every
+// patch on to the others (/api/projects/poll). What this page changed and has not sent yet wins over what comes in.
+const SYNC_DELAY = 300;
+const CLIENT = (window.crypto && crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
+const sameJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const emptyData = () => ({ version: 1, setName: "", cards: [], edits: {}, options: {}, current: null, foil: false });
+const withDefaults = (data) => ({ ...emptyData(), ...(data || {}) });
+
 function projectData() {
   return { version: 1, setName: $("setName").textContent, cards: state.setCards, edits: state.edits,
            options: state.options, current: state.current ? state.current.id : null, foil: $("foilOn").checked };
+}
+
+// What `local` changed from `base`, as a patch (null: nothing). The server's apply_patch reads it the same way.
+function diffData(local, base) {
+  const patch = {};
+  const baseIds = new Set(base.cards.map((c) => c.id)), localIds = new Set(local.cards.map((c) => c.id));
+  const removed = base.cards.filter((c) => !localIds.has(c.id)).map((c) => c.id);
+  const added = local.cards.flatMap((card, index) => (baseIds.has(card.id) ? [] : [{ index, card }]));
+  if (removed.length || added.length) patch.cards = { removed, added };
+  for (const key of ["edits", "options"]) {
+    const out = {};
+    for (const id of new Set([...Object.keys(base[key]), ...Object.keys(local[key])])) {
+      const now = local[key][id], was = base[key][id];
+      if (now === undefined) { if (was !== undefined) out[id] = null; continue; }
+      if (key === "options") { if (!sameJSON(now, was)) out[id] = now; continue; }
+      const fields = {};
+      for (const f of new Set([...Object.keys(now), ...Object.keys(was || {})]))
+        if (!sameJSON(now[f], (was || {})[f])) fields[f] = now[f] ?? null;
+      if (Object.keys(fields).length) out[id] = fields;
+    }
+    if (Object.keys(out).length) patch[key] = out;
+  }
+  for (const k of ["setName", "foil", "current"]) if (local[k] !== base[k]) patch[k] = local[k];
+  return Object.keys(patch).length ? structuredClone(patch) : null;
+}
+
+// The server's apply_patch, on a copy.
+function applyPatch(data, patch) {
+  const out = withDefaults(structuredClone(data));
+  if (patch.cards) {
+    const gone = new Set(patch.cards.removed || []);
+    out.cards = out.cards.filter((c) => !gone.has(c.id));
+    for (const { index, card } of patch.cards.added || []) {
+      if (out.cards.some((c) => c.id === card.id)) continue;
+      const at = Number.isInteger(index) ? index : out.cards.length;
+      out.cards.splice(Math.max(0, Math.min(at, out.cards.length)), 0, card);
+    }
+  }
+  for (const key of ["edits", "options"]) {
+    for (const [id, v] of Object.entries(patch[key] || {})) {
+      if (v === null) delete out[key][id];
+      else out[key][id] = key === "edits" ? { ...(out[key][id] || {}), ...v } : v;
+    }
+  }
+  for (const k of ["setName", "foil", "current"]) if (k in patch) out[k] = patch[k];
+  return out;
 }
 
 async function refreshProjects(selected) {
@@ -625,27 +688,6 @@ async function refreshProjects(selected) {
         `${p.name} · ${p.cards} card${p.cards === 1 ? "" : "s"} · ${p.saved.replace("T", " ").slice(0, 16)}`)));
     if (selected) $("projectSel").value = selected;
   } catch (e) { showError(`Could not list projects: ${e.message}`); }
-}
-
-async function saveProject(name, quiet) {
-  name = (name || "").trim();
-  if (!name) { $("projectName").focus(); status("Name the project to save it."); return; }
-  clearTimeout(state.saveTimer);                             // or a pending autosave re-saves the old name
-  try {
-    const out = await (await api("/api/projects", { name, data: projectData() })).json();
-    const untitled = state.autoNamed && state.project !== out.name ? state.project : null;
-    state.project = out.name;
-    state.saveTimer = null;
-    if (untitled) {                                          // naming the work renames it, not copies it
-      state.autoNamed = false;
-      await api("/api/projects/delete", { name: untitled }).catch(() => {});
-      quiet = false;
-    }
-    localStorage.setItem(LAST_PROJECT, out.name);
-    $("projectName").value = out.name;
-    $("saved").textContent = `Saved “${out.name}” ${out.saved.slice(11, 16)}`;
-    if (!quiet) refreshProjects(out.name);
-  } catch (e) { showError(`Save failed: ${e.message}`); }
 }
 
 // Work never waits for a name: the first change of an unnamed page starts a project named after the set (or the
@@ -659,33 +701,87 @@ function untitledName() {
 }
 
 function autosave() {
-  const first = !state.project;
-  if (first) { state.project = untitledName(); state.autoNamed = true; }
   clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => saveProject(state.project, !first), 1500);
+  state.saveTimer = setTimeout(pushChanges, SYNC_DELAY);
+}
+
+function opened(name, data, rev) {
+  state.project = name;
+  state.synced = structuredClone(data);
+  state.rev = rev;
+  localStorage.setItem(LAST_PROJECT, name);
+  $("projectName").value = name;
+  listen();
+}
+
+// One patch at a time, so the server takes them in the order they were made.
+async function pushChanges() {
+  state.saveTimer = null;
+  if (state.sending) { state.pushAgain = true; return; }
+  const first = !state.project;
+  const patch = diffData(projectData(), first ? emptyData() : state.synced);
+  if (!patch) return;
+  if (first) { state.project = untitledName(); state.autoNamed = true; state.synced = emptyData(); }
+  const before = state.synced;
+  state.synced = applyPatch(state.synced, patch);
+  state.sending = true;
+  try {
+    const out = await (await api("/api/projects/patch", { name: state.project, patch, client: CLIENT })).json();
+    state.rev = Math.max(state.rev, out.rev);
+    $("saved").textContent = `Saved “${out.name}” ${out.saved.slice(11, 16)}`;
+    if (first) { opened(out.name, state.synced, state.rev); refreshProjects(out.name); }
+  } catch (e) {
+    state.synced = before;                                   // still to send: with the next change, or soon
+    if (first) { state.project = null; state.autoNamed = false; }
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(pushChanges, 3000);
+    showError(`Save failed: ${e.message}`);
+  } finally {
+    state.sending = false;
+    if (state.resyncAfter) { state.resyncAfter = false; resync(); }
+    if (state.pushAgain) { state.pushAgain = false; autosave(); }
+  }
+}
+
+async function saveProject(name) {
+  name = (name || "").trim();
+  if (!name) { $("projectName").focus(); status("Name the project to save it."); return; }
+  clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+  if (name === state.project) { await pushChanges(); refreshProjects(name); return; }   // saved as it goes
+  try {
+    const data = structuredClone(projectData());
+    const out = await (await api("/api/projects", { name, data, client: CLIENT })).json();
+    const untitled = state.autoNamed && state.project && state.project !== out.name ? state.project : null;
+    state.autoNamed = false;
+    opened(out.name, data, out.rev);
+    if (untitled)                                            // naming the work renames it, not copies it
+      await api("/api/projects/delete", { name: untitled, renamed: out.name, client: CLIENT }).catch(() => {});
+    $("saved").textContent = `Saved “${out.name}” ${out.saved.slice(11, 16)}`;
+    refreshProjects(out.name);
+  } catch (e) { showError(`Save failed: ${e.message}`); }
 }
 
 async function openProject(name) {
   if (!name) return;
   showError("");
   try {
-    const { name: saved, data } = await (await api(`/api/projects?name=${encodeURIComponent(name)}`)).json();
+    const p = await (await api(`/api/projects?name=${encodeURIComponent(name)}`)).json();
+    const data = withDefaults(p.data);
     clearTimeout(state.saveTimer);
     state.saveTimer = null;
-    state.project = saved;
     state.autoNamed = false;
-    localStorage.setItem(LAST_PROJECT, saved);
-    state.edits = data.edits || {};
-    state.options = data.options || {};
-    state.setCards = data.cards || [];
+    opened(p.name, data, p.rev);
+    state.edits = structuredClone(data.edits);
+    state.options = structuredClone(data.options);
+    state.setCards = structuredClone(data.cards);
     state.current = null;
     state.removed = null;
     $("undoBar").hidden = true;
-    $("setName").textContent = data.setName || saved;
+    $("setName").textContent = data.setName || p.name;
     $("foilOn").checked = !!data.foil && !$("foilOn").disabled;
-    $("projectName").value = saved;
-    $("projectSel").value = saved;
-    $("saved").textContent = `Opened “${saved}”`;
+    $("projectSel").value = p.name;
+    $("saved").textContent = `Opened “${p.name}”`;
     drawSet();
     const first = data.current || (state.setCards.find((c) => !c.skip) || {}).id;
     if (first) await loadCard(first);
@@ -695,14 +791,169 @@ async function openProject(name) {
   }
 }
 
+function leaveProject(note) {
+  stopListening();
+  state.project = null;
+  state.autoNamed = false;
+  state.synced = emptyData();
+  state.rev = 0;
+  drawViewers(1);
+  $("saved").textContent = note || "";
+}
+
 async function deleteProject(name) {
   if (!name || !confirm(`Delete the saved project “${name}”? The cards on the page stay.`)) return;
   try {
-    await api("/api/projects/delete", { name });
-    if (state.project === name) { state.project = null; $("saved").textContent = ""; }
+    await api("/api/projects/delete", { name, client: CLIENT });
+    if (state.project === name) leaveProject();
     if (localStorage.getItem(LAST_PROJECT) === name) localStorage.removeItem(LAST_PROJECT);
     refreshProjects();
   } catch (e) { showError(e.message); }
+}
+
+// ---------------------------------------------------------------- working together
+// One long poll at a time per page (/api/projects/poll): it answers as soon as the project changes, or after a
+// while with nothing. A newer listen() (another project, a rename) ends the loop of the one before.
+const POLL_RETRY = 3000;                                    // ms before polling again after a failure
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function stopListening() {
+  state.listening += 1;
+  if (state.pollAbort) state.pollAbort.abort();
+  state.pollAbort = null;
+  if (state.listeningTo) api("/api/projects/leave", { name: state.listeningTo, client: CLIENT }).catch(() => {});
+  state.listeningTo = null;
+}
+
+async function listen() {
+  stopListening();
+  drawViewers(1);
+  const turn = state.listening;
+  state.listeningTo = state.project;
+  let after = -1;
+  while (state.project && turn === state.listening) {
+    const name = state.project;
+    state.pollAbort = new AbortController();
+    try {
+      const url = `/api/projects/poll?name=${encodeURIComponent(name)}&after=${after}`
+        + `&client=${encodeURIComponent(CLIENT)}`;
+      const news = await (await fetch(url, { signal: state.pollAbort.signal })).json();
+      if (turn !== state.listening) return;
+      if (news.error) throw new Error(news.error);
+      after = news.seq;
+      if (news.hello && news.hello.rev !== state.rev) resync();          // a new page, or one that was away
+      for (const { event, data } of news.events) {
+        hear(event, data);
+        if (turn !== state.listening) return;
+      }
+      drawViewers(news.viewers);
+    } catch (e) {
+      if (turn !== state.listening) return;
+      await sleep(POLL_RETRY);                                // offline, or the server restarting
+    }
+  }
+}
+
+function hear(event, m) {
+  if (event === "viewers") drawViewers(m.viewers);
+  if (m.client === CLIENT) {                                  // this page's own, already on it
+    if (m.rev) state.rev = Math.max(state.rev, m.rev);
+    return;
+  }
+  if (event === "patch") {
+    state.rev = Math.max(state.rev, m.rev);
+    rebase(applyPatch(state.synced, m.patch));
+  } else if (event === "replaced") {
+    resync();
+  } else if (event === "renamed") {
+    state.project = m.to;
+    localStorage.setItem(LAST_PROJECT, m.to);
+    $("projectName").value = m.to;
+    $("saved").textContent = `Renamed “${m.to}”`;
+    refreshProjects(m.to);
+    listen();
+  } else if (event === "deleted") {
+    leaveProject("Someone deleted this project; the next change saves the page as a new one.");
+    refreshProjects();
+  }
+}
+
+function drawViewers(n) {
+  $("viewers").hidden = !(n > 1);
+  $("viewers").textContent = n > 1 ? `${n} people on this project` : "";
+}
+
+// Read the whole project again (the stream missed something, or someone saved over it).
+async function resync() {
+  if (!state.project) return;
+  if (state.sending) { state.resyncAfter = true; return; }     // or the patch in flight is lost from the page
+  try {
+    const p = await (await api(`/api/projects?name=${encodeURIComponent(state.project)}`)).json();
+    if (state.sending) { state.resyncAfter = true; return; }
+    state.rev = p.rev;
+    rebase(withDefaults(p.data));
+  } catch (_) {}                                                 // gone: its "deleted" event says so
+}
+
+// The server's copy moved on: put it on the page with this page's unsent changes on top.
+function rebase(server) {
+  const pending = diffData(projectData(), state.synced);
+  state.synced = server;
+  adopt(pending ? applyPatch(server, pending) : structuredClone(server));
+  if (pending) autosave();
+}
+
+// Project data from the others onto the page. Cards whose edits did not change keep their objects: the editor's
+// fields write into them.
+function adopt(data) {
+  const open = state.current && state.current.id;
+  const touched = new Set();
+  for (const key of ["edits", "options"]) {
+    const next = {};
+    for (const [id, v] of Object.entries(data[key])) {
+      next[id] = sameJSON(v, state[key][id]) ? state[key][id] : v;
+      if (next[id] !== state[key][id]) touched.add(id);
+    }
+    for (const id of Object.keys(state[key])) if (!(id in next)) touched.add(id);
+    state[key] = next;
+  }
+  state.setCards = data.cards;
+  if (data.setName) $("setName").textContent = data.setName;
+  for (const id of touched) {
+    state.rendered.delete(id);
+    if (id !== open) delete state.changes[id];
+  }
+  drawSet();
+  if (!open) return;
+  if (!state.setCards.some((c) => c.id === open)) {             // someone took it out of the list
+    const next = state.setCards.find((c) => !c.skip);
+    if (next) loadCard(next.id);
+    else closeCard();
+    return;
+  }
+  if (!touched.has(open)) return;
+  if (!state.edits[open]) state.edits[open] = structuredClone(state.current.card);
+  if (!state.options[open]) state.options[open] = { style: "hybrid", attacks: true };
+  const focus = editorFocus();
+  fillForm();
+  restoreFocus(focus);
+  if ($("autoRender").checked) { clearTimeout(state.renderTimer); state.renderTimer = setTimeout(renderNow, 700); }
+}
+
+// The field being typed in, by its place in the editor: redrawing the editor makes new fields.
+function editorFocus() {
+  const active = document.activeElement;
+  if (!active || !$("editor").contains(active)) return null;
+  const fields = [...$("editor").querySelectorAll("input, textarea, select")];
+  return { index: fields.indexOf(active), start: active.selectionStart, end: active.selectionEnd };
+}
+
+function restoreFocus(focus) {
+  if (!focus || focus.index < 0) return;
+  const field = $("editor").querySelectorAll("input, textarea, select")[focus.index];
+  if (!field) return;
+  field.focus();
+  try { if (focus.start != null) field.setSelectionRange(focus.start, focus.end); } catch (_) {}   // number fields
 }
 
 // ---------------------------------------------------------------- custom set
@@ -937,9 +1188,12 @@ async function init() {
   $("saveProjectBtn").addEventListener("click", () => saveProject($("projectName").value));
   $("projectName").addEventListener("keydown", (e) => { if (e.key === "Enter") saveProject($("projectName").value); });
   $("deleteProjectBtn").addEventListener("click", () => deleteProject($("projectSel").value || state.project));
-  window.addEventListener("beforeunload", () => {          // the last edit, if its autosave has not run yet
-    if (state.project && state.saveTimer) navigator.sendBeacon("/api/projects",
-      new Blob([JSON.stringify({ name: state.project, data: projectData() })], { type: "application/json" }));
+  window.addEventListener("beforeunload", () => {          // the last edit, if it has not gone out yet
+    const patch = state.project && state.synced && diffData(projectData(), state.synced);
+    if (patch) navigator.sendBeacon("/api/projects/patch",
+      new Blob([JSON.stringify({ name: state.project, patch, client: CLIENT })], { type: "application/json" }));
+    if (state.project) navigator.sendBeacon("/api/projects/leave",
+      new Blob([JSON.stringify({ name: state.project, client: CLIENT })], { type: "application/json" }));
   });
   drawSet();                                                // an empty list: its buttons off until cards come in
   await refreshProjects();
