@@ -105,11 +105,17 @@ reorder abilities and attacks, pick each attack's energy cost from the type icon
 optional +, × or −) and text, and set weakness (type and ×2 / +10…+40), resistance (type and −10…−40) and
 retreat (click + / −, or a retreat symbol to remove it). With `--tcglive DIR`, tick Holofoil to re-make the card's
 TCG Live foil with every render: the plates follow the edits (costs, Ability badge, weakness, resistance and retreat
-icons are cut out where they are drawn); preview the foil on the card (a rough stand-in for the game's shaders that
-follows the pointer) or the white plate itself, per printing (holo / reverse holo), and download the card with its
-foil textures as a zip (the custom-set zip includes them too). The preview re-renders as you
+icons are cut out where they are drawn); preview the foil on the card or the white plate itself, per printing (holo /
+reverse holo), and download the card with its foil textures as a zip (the custom-set zip includes them too). The preview re-renders as you
 edit, in exactly the card layout the command line produces; download one PNG, or every card of an imported set as a
 zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
+
+The foil preview is TCG Live's own: its TPCi/Cards3D shaders (the extract's WebApp translation to WebGL,
+`WebApp/web/data/foil/`) and MAT_Cards3D_* materials, with their spectrum, shine, glitter and pattern textures
+from the extract's shaders bundle (`pokemon_Pokemon TCG Live/shadersbundle/Texture2D/`, lossless), drawing the
+render's front, plates, etch and cold foil (`svrestyle/static/foil.js`, the same port the ptcg-sim client runs).
+The card turns with the pointer for the light, else sways slowly. three.js 0.185.0 is vendored in
+`svrestyle/static/three/` (MIT, LICENSE.txt there); the page needs WebGL2.
 
 Changes: every render lists what differs from the printed card (the restyle itself, name, HP, stage, "Evolves
 from", portrait, each ability and attack by name: cost, damage, text, added, removed, reordered; weakness,

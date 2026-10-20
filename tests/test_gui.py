@@ -160,19 +160,42 @@ class Http(unittest.TestCase):
 
     def test_render_and_zip_with_holofoil(self):
         gui._renders.clear()
-        record = {"base": None, "reverse": {"shader": "TPCi/Cards3D/HoloFoil/FlatSilver",
-                                            "material": "MAT_Cards3D_FlatSilver"}}
+        record = {"front": "swsh3-51-me-front.png", "base": None,
+                  "reverse": {"shader": "TPCi/Cards3D/HoloFoil/FlatSilver", "material": "MAT_Cards3D_FlatSilver",
+                              "wp": "swsh3-51-me-wp-ph.png", "cc": None, "etch": None, "cf": None}}
         files = {"swsh3-51-me-front.png": b"f", "swsh3-51-me-wp-ph.png": b"p", "swsh3-51-me-foil.json": b"{}"}
-        fake = gui.Render(b"\x89PNG fake", [], "me", (record, files, {"reverse": b"plate"}))
-        with mock.patch.object(gui, "render", return_value=fake) as r, \
-                mock.patch.object(gui, "card_changes", return_value=("Kingler", [])):
+        fake = gui.Render(b"fake png", [], "me", (record, files, {"reverse": b"plate"}, "t0ken"))
+        gui._renders["a request"] = fake             # what render() keeps, for the texture URLs
+        with mock.patch.object(gui, "render", return_value=fake) as r,                 mock.patch.object(gui, "card_changes", return_value=("Kingler", [])):
             status, _, body = self.call("/api/render", {"id": "swsh3-51", "foil": True})
             data = json.loads(body)
             self.assertIsNone(data["foil"]["base"])
-            self.assertEqual(data["foil"]["reverse"]["shader"], "FlatSilver")
+            self.assertEqual(data["foil"]["reverse"]["shader"], "TPCi/Cards3D/HoloFoil/FlatSilver")
+            self.assertEqual(data["foil"]["front"], "/api/foil/file/t0ken/swsh3-51-me-front.png")
+            self.assertEqual(data["foil"]["reverse"]["textures"],
+                             {"wp": "/api/foil/file/t0ken/swsh3-51-me-wp-ph.png", "etch": None, "cf": None})
             r.assert_called_once_with("swsh3-51", None, "hybrid", True, True)
             status, _, body = self.call("/api/zip", {"items": [{"id": "swsh3-51", "foil": True}]})
         self.assertEqual(zipfile.ZipFile(io.BytesIO(body)).namelist(), ["swsh3-51-me.png", *files, "CHANGELOG.md"])
+        self.assertEqual(self.call(data["foil"]["reverse"]["textures"]["wp"])[2], b"p")
+        self.assertEqual(self.call("/api/foil/file/other/swsh3-51-me-wp-ph.png")[0], 404)
+        self.assertEqual(self.call("/api/foil/file/t0ken/..%2Fsecret.txt")[0], 400)
+
+    def test_foil_assets(self):
+        status, ctype, body = self.call("/static/three/three.module.min.js")
+        self.assertEqual((status, ctype.split(";")[0]), (200, "text/javascript"))
+        self.assertIn(b"three.core.min.js", body)
+        self.assertEqual(self.call("/static/foil.js")[0], 200)
+        for bad in ("/static/../gui.py", "/static/%2e%2e/gui.py", "/static/three/nope.js", "/static/gui.html"):
+            self.assertEqual(self.call(bad)[0], 404, bad)
+        materials = json.dumps({"materials": {}, "textures": {"FX_T_Spectrum": {"url": "/web/x.webp"}}}).encode()
+        with mock.patch.object(gui, "foil_materials", return_value=materials):
+            self.assertEqual(self.call("/api/foil/tex/..%2F..%2Fx.png")[0], 400)
+            self.assertEqual(self.call("/api/foil/tex/FX_T_Unknown.png")[0], 400)
+        with mock.patch.object(gui.tcg, "TCGLIVE", None):
+            gui.foil_materials.cache_clear()
+            self.assertEqual(self.call("/api/foil/materials.json")[0], 400)
+        gui.foil_materials.cache_clear()
 
     def test_edit_errors_come_back_as_400(self):
         with mock.patch.object(gui, "read", return_value=("me", card())):

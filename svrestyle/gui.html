@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script type="importmap">{"imports": {"three": "/static/three/three.module.min.js"}}</script>
 <title>Card Restyle</title>
 <style>
   :root {
@@ -66,7 +67,7 @@
   .retreat .icons .energy, .retreat .icons .energy img { width: 22px; height: 22px; }
   .side-icon { width: 30px; height: 30px; flex: 0 0 30px !important; align-self: end; margin-bottom: 4px; }
   .stage { position: relative; max-width: 560px; margin: 0 auto; }
-  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 14px; pointer-events: none; mix-blend-mode: color-dodge; opacity: .8; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 14px; pointer-events: none; }
   .stage img.plate { border-radius: 14px; }
   .foil-info { font-size: 12px; color: var(--muted); margin-top: 6px; }
   .project { display: flex; gap: 6px; align-items: center; margin-left: auto; }
@@ -248,8 +249,9 @@ const state = {
   lastPng: null,
   plates: {},             // "base" | "reverse" -> {url: plate PNG data URL, mask: canvas, alpha = plate}
   foilInfo: null,         // /api/render's foil answer for the card shown
-  light: { x: 0.5, y: 0.35, pointer: false },
-  raf: 0,
+  pointer: null,          // {x, y} over the card in [-1, 1], or null: the foil drifts
+  foilView: null,         // the running shader view ({stop}), or null
+  foilSeq: 0,
   changes: {},            // id -> [what differs from the printed card], from the last render
   rendered: new Set(),    // ids rendered since the page opened (✓ in the list)
   project: null,          // name of the saved project being worked on (autosaved), or null
@@ -528,34 +530,16 @@ async function downloadChangelog() {
 const SHADERS = {
   SunPillar: "SunPillar (Scarlet & Violet ex foil)",
   SvHolo: "SvHolo (Mega Evolution holo, art window)",
-  FlatSilver: "FlatSilver (Mega Evolution reverse holo)",
+  FlatSilver: "FlatSilver (reverse holo)",
 };
 const PRINTINGS = { base: "Holo", reverse: "Reverse holo" };
+const shaderName = (full) => full.split("/").pop();
 
-// The plate as a mask: white where the foil shows, transparent where not.
-async function plateMask(url) {
-  const img = new Image();
-  img.src = url;
-  await img.decode();
-  const c = el("canvas", { width: img.width, height: img.height });
-  const g = c.getContext("2d");
-  g.drawImage(img, 0, 0);
-  const d = g.getImageData(0, 0, c.width, c.height);
-  for (let i = 0; i < d.data.length; i += 4) {
-    d.data[i + 3] = d.data[i];
-    d.data[i] = d.data[i + 1] = d.data[i + 2] = 255;
-  }
-  g.putImageData(d, 0, 0);
-  return c;
-}
-
-async function setFoil(foil) {
+function setFoil(foil) {
   state.foilInfo = foil;
   state.plates = {};
   for (const k of Object.keys(PRINTINGS)) {
-    if (!foil || !foil[k]) continue;
-    const url = `data:image/png;base64,${foil[k].png}`;
-    state.plates[k] = { url, mask: await plateMask(url) };
+    if (foil && foil[k]) state.plates[k] = { url: `data:image/png;base64,${foil[k].png}` };
   }
   for (const o of $("foilPrint").options) o.disabled = !state.plates[o.value];
   if (!state.plates[$("foilPrint").value]) {
@@ -566,52 +550,52 @@ async function setFoil(foil) {
   showFoil();
 }
 
-function drawFoilInfo() {
+function drawFoilInfo(problem) {
   const foil = state.foilInfo;
   const on = $("foilOn").checked;
   $("foilBadge").textContent = !on ? "" : !foil ? "not rendered" : foil.base || foil.reverse ? "on" : "no foil";
-  $("foilInfo").textContent = !on || !foil ? "" : Object.entries(PRINTINGS).map(([k, label]) =>
-    `${label}: ${foil[k] ? SHADERS[foil[k].shader] || foil[k].shader : "none (the old print had none)"}`).join(" · ");
+  $("foilInfo").textContent = problem || (!on || !foil ? "" : Object.entries(PRINTINGS).map(([k, label]) =>
+    `${label}: ${foil[k] ? SHADERS[shaderName(foil[k].shader)] || shaderName(foil[k].shader) : "none (the old print had none)"}`).join(" · "));
 }
 
-function showFoil() {
-  const plate = state.plates[$("foilPrint").value];
+// Where the foil catches the light: the pointer over the card, else a slow drift (TCG Live's idle sway).
+function tilt() {
+  if (state.pointer) return state.pointer;
+  const t = performance.now();
+  return { x: 0.55 * Math.sin(t / 1900), y: 0.45 * Math.cos(t / 2700) };
+}
+
+function stopFoil() {
+  state.foilSeq += 1;
+  if (state.foilView) state.foilView.stop();
+  state.foilView = null;
+}
+
+// The game's own shader (static/foil.js) draws the card with its foil over the preview image.
+async function showFoil() {
+  const key = $("foilPrint").value;
+  const plate = state.plates[key];
   const view = $("foilOn").checked && plate ? $("foilView").value : "off";
   $("plateView").hidden = view !== "plate";
   $("preview").hidden = view === "plate";
-  $("foilCanvas").hidden = view !== "foil";
+  stopFoil();
+  $("foilCanvas").hidden = true;
   if (view === "plate") $("plateView").src = plate.url;
-  cancelAnimationFrame(state.raf);
-  if (view === "foil") state.raf = requestAnimationFrame(drawFoil);
-}
-
-// A rough stand-in for the game's shaders, to check where the foil falls: rainbow bands and a glare that follow
-// the light, shown only where the plate is white.
-function drawFoil(t) {
-  const plate = state.plates[$("foilPrint").value];
-  if (!plate) return;
-  const c = $("foilCanvas");
-  const g = c.getContext("2d");
-  const L = state.light;
-  if (!L.pointer) {
-    L.x = 0.5 + 0.35 * Math.sin(t / 1900);
-    L.y = 0.4 + 0.25 * Math.cos(t / 2700);
-  }
-  const w = c.width, h = c.height;
-  g.globalCompositeOperation = "source-over";
-  g.clearRect(0, 0, w, h);
-  const bands = g.createLinearGradient(-w * L.x, -h * 0.2, w * (2 - L.x), h * 1.2);
-  for (let i = 0; i <= 12; i++) bands.addColorStop(i / 12, `hsla(${(i * 75 + L.y * 360) % 360}, 100%, 62%, .55)`);
-  g.fillStyle = bands;
-  g.fillRect(0, 0, w, h);
-  const glare = g.createRadialGradient(w * L.x, h * L.y, 0, w * L.x, h * L.y, w * 0.55);
-  glare.addColorStop(0, "rgba(255,255,255,.75)");
-  glare.addColorStop(1, "rgba(255,255,255,0)");
-  g.fillStyle = glare;
-  g.fillRect(0, 0, w, h);
-  g.globalCompositeOperation = "destination-in";
-  g.drawImage(plate.mask, 0, 0, w, h);
-  state.raf = requestAnimationFrame(drawFoil);
+  if (view !== "foil") return;
+  const seq = state.foilSeq;
+  const printing = { front: state.foilInfo.front, ...state.foilInfo[key] };
+  const failed = (message) => {
+    if (seq !== state.foilSeq) return;
+    $("foilCanvas").hidden = true;
+    drawFoilInfo(`Foil preview unavailable: ${message}`);
+  };
+  try {
+    const { showFoil: startShader } = await import("/static/foil.js");
+    const running = await startShader($("foilCanvas"), printing, tilt, failed);
+    if (seq !== state.foilSeq) { running.stop(); return; }
+    state.foilView = running;
+    $("foilCanvas").hidden = false;
+  } catch (e) { failed(e.message); }
 }
 
 // ---------------------------------------------------------------- projects
@@ -839,9 +823,9 @@ async function init() {
   for (const id of ["foilPrint", "foilView"]) $(id).addEventListener("change", showFoil);
   $("stage").addEventListener("pointermove", (e) => {
     const r = $("stage").getBoundingClientRect();
-    Object.assign(state.light, { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height, pointer: true });
+    state.pointer = { x: 2 * (e.clientX - r.left) / r.width - 1, y: 2 * (e.clientY - r.top) / r.height - 1 };
   });
-  $("stage").addEventListener("pointerleave", () => { state.light.pointer = false; });
+  $("stage").addEventListener("pointerleave", () => { state.pointer = null; });
   $("downloadFoilBtn").addEventListener("click", async () => {
     if (!state.current) return;
     status("Building holofoil zip…");

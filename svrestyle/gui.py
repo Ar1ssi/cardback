@@ -10,8 +10,13 @@ API (JSON in and out unless noted):
   GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available
   GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern", name, card: editable fields}
   POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout, changes,
-                              foil?: {base, reverse: {png: base64 white plate (card size), shader, material} | null}}
+                              foil?: {front: URL, base, reverse: {png: base64 white plate (card size), shader,
+                              material, cc, textures: {wp, etch?, cf?: URL}} | null}}
                               changes: what differs from the printed card, one line each (edit.changes)
+  GET  /api/foil/file/T/NAME  a texture of the render whose foil answer gave token T (1024x1024 PNG)
+  GET  /api/foil/shaders.json the game's TPCi/Cards3D shaders as GLSL ES 3.00 (from the extract's WebApp)
+  GET  /api/foil/materials.json  its MAT_Cards3D_* materials, texture URLs under /api/foil/tex/
+  GET  /api/foil/tex/NAME.png the materials' textures (spectrum, shine, glitter, patterns), lossless
   GET  /api/original/ID.png   the printed card (the scan the render starts from), for comparing
   GET  /api/icon/TYPE.png     the energy icon used on cards (PNG)
   POST /api/set               a ptcg-sim custom-set export -> {cards: [{id, name, layout | skip}]}
@@ -28,6 +33,8 @@ Projects are JSON files under the cache folder (SVRESTYLE_CACHE/projects), so wo
 """
 import base64
 import datetime
+import functools
+import hashlib
 import io
 import json
 import os
@@ -48,6 +55,15 @@ from PIL import Image
 from . import cache, compose, edit, foil, layers, mecompose, meframe, modern, tcg
 
 PAGE = Path(__file__).with_name("gui.html")
+STATIC = Path(__file__).with_name("static")
+STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".txt": "text/plain; charset=utf-8"}
+# The extract's foil data: the WebApp's translated shaders and materials, and the shaders bundle's textures as
+# lossless PNGs (the WebApp's own copies, lossy WebP, when those are missing).
+FOIL_DATA = ("WebApp", "web", "data", "foil")
+FOIL_TEX = ("pokemon_Pokemon TCG Live", "shadersbundle", "Texture2D")
+FOIL_TEX_WEB = ("WebApp", "web", "assets", "foil", "tex")
+TEXTURE_NAME = re.compile(r"[A-Za-z0-9_]{1,80}")
+FILE_NAME = re.compile(r"[\w.-]{1,120}\.png")
 MAX_BODY = 8 << 20
 MAX_ZIP_ITEMS = 60
 STYLES = ("hybrid", "panel")
@@ -137,7 +153,7 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
     if built:
         record, written = foil.files(built, f"{card_id}-{layout}", card_id)
         plates = {k: _png(foil.card_space(built[k][1]), "L") for k in ("base", "reverse") if built[k]}
-        made = (record, written, plates)
+        made = (record, written, plates, hashlib.sha256(key.encode()).hexdigest()[:20])
     result = Render(_png(img), notes, layout, made)
     _renders[key] = result
     while len(_renders) > _RENDER_CACHE:
@@ -191,10 +207,75 @@ def original_png(card_id):
 
 
 def holo_json(made):
-    """The foil part of /api/render's answer: per printing its plate (base64 PNG) and shader, or null."""
-    record, _, plates = made
-    return {k: {"png": base64.b64encode(plates[k]).decode(), "shader": record[k]["shader"].rsplit("/", 1)[-1],
-                "material": record[k]["material"]} if record[k] else None for k in ("base", "reverse")}
+    """The foil part of /api/render's answer: the front's URL and per printing its plate (base64 PNG, card size),
+    shader, material, cast-and-cure pattern and texture URLs (for the page's TCG Live shader preview), or null."""
+    record, _, plates, token = made
+    url = lambda name: f"/api/foil/file/{token}/{name}" if name else None
+    out = {"front": url(record["front"])}
+    for k in ("base", "reverse"):
+        r = record[k]
+        out[k] = None if not r else {
+            "png": base64.b64encode(plates[k]).decode(), "shader": r["shader"], "material": r["material"],
+            "cc": r.get("cc"), "textures": {t: url(r.get(t)) for t in ("wp", "etch", "cf")}}
+    return out
+
+
+def foil_file(token, name):
+    """A texture of a recent render's holofoil, by the token its foil answer carried."""
+    if not FILE_NAME.fullmatch(name or ""):
+        raise UserError("bad texture name")
+    for result in reversed(_renders.values()):
+        made = result[3]
+        if made and made[3] == token and name in made[1]:
+            return made[1][name]
+    raise LookupError(f"{name}: not among the recent renders (render the card again)")
+
+
+def _extract_path(*parts):
+    if not tcg.TCGLIVE:
+        raise UserError("holofoil needs a Pokemon TCG Live extract (--tcglive DIR or SVRESTYLE_TCGLIVE)")
+    return Path(tcg.TCGLIVE, *parts)
+
+
+@functools.lru_cache(maxsize=1)
+def foil_shaders():
+    path = _extract_path(*FOIL_DATA, "shaders.json")
+    if not path.exists():
+        raise LookupError(f"{path}: the extract has no WebApp foil shaders")
+    return path.read_bytes()
+
+
+@functools.lru_cache(maxsize=1)
+def foil_materials():
+    """The extract's materials.json with its texture URLs pointing at /api/foil/tex/."""
+    path = _extract_path(*FOIL_DATA, "materials.json")
+    if not path.exists():
+        raise LookupError(f"{path}: the extract has no WebApp foil materials")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for name, meta in data.get("textures", {}).items():
+        meta["url"] = f"/api/foil/tex/{name}.png"
+    return json.dumps(data).encode()
+
+
+def foil_texture(name):
+    """-> (bytes, content type) of a material texture named in materials.json."""
+    if not TEXTURE_NAME.fullmatch(name or "") or name not in json.loads(foil_materials())["textures"]:
+        raise UserError(f"unknown foil texture {name!r}")
+    png = _extract_path(*FOIL_TEX, f"{name}.png")
+    if png.exists():
+        return png.read_bytes(), "image/png"
+    webp = _extract_path(*FOIL_TEX_WEB, f"{name}.webp")
+    if webp.exists():
+        return webp.read_bytes(), "image/webp"
+    raise LookupError(f"{name}: not in the extract")
+
+
+def static_file(rel):
+    """-> (bytes, content type) of a file under static/ (the page's scripts: three.js, the foil preview)."""
+    path = (STATIC / rel).resolve()
+    if STATIC.resolve() not in path.parents or path.suffix not in STATIC_TYPES or not path.is_file():
+        raise LookupError(f"/static/{rel}: not found")
+    return path.read_bytes(), STATIC_TYPES[path.suffix]
 
 
 def icon_png(type_name):
@@ -341,6 +422,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
         except ValueError as e:                  # edit.apply's messages
             self._json({"error": str(e)}, HTTPStatus.BAD_REQUEST)
+        except LookupError as e:
+            self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         except Exception as e:                   # noqa: BLE001 - report, keep serving
             self._json({"error": f"{type(e).__name__}: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -365,6 +448,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, original_png(url.path[len("/api/original/"):-4]), "image/png")
             elif url.path.startswith("/api/icon/") and url.path.endswith(".png"):
                 self._send(HTTPStatus.OK, icon_png(url.path[len("/api/icon/"):-4]), "image/png")
+            elif url.path.startswith("/api/foil/file/"):
+                token, _, name = url.path[len("/api/foil/file/"):].partition("/")
+                self._send(HTTPStatus.OK, foil_file(token, name), "image/png")
+            elif url.path == "/api/foil/shaders.json":
+                self._send(HTTPStatus.OK, foil_shaders(), "application/json")
+            elif url.path == "/api/foil/materials.json":
+                self._send(HTTPStatus.OK, foil_materials(), "application/json")
+            elif url.path.startswith("/api/foil/tex/") and url.path.endswith(".png"):
+                self._send(HTTPStatus.OK, *foil_texture(url.path[len("/api/foil/tex/"):-4]))
+            elif url.path.startswith("/static/"):
+                self._send(HTTPStatus.OK, *static_file(url.path[len("/static/"):]))
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         self._guard(go)
