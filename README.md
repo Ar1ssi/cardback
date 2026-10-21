@@ -103,6 +103,11 @@ are cut out.
 python -m svrestyle gui            # opens http://127.0.0.1:8765/ in your browser (--port, --no-browser)
 ```
 
+On Windows, `start-site.bat` starts the editor (in its own "svrestyle server" window, unless something already
+serves the port) and shares it through a Cloudflare quick tunnel (needs `cloudflared`). The
+`https://….trycloudflare.com` address prints in its window and is written to `SVRESTYLE_CACHE\tunnel.log`; it
+changes every time the tunnel starts.
+
 Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. For each
 card you can change the name (and regional prefix), HP, stage, "Evolves from" and portrait, illustrator and flavour
 text, add, remove and
