@@ -414,10 +414,12 @@ def save_project(name, data, client=None):
 
 
 def apply_patch(data, patch):
-    """The project data with a page's changes made. patch: {cards?: {removed: [id], added: [{index, card}]},
-    edits?: {id: {field: value} | null}, options?: {id: object | null}, setName?, foil?, current?}. A card's edits
-    change field by field, so two people editing different fields of one card both keep theirs; null drops a card's
-    edits or options. The page's applyPatch does the same."""
+    """The project data with a page's changes made. patch: {cards?: {removed: [id], added: [{index, card}],
+    order?: [id]}, edits?: {id: {field: value} | null}, options?: {id: object | null}, setName?, foil?, current?}.
+    A card's edits change field by field, so two people editing different fields of one card both keep theirs; null
+    drops a card's edits or options. order is the list as the page has it: the cards it names take the places those
+    cards hold, in its order, and cards it does not name (someone else's, just added) keep theirs. The page's
+    applyPatch does the same."""
     if not isinstance(patch, dict):
         raise UserError("patch: an object")
     out = json.loads(json.dumps(data))
@@ -425,8 +427,8 @@ def apply_patch(data, patch):
     cards = patch.get("cards")
     if cards is not None:
         if not isinstance(cards, dict) or not isinstance(cards.get("removed", []), list) \
-                or not isinstance(cards.get("added", []), list):
-            raise UserError("patch cards: {removed: [id], added: [{index, card}]}")
+                or not isinstance(cards.get("added", []), list) or not isinstance(cards.get("order", []), list):
+            raise UserError("patch cards: {removed: [id], added: [{index, card}], order: [id]}")
         gone = set(cards.get("removed", []))
         out["cards"] = [c for c in out["cards"] if c.get("id") not in gone]
         for add in cards.get("added", []):
@@ -437,6 +439,7 @@ def apply_patch(data, patch):
                 continue
             index = add.get("index") if isinstance(add.get("index"), int) else len(out["cards"])
             out["cards"].insert(max(0, min(index, len(out["cards"]))), card)
+        out["cards"] = reorder(out["cards"], cards.get("order", []))
     for key in ("edits", "options"):
         changes = patch.get(key)
         if changes is None:
@@ -457,6 +460,12 @@ def apply_patch(data, patch):
         if key in patch:
             out[key] = patch[key]
     return out
+
+
+def reorder(cards, order):
+    rank = {card_id: i for i, card_id in enumerate(order) if isinstance(card_id, str)}
+    named = iter(sorted((c for c in cards if c.get("id") in rank), key=lambda c: rank[c["id"]]))
+    return [next(named) if c.get("id") in rank else c for c in cards]
 
 
 def patch_project(name, patch, client=None):

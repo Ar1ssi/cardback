@@ -291,6 +291,16 @@ class Projects(unittest.TestCase):
             with self.subTest(bad), self.assertRaises(gui.UserError):
                 gui.apply_patch(base, bad)
 
+    def test_order_moves_only_the_cards_it_names(self):
+        base = {"cards": [{"id": "a"}, {"id": "b"}, {"id": "new"}, {"id": "c"}]}
+        out = gui.apply_patch(base, {"cards": {"order": ["c", "a", "b", "gone"]}})
+        self.assertEqual([c["id"] for c in out["cards"]], ["c", "a", "new", "b"])        # "new" keeps its place
+        moved = gui.apply_patch(base, {"cards": {"removed": ["a"], "added": [{"index": 0, "card": {"id": "d"}}],
+                                                 "order": ["b", "c", "d"]}})
+        self.assertEqual([c["id"] for c in moved["cards"]], ["b", "c", "new", "d"])
+        with self.assertRaises(gui.UserError):
+            gui.apply_patch(base, {"cards": {"order": "c"}})
+
     def test_two_people_editing_one_card_keep_both_fields(self):
         gui.patch_project("Shared", {"cards": {"added": [{"index": 0, "card": {"id": "a"}}]},
                                      "edits": {"a": {"name": "A", "hp": "60"}}})

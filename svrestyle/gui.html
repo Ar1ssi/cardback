@@ -63,6 +63,14 @@
   .setlist .remove { flex: 0 0 auto; border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 0 10px; }
   .setlist .remove:hover { color: var(--accent); }
   .setlist .skip { color: var(--muted); }
+  .setlist .row { cursor: grab; }
+  .setlist .row.dragging { opacity: 0.45; }
+  .setlist .row.drop-above { box-shadow: inset 0 2px 0 var(--accent); }
+  .setlist .row.drop-below { box-shadow: inset 0 -2px 0 var(--accent); }
+  .rowmenu { position: fixed; z-index: 10; min-width: 150px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18); }
+  .rowmenu button { display: block; width: 100%; border: 0; border-radius: 5px; background: transparent; text-align: left; padding: 6px 10px; }
+  .rowmenu button:hover:not([disabled]), .rowmenu button:focus-visible { background: var(--chip); }
+  .rowmenu button[disabled] { color: var(--muted); opacity: 0.6; }
   .addrow { display: flex; gap: 6px; margin-bottom: 8px; }
   .findcount { flex: 0 0 auto; align-self: center; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .setlist .none { color: var(--muted); font-size: 12px; padding: 6px 8px; }
@@ -134,6 +142,7 @@
         <span id="findCount" class="findcount"></span>
       </div>
       <div id="setList" class="setlist" hidden></div>
+      <div id="rowMenu" class="rowmenu" role="menu" tabindex="-1" hidden></div>
       <p id="undoBar" class="undo" hidden><span id="undoText"></span><button id="undoBtn" type="button" class="small">Undo</button></p>
       <p class="hint">Every card you load or add joins this list; × takes one out (with its edits). The list and your edits save themselves after every change (as a dated project until you name it, top right) and open on their own next time.</p>
       <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
@@ -273,6 +282,7 @@ const state = {
   changes: {},            // id -> [what differs from the printed card], from the last render
   rendered: new Set(),    // ids rendered since the page opened (✓ in the list)
   removed: null,          // the last card taken out of the list, for Undo: {card, index, edits, options, changes}
+  dragging: null,         // id of the row being dragged in the list
   project: null,          // name of the saved project being worked on (autosaved), or null
   autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
@@ -647,7 +657,10 @@ function diffData(local, base) {
   const baseIds = new Set(base.cards.map((c) => c.id)), localIds = new Set(local.cards.map((c) => c.id));
   const removed = base.cards.filter((c) => !localIds.has(c.id)).map((c) => c.id);
   const added = local.cards.flatMap((card, index) => (baseIds.has(card.id) ? [] : [{ index, card }]));
-  if (removed.length || added.length) patch.cards = { removed, added };
+  const merged = applyPatch(base, { cards: { removed, added } }).cards.map((c) => c.id);
+  const order = local.cards.map((c) => c.id);
+  if (removed.length || added.length || !sameJSON(merged, order))
+    patch.cards = { removed, added, ...(sameJSON(merged, order) ? {} : { order }) };
   for (const key of ["edits", "options"]) {
     const out = {};
     for (const id of new Set([...Object.keys(base[key]), ...Object.keys(local[key])])) {
@@ -676,6 +689,7 @@ function applyPatch(data, patch) {
       const at = Number.isInteger(index) ? index : out.cards.length;
       out.cards.splice(Math.max(0, Math.min(at, out.cards.length)), 0, card);
     }
+    out.cards = reorder(out.cards, patch.cards.order || []);
   }
   for (const key of ["edits", "options"]) {
     for (const [id, v] of Object.entries(patch[key] || {})) {
@@ -685,6 +699,13 @@ function applyPatch(data, patch) {
   }
   for (const k of ["setName", "foil", "current"]) if (k in patch) out[k] = patch[k];
   return out;
+}
+
+// The cards order names take the places those cards hold, in its order; the rest keep theirs (the server's reorder).
+function reorder(cards, order) {
+  const rank = new Map(order.map((id, i) => [id, i]));
+  const named = cards.filter((c) => rank.has(c.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
+  return cards.map((c) => (rank.has(c.id) ? named.shift() : c));
 }
 
 async function refreshProjects(selected) {
@@ -992,7 +1013,7 @@ function drawSet() {
   const shown = state.setCards.filter((c) => found(c, words));
   $("findCount").textContent = words.length ? `${shown.length} of ${state.setCards.length}` : "";
   $("setList").replaceChildren(...(shown.length ? [] : [el("div", { class: "none" }, "No cards in the list match.")]),
-    ...shown.map((c) => el("div", { class: "row", "data-id": c.id },
+    ...shown.map((c) => el("div", { class: "row", "data-id": c.id, draggable: "true" },
     el("button", { class: c.skip ? "open skip" : "open", disabled: !!c.skip, onclick: () => loadCard(c.id) },
       el("span", {}, `${c.name} `, el("span", { class: "badge" }, c.id)),
       el("span", {},
@@ -1039,6 +1060,88 @@ async function addCards(text) {
   }
   if (failed.length) showError(`Not added:\n${failed.map((f) => `${f.id}: ${f.why}`).join("\n")}`);
 }
+
+// The list's order is the set's: Render all, the zip and the change log follow it. `before`: the card it lands in
+// front of; null for the end.
+function moveCard(id, before) {
+  const from = state.setCards.findIndex((c) => c.id === id);
+  if (from < 0 || id === before) return;
+  const [card] = state.setCards.splice(from, 1);
+  const at = before == null ? -1 : state.setCards.findIndex((c) => c.id === before);
+  state.setCards.splice(at < 0 ? state.setCards.length : at, 0, card);
+  drawSet();
+  autosave();
+}
+
+// Drag a row onto another: it lands above or below it, by which half the pointer is over.
+function dropSpot(e) {
+  const row = e.target.closest && e.target.closest("#setList .row");
+  if (!row || !state.dragging || row.dataset.id === state.dragging) return null;
+  const box = row.getBoundingClientRect();
+  return { row, below: e.clientY > box.top + box.height / 2 };
+}
+function clearDropMarks() {
+  document.querySelectorAll("#setList .row.drop-above, #setList .row.drop-below")
+    .forEach((r) => r.classList.remove("drop-above", "drop-below"));
+}
+function wireDragging() {
+  const list = $("setList");
+  list.addEventListener("dragstart", (e) => {
+    const row = e.target.closest(".row");
+    if (!row) return;
+    state.dragging = row.dataset.id;
+    row.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", row.dataset.id);
+  });
+  list.addEventListener("dragover", (e) => {
+    const spot = dropSpot(e);
+    clearDropMarks();
+    if (!spot) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    spot.row.classList.add(spot.below ? "drop-below" : "drop-above");
+  });
+  list.addEventListener("dragleave", (e) => { if (!list.contains(e.relatedTarget)) clearDropMarks(); });
+  list.addEventListener("drop", (e) => {
+    const spot = dropSpot(e);
+    const id = state.dragging;
+    clearDropMarks();
+    state.dragging = null;
+    if (!spot) return;
+    e.preventDefault();
+    const target = spot.row.dataset.id;
+    const rest = state.setCards.filter((c) => c.id !== id);
+    const before = spot.below ? (rest[rest.findIndex((c) => c.id === target) + 1] || {}).id ?? null : target;
+    moveCard(id, before);
+  });
+  list.addEventListener("dragend", () => {
+    state.dragging = null;
+    clearDropMarks();
+    list.querySelectorAll(".row.dragging").forEach((r) => r.classList.remove("dragging"));
+  });
+}
+
+// Right click on a row: send it to the top or the bottom of the list.
+function openRowMenu(e) {
+  const row = e.target.closest("#setList .row");
+  if (!row) return;
+  e.preventDefault();
+  const id = row.dataset.id;
+  const at = state.setCards.findIndex((c) => c.id === id);
+  const item = (label, disabled, act) =>
+    el("button", { type: "button", role: "menuitem", disabled, onclick: () => { closeRowMenu(); act(); } }, label);
+  const menu = $("rowMenu");
+  menu.replaceChildren(
+    item("Send to top", at === 0, () => moveCard(id, state.setCards[0].id)),
+    item("Send to bottom", at === state.setCards.length - 1, () => moveCard(id, null)));
+  menu.hidden = false;
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = `${Math.min(e.clientX, innerWidth - w - 4)}px`;
+  menu.style.top = `${Math.min(e.clientY, innerHeight - h - 4)}px`;
+  (menu.querySelector("button:not([disabled])") || menu).focus();
+}
+function closeRowMenu() { $("rowMenu").hidden = true; }
 
 // Out of the list with its edits; Undo puts it back where it was, until the next removal.
 function removeCard(id) {
@@ -1151,6 +1254,12 @@ async function init() {
     if (first) loadCard(first.id);
   });
   $("undoBtn").addEventListener("click", undoRemove);
+  wireDragging();
+  $("setList").addEventListener("contextmenu", openRowMenu);
+  document.addEventListener("pointerdown", (e) => { if (!$("rowMenu").contains(e.target)) closeRowMenu(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRowMenu(); });
+  window.addEventListener("blur", closeRowMenu);
+  $("setList").addEventListener("scroll", closeRowMenu);
   $("setFile").addEventListener("change", (e) => { if (e.target.files[0]) importSet(e.target.files[0]); e.target.value = ""; });
   $("renderBtn").addEventListener("click", renderNow);
   $("resetBtn").addEventListener("click", () => {
