@@ -59,15 +59,19 @@ MEGA = 3                          # the custom Mega stage
 MEGA_FONT = "GOTHICB.TTF"
 MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR = 12.0, 1.35, 0.32    # px, width factor, slant (x per y)
 MEGA_BOLD = 0.1                                          # px the fill is grown: the printed letters are a bit heavier
-OLD_LETTERS = 0.65                # HSV value under which a tab pixel may belong to STAGE1's letters
-LETTER_STANDS_OUT = 0.08          # how far (HSV value) letters and rim stand out from the tab around them
-LETTER_DARK = 0.4                 # HSV value under which a tab pixel is letter fill (the tab's lower band: 0.45+)
-MIN_CLEAN = 6                     # px of a row free of letters that give the row's shade
-WIPE_BOX = (20, 32, 117, 58)      # what is wiped: the lettering, short of the tab's slanted right end
+LETTER_SHIFT = 3                  # px a scan's tab lettering may sit off the me1 tabs'
+LETTER_COVER = LETTER_GROW + 1    # px wiped round the letters' fill: their rim, edge and a scan's blur
+TAB_SILVER = (0.16, 0.25)         # saturation under, HSV value over: a tab pixel, not art showing by it
+MIN_CLEAN = 6                     # tab px of a row free of letters that give the row's shade
+MIN_CLEAN_COLUMN = 3              # same for a column
+SHADE_SMOOTH = 5                  # px the column shading is averaged over
+STRAY = 25                        # RGB levels off the rebuilt tab at which a px by the letters is left-over rim
+TAB_SHOWN = 0.6                   # share of the lozenge in tab silver for a canvas to have a tab of its own
 MEGA_LEFT, MEGA_BOTTOM = 28, 50                          # ink left x and last ink row, as STAGE on Kadabra
 MEGA_RIM, MEGA_EDGE = 1.3, 0.7                           # px: white rim, then the thin dark edge round it
 MEGA_GAP = 2                                             # px between letters at their closest (STAGE / BASIC: 2-3)
 MEGA_INK = {"fill": (70, 70, 74), "rim": (255, 252, 255), "edge": (96, 96, 100)}   # sampled on Kadabra's tab
+MEGA_VERSION = 5                                         # bump when the MEGA tab sprite changes (cached)
 WORD_SS = 8                                              # supersampling for the tab lettering
 
 # The "Evolves from" line is not Gill Sans but a Frutiger-style italic ('f' without a descender): Segoe UI Bold
@@ -201,54 +205,82 @@ def _word(path, text, cap, xscale, shear, strokes, gap):
     return out, (xs.min(), ys.max())
 
 
-def _lettering(sprite):
-    """bool HxW: a tab's letters with their rim: dark, or standing out from the tab's shading around them."""
-    _, _, val = hsv(sprite[..., :3])
-    around = cv2.medianBlur(np.clip(val * 255, 0, 255).astype(np.uint8), 15).astype(np.float32) / 255
-    out = np.zeros((H, W), bool)
-    x0, y0, x1, y1 = WIPE_BOX
-    out[y0:y1, x0:x1] = ((np.abs(val - around) > LETTER_STANDS_OUT) | (val < LETTER_DARK))[y0:y1, x0:x1]
-    box = np.zeros((H, W), bool)
-    box[y0:y1, x0:x1] = True
-    return dilate(out, LETTER_GROW) & box
+@functools.lru_cache(maxsize=1)
+def _lozenge():
+    """bool HxW: the tab's silver lozenge in the letter box (the BASIC tab's), a px short of its outline."""
+    inside = fill_holes(basic_tab()[..., 3] > 128) & _letter_box()
+    return cv2.erode(inside.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
 
 
-def blank_tab(sprite):
-    """RGB 733x1024: sprite with its tab lettering taken off. The tab shades from top to bottom and evenly across
-    between its rounded ends, so a lettered pixel takes the median of its row's clean pixels there; rows the
-    letters leave too little of take theirs from the nearest rows above and below."""
-    letters = _lettering(sprite)
-    out = sprite[..., :3].copy()
-    x0, y0, x1, y1 = WIPE_BOX
-    rows, shades = [], []
-    for y in range(y0, y1):
-        clean = ~letters[y, x0:x1]
-        if clean.sum() >= MIN_CLEAN:
-            rows.append(y)
-            shades.append(np.median(sprite[y, x0:x1][clean, :3], axis=0))
-    if not rows:
-        return out
-    shades = np.array(shades)
-    for y in range(y0, y1):
-        shade = np.array([np.interp(y, rows, shades[:, c]) for c in range(3)])
-        out[y, x0:x1][letters[y, x0:x1]] = shade
+def _lettering(image):
+    """bool HxW: the tab lettering image prints, with its rim and edge: BASIC, STAGE 1 or STAGE 2 as the me1 tabs
+    set them, up to LETTER_SHIFT px off, whichever has its fill darkest against its rim there. A sprite's see-through
+    px in the tab count too (Kadabra's cut-out 1)."""
+    _, _, val = hsv(image[..., :3])
+    inner = _lozenge()
+    best, found = -np.inf, None
+    for sprite in (basic_tab(), meframe.stage_sprite(1), meframe.stage_sprite(2)):
+        fill = letters(sprite)
+        for dy in range(-LETTER_SHIFT, LETTER_SHIFT + 1):
+            for dx in range(-LETTER_SHIFT, LETTER_SHIFT + 1):
+                at = np.roll(fill, (dy, dx), (0, 1)) & inner
+                rim = dilate(at, LETTER_GROW) & ~at & inner
+                if not at.any() or not rim.any():
+                    continue
+                contrast = val[rim].mean() - val[at].mean()
+                if contrast > best:
+                    best, found = contrast, at
+    if image.shape[2] == 4:
+        found = found | (inner & (image[..., 3] < 128))
+    return dilate(found, LETTER_COVER) & inner
+
+
+def _fill_gaps(shade, known):
+    """shade (n x 3) with its unknown entries taken along from the known ones."""
+    if not known.any():
+        return np.nan_to_num(shade)
+    at = np.arange(len(shade))
+    for c in range(3):
+        shade[~known, c] = np.interp(at[~known], at[known], shade[known, c])
+    return shade
+
+
+def blank_tab(image):
+    """RGB 733x1024: image with its tab lettering taken off. The silver shades by row (light top, darker band
+    below) plus by column (towards its rounded ends); both are read off the tab pixels clear of the letters, and
+    the letters take their sum, as do left-over specks of rim beside them."""
+    lettered = _lettering(image)
+    _, sat, val = hsv(image[..., :3])
+    x0, y0, x1, y1 = LETTER_BOX
+    tab = image[y0:y1, x0:x1, :3].astype(np.float32)
+    clean = (_lozenge() & ~lettered & (sat < TAB_SILVER[0]) & (val > TAB_SILVER[1]))[y0:y1, x0:x1]
+    seen = np.where(clean[..., None], tab, np.nan)
+    by_column = np.zeros((x1 - x0, 3), np.float32)
+    with warnings.catch_warnings():                       # rows / columns with no clean px: filled after
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for _ in range(5):
+            by_row = _fill_gaps(np.nanmedian(seen - by_column[None], axis=1), clean.sum(1) >= MIN_CLEAN)
+            by_column = _fill_gaps(np.nanmedian(seen - by_row[:, None], axis=0), clean.sum(0) >= MIN_CLEAN_COLUMN)
+            by_column = cv2.blur(by_column[None], (SHADE_SMOOTH, 1))[0]
+    shade = by_row[:, None] + by_column[None]
+    stray = (dilate(lettered, LETTER_GROW) & _lozenge())[y0:y1, x0:x1] \
+        & (np.abs(tab - shade).max(axis=2) > STRAY)
+    wipe = lettered[y0:y1, x0:x1] | stray
+    out = image[..., :3].copy()
+    out[y0:y1, x0:x1][wipe] = shade[wipe]
     return out
 
 
-def mega_tab():
-    """RGBA 733x1024: the Stage 1 pieces with the tab reading MEGA (cached)."""
-    out = cache.path("assets", f"me-v{meframe.ASSET_VERSION}", "mega-tab.png")
-    if out.exists():
-        return load_rgba(out)
-    sprite = meframe.stage_sprite(1).copy()
+def _letter_box():
     box = np.zeros((H, W), bool)
     x0, y0, x1, y1 = LETTER_BOX
     box[y0:y1, x0:x1] = True
-    # the tab is opaque all over its lozenge (Kadabra's cut-out lets parts of the 1 through)
-    _, _, val = hsv(sprite[..., :3])
-    lozenge = fill_holes((sprite[..., 3] > 128) | (box & (val < OLD_LETTERS))) & box
-    sprite[lozenge, 3] = 255
-    sprite[..., :3] = np.where(lozenge[..., None], blank_tab(sprite), sprite[..., :3])
+    return box
+
+
+@functools.lru_cache(maxsize=1)
+def _mega_word():
+    """[(coverage HxW, RGB)]: the MEGA lettering's edge, rim and fill, in the order they are laid."""
     path = _font_file(MEGA_FONT)
     if path is None:
         warnings.warn(f"{MEGA_FONT} (Century Gothic Bold) not found: the MEGA tab is set in Gill Sans Bold")
@@ -257,14 +289,55 @@ def mega_tab():
                                               (MEGA_BOLD, MEGA_BOLD + MEGA_RIM, MEGA_BOLD + MEGA_RIM + MEGA_EDGE),
                                               MEGA_GAP)
     dx, dy = MEGA_LEFT - left, MEGA_BOTTOM - bottom
+    out = []
     for layer, ink in ((edge, "edge"), (rim, "rim"), (fill, "fill")):
         a = np.zeros((H, W), np.float32)
         lh, lw = layer.shape
         a[dy:dy + lh, dx:dx + lw] = layer[:H - dy, :W - dx]
-        a *= box
-        sprite[..., :3] = sprite[..., :3] * (1 - a[..., None]) + np.array(MEGA_INK[ink], np.float32) * a[..., None]
+        out.append((a * _letter_box(), np.array(MEGA_INK[ink], np.float32)))
+    return out
+
+
+def mega_letters(image):
+    """RGB 733x1024: image's tab with its lettering taken off and MEGA set on it."""
+    out = blank_tab(image)
+    for a, ink in _mega_word():
+        out = out * (1 - a[..., None]) + ink * a[..., None]
+    return out
+
+
+def mega_tab():
+    """RGBA 733x1024: the Stage 1 pieces with the tab reading MEGA (cached)."""
+    out = cache.path("assets", f"me-v{meframe.ASSET_VERSION}", f"mega-tab-v{MEGA_VERSION}.png")
+    if out.exists():
+        return load_rgba(out)
+    sprite = meframe.stage_sprite(1).copy()
+    # the tab is opaque all over its lozenge (Kadabra's cut-out lets parts of the 1 through); holes are filled
+    # inside the letter box only, where the notch between the tab and the ring is open to the box's edge
+    lozenge = fill_holes((sprite[..., 3] > 128) & _letter_box()) & _letter_box()
+    sprite[lozenge, 3] = 255
+    sprite[..., :3] = np.where(lozenge[..., None], mega_letters(sprite), sprite[..., :3])
     save_rgba(sprite, out)
     return sprite
+
+
+def shows_tab(canvas):
+    """Whether canvas has a silver BASIC / STAGE tab of its own (a scan or a template), for set_mega."""
+    _, sat, val = hsv(canvas[..., :3])
+    return float(((sat < TAB_SILVER[0]) & (val > TAB_SILVER[1]))[_lozenge()].mean()) > TAB_SHOWN
+
+
+def set_mega(canvas):
+    """The canvas's own tab made MEGA: it keeps its shading (a scan's print, softness and all), its own letters
+    (wherever this scan has them) are taken off and MEGA set. The MEGA sprite's tab is only for a canvas without
+    one; Kadabra's cut-out 1 leaves that sprite's right end rebuilt. Recorded as paste records a pasted tab."""
+    old = _lettering(canvas)
+    canvas[..., :3] = mega_letters(canvas)
+    new = _mega_word()[0][0]
+    with layers.kind("stage_tab"):
+        layers.record(np.maximum(old.astype(np.float32), new))
+    with layers.kind("stage_text"):
+        layers.record(new)
 
 
 def paste(canvas, sprite, where):
@@ -528,8 +601,13 @@ def draw(canvas, card, parts, own=None, printed=False):
     where = part_mask(parts)
     if printed:
         where &= ~part_mask(("strip", "disc"))
+    mega_in_place = card["stage"] == MEGA and "tab" in parts and shows_tab(canvas)
+    if mega_in_place:
+        where &= ~part_mask(("tab",))
     where[:, end:] &= ~_boxes()["strip"][:, end:]
     paste(canvas, sprite, where)
+    if mega_in_place:
+        set_mega(canvas)
     if "disc" in parts:
         pic = portrait(card, own)
         if printed:                   # the old picture off first: a cut-out figure would not cover it

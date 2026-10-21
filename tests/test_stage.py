@@ -77,6 +77,37 @@ class Parts(unittest.TestCase):
         finally:
             stage.evolves_style.cache_clear()
 
+    def test_tab_letters_come_off_a_shifted_scan_without_a_trace(self):
+        # three made-up tabs: one silver lozenge shading down and across, each with its own dark, white-rimmed letters
+        yy, xx = np.mgrid[:H, :W]
+        silver = np.clip(215 - (yy - 20) * 1.8 - np.abs(xx - 70) * 0.3, 0, 255).astype(np.float32)
+        lozenge = (yy >= 20) & (yy < 62) & (xx >= 8) & (xx < 130)
+
+        def tab(blocks, shift=(0, 0)):
+            rgba = np.zeros((H, W, 4), np.float32)
+            rgba[..., :3] = silver[..., None]
+            rgba[..., 3] = lozenge * 255
+            for x0, x1 in blocks:
+                rgba[34:50, x0 - 2:x1 + 2, :3] = 250
+                rgba[36:48, x0:x1, :3] = 60
+            return np.roll(rgba, shift, (0, 1))
+
+        basic, one, two = tab([(30, 40), (52, 60)]), tab([(26, 34), (70, 80)]), tab([(40, 48), (90, 100)])
+        scan = tab([(40, 48), (90, 100)], shift=(1, 2))
+        scan[..., 3] = 255
+        stage._lozenge.cache_clear()
+        try:
+            with mock.patch.object(stage, "basic_tab", return_value=basic), \
+                    mock.patch.object(stage.meframe, "stage_sprite", side_effect=lambda n: {1: one, 2: two}[n]):
+                lettered = stage._lettering(scan)
+                out = stage.blank_tab(scan)
+                inner = stage._lozenge()
+        finally:
+            stage._lozenge.cache_clear()
+        clean = np.roll(silver, (1, 2), (0, 1))
+        self.assertTrue(lettered[42, 95] and lettered[42, 44] and not lettered[42, 34])   # STAGE 2's, where it sits
+        self.assertLess(float(np.abs(out[..., 0] - clean)[inner].max()), 6)
+
     def test_ex_keeps_its_own_swoosh(self):
         self.assertNotIn("swoosh", stage.EX)
         self.assertIn("swoosh", stage.REGULAR)
