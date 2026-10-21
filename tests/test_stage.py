@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 import numpy as np
+from PIL import ImageFont
 
 from svrestyle import edit, foil, modern, stage
 
@@ -107,6 +108,28 @@ class Parts(unittest.TestCase):
         clean = np.roll(silver, (1, 2), (0, 1))
         self.assertTrue(lettered[42, 95] and lettered[42, 44] and not lettered[42, 34])   # STAGE 2's, where it sits
         self.assertLess(float(np.abs(out[..., 0] - clean)[inner].max()), 6)
+
+    def test_tab_letters_lean_forward(self):
+        # the printed BASIC / STAGE letters lean right: an I's stem sits further right at its top than its foot
+        font = ImageFont.load_default(size=40 * stage.WORD_SS)
+        stem = stage._glyph(font, "I", 1.0, stage.MEGA_SHEAR, (0,))[0] > 0.5
+        rows = np.nonzero(stem.any(axis=1))[0]
+        middle = [np.nonzero(stem[y])[0].mean() for y in (rows[1], rows[-2])]
+        self.assertGreater(middle[0] - middle[1], stage.MEGA_SHEAR * (rows[-2] - rows[1]) * 0.8)
+
+    def test_tab_word_is_centred_as_the_printed_ones(self):
+        ink = np.zeros((40, 60), np.float32)
+        ink[20:31, 5:25] = 1                                  # ink box: columns 5-24, last row 30
+        stage._tab_word.cache_clear()
+        try:
+            with mock.patch.object(stage, "_mega_font", return_value="face.ttf"), \
+                    mock.patch.object(stage, "_word", return_value=([ink] * 3, (5, 24, 30))):
+                fill = stage._tab_word("MEGA")[-1][0] > 0.5
+        finally:
+            stage._tab_word.cache_clear()
+        ys, xs = np.nonzero(fill)
+        self.assertAlmostEqual((xs.min() + xs.max()) / 2, stage.MEGA_CENTRE, delta=0.5)
+        self.assertEqual(ys.max(), stage.MEGA_BOTTOM)
 
     def test_ex_keeps_its_own_swoosh(self):
         self.assertNotIn("swoosh", stage.EX)

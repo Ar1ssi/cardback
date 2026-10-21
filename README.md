@@ -82,9 +82,10 @@ pre-evolution's portrait, and the "Evolves from" strip (regular cards also the s
 same place on every SV / ME card, regular and ex. The portrait is lifted whole from a SV / ME card TCGdex lists as
 evolving from that Pokemon (they all print the same picture on the same disc); name a card id under "Portrait from
 card" to choose: a SV / ME Stage card gives its portrait, any other card the middle of its art. Mega is a custom stage: the
-Stage 1 pieces (ring, portrait, "Evolves from") with the tab reading MEGA, set in Century Gothic Bold widened and
-slanted to match the printed BASIC / STAGE lettering (`GOTHICB.TTF`; without it Gill Sans Bold), letter by letter
-with the printed tabs' 2 px gaps, on the Kadabra tab with STAGE1 taken off. A Mega card's portrait comes first from
+Stage 1 pieces (ring, portrait, "Evolves from") with the tab reading MEGA, set in Verdana Bold widened and slanted
+forward to match the printed BASIC / STAGE lettering (`verdanab.ttf`; without it Tahoma Bold, then Gill Sans Bold),
+letter by letter with the printed tabs' 2 px gaps and centred where they centre theirs, on the card's own tab with its
+lettering taken off. A Mega card's portrait comes first from
 the XY "M ... EX" card of the Pokemon (the figure keyed off its gold disc). Every stage then falls back, in order,
 to: an SV / ME card evolving from the Pokemon, an XY Mega card, the Pokemon's official artwork (PokeAPI), and the
 middle of one of its cards' art. A card made Basic

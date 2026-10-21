@@ -53,12 +53,12 @@ TAB_LETTERS = 0.5                 # HSV value under which a lozenge pixel is let
 LETTER_GROW = 2                   # px around the letters: their light rim
 
 MEGA = 3                          # the custom Mega stage
-# No print has a MEGA tab. Century Gothic Bold, widened and slanted, matches the BASIC / STAGE lettering (round G,
-# pointed A, same weight; cap height and "STAGE" width measured on me1 Kadabra); set like it: dark fill, white rim,
-# thin dark edge. Without Century Gothic, Gill Sans Bold.
-MEGA_FONT = "GOTHICB.TTF"
-MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR = 12.0, 1.35, 0.32    # px, width factor, slant (x per y)
-MEGA_BOLD = 0.1                                          # px the fill is grown: the printed letters are a bit heavier
+# No print has a MEGA tab. Verdana Bold, widened and slanted forward, matches the STAGE lettering best of 25 bold
+# faces (Tahoma Bold next; squared G, pointed A): fitted letter by letter on the S, T, A, G and E of the me1 STAGE 1
+# and STAGE 2 tabs. Set like them: dark fill, white rim, thin dark edge, the word centred where all three tabs
+# centre theirs. Without Verdana, Tahoma Bold, then Gill Sans Bold.
+MEGA_FONTS = ("verdanab.ttf", "tahomabd.ttf")
+MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR = 10.625, 1.4, 0.18   # px, width factor, slant (x per y, tops to the right)
 LETTER_SHIFT = 3                  # px a scan's tab lettering may sit off the me1 tabs'
 LETTER_COVER = LETTER_GROW + 1    # px wiped round the letters' fill: their rim, edge and a scan's blur
 TAB_SILVER = (0.16, 0.25)         # saturation under, HSV value over: a tab pixel, not art showing by it
@@ -67,11 +67,12 @@ MIN_CLEAN_COLUMN = 3              # same for a column
 SHADE_SMOOTH = 5                  # px the column shading is averaged over
 STRAY = 25                        # RGB levels off the rebuilt tab at which a px by the letters is left-over rim
 TAB_SHOWN = 0.6                   # share of the lozenge in tab silver for a canvas to have a tab of its own
-MEGA_LEFT, MEGA_BOTTOM = 28, 50                          # ink left x and last ink row, as STAGE on Kadabra
-MEGA_RIM, MEGA_EDGE = 1.3, 0.7                           # px: white rim, then the thin dark edge round it
+MEGA_CENTRE, MEGA_BOTTOM = 69, 50                        # ink box's middle x and last row, as BASIC and STAGE
+MEGA_RIM, MEGA_EDGE = 2.2, 0.8                           # px: white rim, then the thin dark edge round it
+MEGA_SOFT = 0.3                                          # px blur: the scans' lettering is a touch soft
 MEGA_GAP = 2                                             # px between letters at their closest (STAGE / BASIC: 2-3)
-MEGA_INK = {"fill": (70, 70, 74), "rim": (255, 252, 255), "edge": (96, 96, 100)}   # sampled on Kadabra's tab
-MEGA_VERSION = 5                                         # bump when the MEGA tab sprite changes (cached)
+MEGA_INK = {"fill": (70, 70, 74), "rim": (255, 252, 255), "edge": (110, 110, 114)}  # sampled on me1 tabs and scans
+MEGA_VERSION = 6                                         # bump when the MEGA tab sprite changes (cached)
 WORD_SS = 8                                              # supersampling for the tab lettering
 
 # The "Evolves from" line is not Gill Sans but a Frutiger-style italic ('f' without a descender): Segoe UI Bold
@@ -167,16 +168,16 @@ def _glyph(font, ch, xscale, shear, strokes):
         img = Image.new("L", (w, h), 0)
         ImageDraw.Draw(img).text((8 * WORD_SS, base), ch, font=font, fill=255, anchor="ls",
                                  stroke_width=round(stroke * WORD_SS), stroke_fill=255)
-        img = img.transform(img.size, Image.AFFINE, (1, -shear, shear * base, 0, 1, 0), Image.BICUBIC)
+        img = img.transform(img.size, Image.AFFINE, (1, shear, -shear * base, 0, 1, 0), Image.BICUBIC)
         out.append(np.asarray(img.resize((max(1, round(w * xscale / WORD_SS)), h // WORD_SS), Image.BOX),
                               np.float32) / 255)
     return out
 
 
 def _word(path, text, cap, xscale, shear, strokes, gap):
-    """Coverage (h x w, 1x) of text grown by each stroke width, and the fill's ink box. Letters are set one by one,
-    each `gap` px from the last at their closest row, as the printed tabs space them (a font's own spacing is wider
-    at this weight and width)."""
+    """Coverage (h x w, 1x) of text grown by each stroke width, and the fill's ink left, right and bottom. Letters are
+    set one by one, each `gap` px from the last at their closest row, as the printed tabs space them (a font's own
+    spacing is wider at this weight and width)."""
     size = 4.0
     while True:                          # font size whose E is `cap` px tall
         box = ImageFont.truetype(path, round(size * WORD_SS)).getbbox("E")
@@ -202,7 +203,7 @@ def _word(path, text, cap, xscale, shear, strokes, gap):
         cols = np.where(ink.any(axis=1), ink.shape[1] - 1 - ink[:, ::-1].argmax(axis=1), -1)
         right = np.where(cols >= 0, np.maximum(right, x + cols), right)
     ys, xs = np.nonzero(out[0] > 0.5)
-    return out, (xs.min(), ys.max())
+    return out, (xs.min(), xs.max(), ys.max())
 
 
 @functools.lru_cache(maxsize=1)
@@ -278,23 +279,33 @@ def _letter_box():
     return box
 
 
-@functools.lru_cache(maxsize=1)
-def _mega_word():
-    """[(coverage HxW, RGB)]: the MEGA lettering's edge, rim and fill, in the order they are laid."""
-    path = _font_file(MEGA_FONT)
+def _mega_font():
+    """Path of the tab lettering's face: the first of MEGA_FONTS found, else Gill Sans Bold."""
+    path = next(filter(None, map(_font_file, MEGA_FONTS)), None)
     if path is None:
-        warnings.warn(f"{MEGA_FONT} (Century Gothic Bold) not found: the MEGA tab is set in Gill Sans Bold")
+        warnings.warn(f"{' / '.join(MEGA_FONTS)} not found: the MEGA tab is set in Gill Sans Bold")
         path = f"{ts._font_dir}/{ts.BOLD}.otf"
-    (fill, rim, edge), (left, bottom) = _word(path, "MEGA", MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR,
-                                              (MEGA_BOLD, MEGA_BOLD + MEGA_RIM, MEGA_BOLD + MEGA_RIM + MEGA_EDGE),
-                                              MEGA_GAP)
-    dx, dy = MEGA_LEFT - left, MEGA_BOTTOM - bottom
+    return path
+
+
+def _mega_word():
+    return _tab_word("MEGA")
+
+
+@functools.lru_cache(maxsize=4)
+def _tab_word(text):
+    """[(coverage HxW, RGB)]: text lettered as the tabs letter theirs, its edge, rim and fill in the order they are
+    laid."""
+    (fill, rim, edge), (left, right, bottom) = _word(
+        _mega_font(), text, MEGA_CAP, MEGA_XSCALE, MEGA_SHEAR,
+        (0, MEGA_RIM, MEGA_RIM + MEGA_EDGE), MEGA_GAP)
+    dx, dy = MEGA_CENTRE - round((left + right) / 2), MEGA_BOTTOM - bottom
     out = []
     for layer, ink in ((edge, "edge"), (rim, "rim"), (fill, "fill")):
         a = np.zeros((H, W), np.float32)
         lh, lw = layer.shape
         a[dy:dy + lh, dx:dx + lw] = layer[:H - dy, :W - dx]
-        out.append((a * _letter_box(), np.array(MEGA_INK[ink], np.float32)))
+        out.append((cv2.GaussianBlur(a, (0, 0), MEGA_SOFT) * _letter_box(), np.array(MEGA_INK[ink], np.float32)))
     return out
 
 
