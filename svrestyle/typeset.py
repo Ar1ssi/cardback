@@ -49,7 +49,8 @@ def cap_height(face, size):
 
 
 def coverage(items):
-    """items: dicts(text, face, size, x, base, xscale=1, tracking=0, anchor='l'|'c'|'r') -> HxW float coverage."""
+    """items: dicts(text, face, size, x, base, xscale=1, tracking=0, anchor='l'|'c'|'r', thin=0) -> HxW float
+    coverage. thin: px taken off each side of every stroke, for a weight between two faces (1 / SS px steps)."""
     canvas = np.zeros((H * SS, W * SS), np.float32)
     for it in items:
         text = it["text"]
@@ -66,6 +67,10 @@ def coverage(items):
             d.text((pad + adv[i], pad + asc), ch, font=f, fill=255, anchor="ls")
         if xscale != 1.0:
             tile = tile.resize((max(1, round(tile.width * xscale)), tile.height), Image.LANCZOS)
+        thin = round(it.get("thin", 0.0) * SS)
+        if thin > 0:
+            tile = Image.fromarray(cv2.erode(np.asarray(tile), cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (2 * thin + 1, 2 * thin + 1))))
         width = (adv[-1] - tracking * SS) * xscale
         left = it["x"] * SS - {"l": 0, "c": width / 2, "r": width}[it.get("anchor", "l")] - pad * xscale
         top = it["base"] * SS - pad - asc

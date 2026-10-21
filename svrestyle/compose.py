@@ -45,6 +45,11 @@ WEAK_ICON_X, RES_ICON_X, RETREAT_X0, RETREAT_PITCH = 126.7, 320.5, 540.2, 30
 # Weakness-row icons: (x, y, radius) for weakness and resistance, (x0, y, radius, pitch) for retreat.
 SV_ROW_ICONS = {"weakness": (WEAK_ICON_X, ROW_Y, ROW_ICON_R), "resistance": (RES_ICON_X, ROW_Y, ROW_ICON_R),
                 "retreat": (RETREAT_X0, ROW_Y, ROW_ICON_R, RETREAT_PITCH)}
+# Weakness and resistance values as SV / ME print them (fitted on sv04-128, sv03.5-064, sv02-086 and four ex: glyph
+# boxes and ink): digits a weight between Gill Sans Medium and Bold, a short hyphen, a small bold ×.
+ROW_DIGITS = dict(face=ts.BOLD, size=31.5, thin=0.25, base=907.5)
+ROW_TIMES = dict(text="×", face=ts.COND_BOLD, size=24.0, x=145, base=905.5)
+ROW_DASH = dict(text="-", face=ts.MEDIUM, size=34.0, xscale=1.1, x=338.5, base=905.5)
 COST_DY = 14                                    # cost icon centre below the attack name's cap top (Absol)
 INLINE_R = 0.32          # energy symbol in effect text: radius per px of body size (me01-003: 16 px at 24.9)
 INLINE_SYMBOL_R = 0.78   # the symbol lies inside this share of the icon radius (the rest is rim)
@@ -278,13 +283,12 @@ def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS, retr
     if card["weakness"]:
         value = card["weakness"].get("value", "×2").replace("x", "×")
         if value.startswith("+"):                    # older cards: +20
-            items.append(dict(text=value, face=ts.COND_BOLD, size=31.5, x=146, base=907))
+            items.append(dict(text=value, **ROW_DIGITS, x=146))
         else:
-            items += [dict(text="×", face=ts.MEDIUM, size=27.0, x=146, base=905),
-                      dict(text=value.lstrip("×"), face=ts.COND_BOLD, size=31.5, x=161, base=907)]
+            items += [dict(ROW_TIMES), dict(text=value.lstrip("×"), **ROW_DIGITS, x=163.5)]
     if card["resistance"]:
-        value = card["resistance"].get("value", "-30").replace("-", "−")
-        items.append(dict(text=value, face=ts.COND_BOLD, size=31.5, x=339, base=908))
+        value = card["resistance"].get("value", "-30")
+        items += [dict(ROW_DASH), dict(text=value.lstrip("-−"), **ROW_DIGITS, x=349, tracking=-1.0)]
     with layers.kind("row_text"):
         ts.stamp(canvas, ts.coverage(items), fill, edge)
     with layers.kind("row_icon"):
