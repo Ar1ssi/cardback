@@ -47,7 +47,7 @@ GHOST_RING = (3, 9)    # px: that panel is read this far out from the blot
 GHOST_MIN = 80         # px: smaller standouts are the panel's own grain
 GHOST_MAX = 4000       # px: bigger standouts are not blots (art LaMa rebuilt)
 GHOST_GROW = 5         # px around a blot covered too: its soft edge is not caught as standing out
-CLEAN_VERSION = 20     # bump when cleaned() changes what it makes, so cached cleanups are made again
+CLEAN_VERSION = 21     # bump when cleaned() changes what it makes, so cached cleanups are made again
 ICON_SHADOW = 3        # px: a printed row icon's shadow reaches this far out (and down) from it
 # The old block's ink is read from its glyphs: shapes a glyph's size, lined up on a shared baseline.
 GLYPH_H = (5, 30)    # px: tallest and shortest glyph (accented capitals, commas aside)

@@ -165,6 +165,10 @@ How it works, module by module:
   (type-independent), and per type the name bar (name/HP removed), energy icon, panel palette and ink colour.
 - `compose.py` / `typeset.py` - lays out name, HP, abilities, attacks (justified effect text, italic reminder
   text, damage), weakness row and footer, with constants measured on SV scans.
+- `numerals.py` - HP, damage and weakness-row values in the print's own figures: SV / ME figures are proportional
+  and unlike any Gill Sans face, so each glyph is lifted off ~300 scans (cut out, aligned, averaged at 4x) and placed
+  by advances fitted on them. Built once by `prepare` or the first render (~30 s from the TCG Live extract); values
+  with a glyph never printed (+20) fall back to Gill Sans.
 - Energy icons (attack costs, weakness, resistance, retreat, and the ex name-bar type icon) are the Mega Evolution
   ones on both layouts, lifted from real me1 scans (`meframe.COST_ICONS`, `meframe.ICON`); on the Mega Evolution
   layout they also take Mega Evolution's sizes and positions.
