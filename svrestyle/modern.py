@@ -38,6 +38,7 @@ INK_CLOSE = 5        # px: joins glyph strokes and icon rims into whole shapes
 MARK_GROW = 3        # px around everything taken off (anti-aliasing, keylines)
 REACH = 5            # px: name, HP and weakness-row print may sit this far from where the composers set them
 ROW_NEAR = 4         # REACH for the weakness row
+ROW_LABELS = (30, 878, 530, 914)   # x0, y0, x1, y1: the row's "weakness", "resistance", "retreat" (always printed)
 WHOLE_REACH = 3      # x reach: a printed shape touching the reach is taken whole this far out
 RULE = 40            # px: a straight run of print at least this long is a bar's rule, not a glyph
 # LaMa sometimes invents a blot in a hole on a plain panel (sv04-128: a brown smudge where a Colorless energy was).
@@ -46,7 +47,7 @@ GHOST_RING = (3, 9)    # px: that panel is read this far out from the blot
 GHOST_MIN = 80         # px: smaller standouts are the panel's own grain
 GHOST_MAX = 4000       # px: bigger standouts are not blots (art LaMa rebuilt)
 GHOST_GROW = 5         # px around a blot covered too: its soft edge is not caught as standing out
-CLEAN_VERSION = 3      # bump when cleaned() changes what it makes, so cached cleanups are made again
+CLEAN_VERSION = 19     # bump when cleaned() changes what it makes, so cached cleanups are made again
 ICON_SHADOW = 3        # px: a printed row icon's shadow reaches this far out (and down) from it
 # The old block's ink is read from its glyphs: shapes a glyph's size, lined up on a shared baseline.
 GLYPH_H = (5, 30)    # px: tallest and shortest glyph (accented capitals, commas aside)
@@ -56,6 +57,13 @@ TEXT_LINE = 8        # glyphs whose bottoms sit within a pixel of each other mak
 KEYLINE_RING = 2     # px: an outline is read this far out from the glyphs
 INK_SNAP = 48        # RGB distance within which a measured ink is the stock ink (white, DARK_INK)
 BAND_GAP, BAND_SAMPLE = 3, 6   # px: weakness-row gaps take their colour this far out, from this many pixels
+BAND_REACH = 24      # px past BAND_GAP those pixels are looked for
+BAND_SMOOTH = 5      # rows a weakness-row gap's blend is the median over
+BAND_STEP = 30       # RGB levels apart past which two rows' blends are not one stretch of band (a rule's edge)
+BAND_SEARCH = 80     # px past the nearest place a weakness-row gap looks for clean band to take its grain from
+BAND_PIECE = 16      # px: gaps take their grain in square pieces this size, each from its own nearest clean place
+PRINT_GROW = 2       # px: print, icons whole, grown by its soft edge, is kept out of that grain
+PRINT_DIFF = 70      # how far print stands out from the weakness row; its grain stays under (sv10.5b-046: 52)
 RING_SHADE = 4       # px: the ring's soft shadow on the card, past its cut-out
 BORDER_X = 26        # px: the plain silver card border on the left, which the Stage ring overlaps
 
@@ -117,9 +125,33 @@ def _moves(canvas, card, fill, edge=None):
                               cost_r=mecompose.COST_R, cost_dy=mecompose.COST_DY)
 
 
-def _row(canvas, card, fill):
+def _row(canvas, card, fill, edge=None):
     icons = compose.SV_ROW_ICONS if card["family"] == "ex" else mecompose.ROW_ICONS
-    compose.weakness_row(canvas, card, fill, None, labels=False, icons=icons)
+    compose.weakness_row(canvas, card, fill, edge, labels=False, icons=icons, retreat=card.get("retreat_span"))
+
+
+def _row_sides(original, card):
+    a, b = edit.editable(original), edit.editable(card)
+    return [s for s in ("weakness", "resistance") if a.get(s) != b.get(s)]
+
+
+def row_off(original, card):
+    """The weakness-row print an edit takes off, as a card for _row: the sides that change and the Retreat circles a
+    lower cost drops; what stays the same keeps its print. A side TCGdex leaves out (it misses some printed
+    weaknesses) is looked for where the edit sets it."""
+    sides = _row_sides(original, card)
+    out = {**original, **{s: (original[s] or card[s]) if s in sides else None for s in ("weakness", "resistance")}}
+    out["retreat_span"] = (min(card["retreat"], original["retreat"]), original["retreat"])
+    return out
+
+
+def row_on(original, card):
+    """What the edit sets in the weakness row, as a card for _row: the sides that change and the circles a higher
+    Retreat cost adds."""
+    sides = _row_sides(original, card)
+    out = {**card, **{s: card[s] if s in sides else None for s in ("weakness", "resistance")}}
+    out["retreat_span"] = (min(card["retreat"], original["retreat"]), card["retreat"])
+    return out
 
 
 def _evolves(canvas, card):
@@ -301,7 +333,7 @@ def taken_off(card_id, original, groups, card=None):
         mask |= moves_ink(scan, original["family"])
     if "row" in groups:
         # tight: the weakness icon sits close to the end of its label
-        printed_row = _drawn(_row, original, compose.WHITE)
+        printed_row = _drawn(_row, row_off(original, card) if card is not None else original, compose.WHITE)
         row = dilate(ink_near(scan, _cover(printed_row, ("row_icon", "row_text")), ROW_NEAR), 1)
         # the icons' soft drop shadow, too faint to stand out, falls on the bar below them
         icons = _cover(printed_row, ("row_icon",)) > 0.1
@@ -311,17 +343,24 @@ def taken_off(card_id, original, groups, card=None):
     return dilate(mask, MARK_GROW), row
 
 
-def fill_band(img, where, keep_out):
+def fill_band(img, where):
     """Fill the `where` pixels of the weakness row along each pixel row: every gap blends from the colour just left of
     it to the colour just right of it (BAND_SAMPLE px a little way out, skipping print). The row's lines run across,
-    so this keeps them whole; LaMa would copy the labels into the gap, 2-D inpainting draws crosses."""
+    so this keeps them whole; LaMa would copy the labels into the gap, 2-D inpainting draws crosses. Each pixel's
+    blend off the bars' rules is the median of the BAND_SMOOTH rows' about it within BAND_STEP of most of them (a
+    row's end colours are a few pixels each: alone they streak, or catch a shadow). The
+    blend then takes on the band's grain: each BAND_PIECE px square piece of a gap copies the grain of the same
+    shape of band beside it, the nearest that holds no print (the bars' rules and the band's own specks are band)."""
     out = img.copy()
-    skip = where | keep_out
-    for y in np.flatnonzero(where.any(axis=1)):
-        row = where[y].astype(np.int8)
-        starts = np.flatnonzero(np.diff(np.r_[0, row]) == 1)
-        ends = np.flatnonzero(np.diff(np.r_[row, 0]) == -1) + 1
-        for x0, x1 in zip(starts, ends):
+    rows = np.flatnonzero(where.any(axis=1))
+    if not len(rows):
+        return out
+    printed, rules = _strong_print(img, rows[0], rows[-1] + 1)
+    skip = where | printed
+    pieces, shifts = _band_pieces(where, skip)
+    blend = np.full(img.shape[:2] + (3,), np.nan, np.float32)
+    for y in rows:
+        for x0, x1 in _runs_of(where[y]):
             left = _sample(img[y], skip[y], x0 - 1, -1)
             right = _sample(img[y], skip[y], x1, 1)
             if left is None and right is None:
@@ -329,14 +368,94 @@ def fill_band(img, where, keep_out):
             left = right if left is None else left
             right = left if right is None else right
             t = (np.arange(x0, x1) - x0 + 0.5)[:, None] / max(1, x1 - x0)
-            out[y, x0:x1, :3] = left * (1 - t) + right * t
+            blend[y, x0:x1] = left * (1 - t) + right * t
+    y0, y1 = rows[0], rows[-1] + 1
+    band = blend[y0:y1].copy()
+    band[rules[y0:y1]] = np.nan                     # a rule's rows are each their own: not smoothed
+    half = BAND_SMOOTH // 2
+    padded = np.pad(band, ((half, half), (0, 0), (0, 0)), constant_values=np.nan)
+    near = np.stack([padded[i:i + y1 - y0] for i in range(BAND_SMOOTH)])
+    with warnings.catch_warnings():                 # pixels with no band rows about them: stay blended
+        warnings.simplefilter("ignore", RuntimeWarning)
+        smooth = _like(near, np.nanmedian(near, axis=0))
+    filled = ~np.isnan(blend[y0:y1, :, 0])
+    out[y0:y1, :, :3][filled] = blend[y0:y1][filled]
+    steady = filled & ~np.isnan(band[..., 0]) & ~np.isnan(smooth[..., 0])
+    out[y0:y1, :, :3][steady] = smooth[steady]
+    for y in rows:
+        for x0, x1 in _runs_of(where[y]):
+            for a, b in _runs(pieces[y, x0:x1]):
+                d = shifts.get(pieces[y, x0 + a])
+                if d is not None and not np.isnan(blend[y, x0 + a, 0]):
+                    grain = img[y, x0 + a + d:x0 + b + d, :3]
+                    out[y, x0 + a:x0 + b, :3] += grain - grain.mean(axis=0)
     return out
 
 
+def _like(near, centre):
+    """Per pixel, the median of the rows in near (rows x H x W x 3) within BAND_STEP of centre (H x W x 3)."""
+    kept = near.copy()
+    kept[np.repeat(np.abs(near - centre[None]).max(axis=3, keepdims=True) > BAND_STEP, 3, axis=3)] = np.nan
+    return np.nanmedian(kept, axis=0)
+
+
+def _runs_of(line):
+    """(start, end) of each stretch of True in a bool line."""
+    row = line.astype(np.int8)
+    return zip(np.flatnonzero(np.diff(np.r_[0, row]) == 1), np.flatnonzero(np.diff(np.r_[row, 0]) == -1) + 1)
+
+
+def _strong_print(img, y0, y1):
+    """(bool HxW: print about rows y0..y1 that stands out from the band more than its grain does (PRINT_DIFF), icons
+    whole, grown by its soft edge; bool HxW: the bars' rules, which run across and are band, not print)."""
+    top, bottom = max(0, y0 - MEDIAN), min(img.shape[0], y1 + MEDIAN)
+    crop = np.clip(img[top:bottom, :, :3], 0, 255).astype(np.uint8)
+    lift = (np.abs(crop.astype(np.int16) - cv2.medianBlur(crop, MEDIAN).astype(np.int16)).max(axis=2)
+            > PRINT_DIFF).astype(np.uint8)
+    ruled = cv2.morphologyEx(lift, cv2.MORPH_OPEN, np.ones((1, RULE), np.uint8))       # rules and their shading
+    lift = cv2.morphologyEx(lift & ~ruled, cv2.MORPH_CLOSE, np.ones((INK_CLOSE, INK_CLOSE), np.uint8)) > 0
+    printed, rules = np.zeros(img.shape[:2], bool), np.zeros(img.shape[:2], bool)
+    printed[top:bottom] = dilate(fill_holes(lift), PRINT_GROW)
+    rules[top:bottom] = ruled > 0
+    return printed, rules
+
+
+def _runs(ids):
+    """(start, end) of each stretch of equal values in ids."""
+    cuts = np.flatnonzero(np.diff(ids)) + 1
+    return list(zip(np.r_[0, cuts], np.r_[cuts, len(ids)]))
+
+
+def _band_pieces(where, skip):
+    """(int HxW: where cut into pieces BAND_PIECE px square, numbered from 1; {piece: x shift to the nearest place
+    of the same shape clear of skip, within BAND_SEARCH px}). Pieces with no such place have no shift."""
+    n, comps = cv2.connectedComponents(where.astype(np.uint8))
+    pieces = np.zeros(where.shape, np.int32)
+    shifts = {}
+    for c in range(1, n):
+        ys, xs = np.nonzero(comps == c)
+        part = (xs - xs.min()) // BAND_PIECE * H + (ys - ys.min()) // BAND_PIECE
+        for p in np.unique(part):
+            key = len(shifts) + 1
+            py, px = ys[part == p], xs[part == p]
+            pieces[py, px] = key
+            shifts[key] = None
+            least = px.max() - px.min() + 1 + BAND_GAP
+            for extra in range(BAND_SEARCH):
+                d = next((d for d in (-(least + extra), least + extra)
+                          if px.min() + d >= 0 and px.max() + d < where.shape[1] and not skip[py, px + d].any()), None)
+                if d is not None:
+                    shifts[key] = d
+                    break
+    return pieces, shifts
+
+
 def _sample(line, skip, x, step):
-    """Median colour of BAND_SAMPLE unprinted pixels going from x in direction step, after BAND_GAP px."""
+    """Median colour of BAND_SAMPLE unprinted pixels going from x in direction step, after BAND_GAP px and within
+    BAND_REACH px past that (beyond, the band may be the card's border); None when there are none."""
     picked, x = [], x + step * BAND_GAP
-    while 0 <= x < len(line) and len(picked) < BAND_SAMPLE:
+    stop = x + step * BAND_REACH
+    while 0 <= x < len(line) and x != stop and len(picked) < BAND_SAMPLE:
         if not skip[x]:
             picked.append(line[x, :3])
         x += step
@@ -424,13 +543,19 @@ def cleaned(card_id, original, groups, card=None):
     if blots is not None and blots.any():
         art = patch_blots(art, blots, mask)
     if row.any():
-        art = fill_band(art, row, ink_in(scan, (0, 860, W, 930), holes=False))
+        art = fill_band(art, row)
     border = mask.copy()
     border[:, BORDER_X:] = False
     if border.any():                 # LaMa leaves blotches on the plain border: it shades only from top to bottom
-        art = fill_band(art.transpose(1, 0, 2), border.T, np.zeros((W, H), bool)).transpose(1, 0, 2)
+        art = fill_band(art.transpose(1, 0, 2), border.T).transpose(1, 0, 2)
     save_rgba(art, out)
     return art, mask | row
+
+
+def _row_colour(scan, original, card):
+    """White or dark, for a weakness row print_ink finds no labels in: what its old values were printed in."""
+    old = ink_near(scan, _cover(_drawn(_row, row_off(original, card), compose.WHITE), ("row_text",)), holes=False)
+    return ink_colour(scan, old)
 
 
 def _block_colour(scan, original):
@@ -462,7 +587,7 @@ def compose_card(card_id, card, original=None):
         if shrink is not None and shrink < 1:
             warnings.warn(f"{card_id}: ability/attack text set at {shrink:.0%} to fit")
     if "row" in groups:
-        row_text = ink_near(scan, _cover(_drawn(_row, original, compose.WHITE), ("row_text",)), holes=False)
-        _row(canvas, card, ink_colour(scan, row_text))
+        fill, edge = print_ink(scan, ROW_LABELS) or (_row_colour(scan, original, card), None)
+        _row(canvas, row_on(original, card), fill, edge)
     canvas[..., 3] = scan[..., 3]
     return canvas, {"card": card, "edited": list(groups), "taken_off": mask}

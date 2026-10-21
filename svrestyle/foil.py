@@ -579,14 +579,15 @@ def ink_value(img, cover, around):
     return float(np.median(img[judged])), float(np.median(ground[judged]))
 
 
-def printed_blocks(original, groups):
-    """What the card prints in the edited text blocks, by kind, as the composers set it (coverage 0..1)."""
+def printed_blocks(original, groups, card=None):
+    """What the card prints in the edited text blocks, by kind, as the composers set it (coverage 0..1); in the
+    weakness row, only what the edit to card takes off."""
     from . import modern
     out = {}
     if "moves" in groups:
         out.update(modern._drawn(modern._moves, original, compose.WHITE))
     if "row" in groups:
-        out.update(modern._drawn(modern._row, original, compose.WHITE))
+        out.update(modern._drawn(modern._row, modern.row_off(original, card) if card else original, compose.WHITE))
     return out
 
 
@@ -625,7 +626,7 @@ def build_modern(card_id, card, canvas, drawn, original):
         mask, row = modern.taken_off(card_id, original, blocks, card)
         block_off = mask | row
     printed = printed_ink(original, groups)
-    in_blocks = printed_blocks(original, blocks)
+    in_blocks = printed_blocks(original, blocks, card)
     shed = modern.stage_off(original, card) if "stage" in groups else np.zeros((H, W), bool)
     if original["stage"]:
         drawn.pop("stage", None)            # the card's own pieces, set again where they were: as printed

@@ -269,7 +269,8 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
     return size / BODY_SIZE
 
 
-def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS):
+def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS, retreat=None):
+    """retreat: (first, end) of the Retreat circles to set; default all of card["retreat"]."""
     label = 22.0 * 69 / ts.text_width("weakness", ts.MEDIUM, 22.0)      # Absol's "weakness" ink is 69 px wide
     items = [dict(text="weakness", face=ts.MEDIUM, size=label, x=41, base=901),
              dict(text="resistance", face=ts.MEDIUM, size=label, x=229, base=901),
@@ -291,7 +292,7 @@ def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS):
             if card[side]:
                 energy(card[side]["type"], *icons[side], canvas)
         x0, y, r, pitch = icons["retreat"]
-        for i in range(card["retreat"]):
+        for i in range(*(retreat or (0, card["retreat"]))):
             energy("Colorless", x0 + pitch * i, y, r, canvas)
 
 

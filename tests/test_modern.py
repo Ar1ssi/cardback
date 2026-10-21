@@ -36,6 +36,18 @@ class Groups(unittest.TestCase):
         c = card()
         self.assertEqual(modern.changed(c, edit.apply(c, edit.editable(c))), ())
 
+    def test_row_edits_touch_only_what_changes(self):
+        fire = {"type": "Fire", "value": "×2"}
+        # TCGdex leaves the printed weakness out (sv10.5b-046): it is looked for where the edit sets it
+        gap, edited = card(weakness=None, retreat=3), card(weakness=fire, retreat=2)
+        off, on = modern.row_off(gap, edited), modern.row_on(gap, edited)
+        self.assertEqual((off["weakness"], off["resistance"], off["retreat_span"]), (fire, None, (2, 3)))
+        self.assertEqual((on["weakness"], on["resistance"], on["retreat_span"]), (fire, None, (2, 2)))
+        more = card(retreat=3)
+        self.assertEqual(modern.row_off(card(), more)["retreat_span"], (1, 1))      # the printed circle stays
+        self.assertEqual(modern.row_on(card(), more)["retreat_span"], (1, 3))
+        self.assertIsNone(modern.row_on(card(), more)["weakness"])
+
 
 class ReadCard(unittest.TestCase):
     def tcgdex(self, **over):
@@ -133,9 +145,22 @@ class FindingPrint(unittest.TestCase):
         where = np.zeros((H, W), bool)
         where[885:895, 280:320] = True
         img[where, :3] = 0                           # an icon
-        out = modern.fill_band(img, where, np.zeros((H, W), bool))
+        out = modern.fill_band(img, where)
         self.assertTrue(100 <= out[890, 285, 0] < out[890, 315, 0] <= 200)
         self.assertEqual(out[870, 285, 0], 0)        # rows outside the gap untouched
+
+    def test_fill_band_keeps_the_grain_and_the_rules(self):
+        img = np.zeros((H, W, 4), np.float32)
+        img[870:920, :, :3] = 150 + np.random.default_rng(1).normal(0, 12, (50, W, 1))   # the band's grain
+        img[876:879, :, :3] = 220                    # a bar's rule
+        where = np.zeros((H, W), bool)
+        where[874:900, 300:330] = True               # an icon taken off, into the rule
+        img[where, :3] = 0
+        out = modern.fill_band(img, where)
+        gap = out[882:898, 300:330, 0]
+        self.assertGreater(float(gap.std()), 6)      # grain, not a flat blend
+        self.assertLess(abs(float(gap.mean()) - 150), 8)
+        self.assertTrue(np.all(np.abs(out[876:879, 300:330, 0] - 220) < 1))
 
     def test_blot_on_plain_panel_is_patched_from_the_panel(self):
         art = np.full((H, W, 4), 200, np.float32)
