@@ -117,12 +117,12 @@ def _name(canvas, card, logo=None):
     return compose.name_bar_text(canvas, card, prof, ex=False, name_right_limit=meframe.NAME_RIGHT_LIMIT)
 
 
-def _moves(canvas, card, fill, edge=None):
+def _moves(canvas, card, fill, edge=None, symbol=None):
     if card["family"] == "ex":
-        return compose.text_block(canvas, card, fill, edge)
+        return compose.text_block(canvas, card, fill, edge, symbol=symbol)
     return compose.text_block(canvas, card, fill, edge, layout=mecompose.me_layout,
                               name_to_body=mecompose.NAME_TO_BODY, fit_tracking=mecompose.BODY_FIT_TRACK,
-                              cost_r=mecompose.COST_R, cost_dy=mecompose.COST_DY)
+                              cost_r=mecompose.COST_R, cost_dy=mecompose.COST_DY, symbol=symbol)
 
 
 def _row(canvas, card, fill, edge=None):

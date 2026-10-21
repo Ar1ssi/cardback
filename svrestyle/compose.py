@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from . import cache, frame, layers, meframe, numerals, refs, stage, swsh, tcg
+from . import cache, frame, layers, lifted, meframe, refs, stage, swsh, tcg
 from . import typeset as ts
 from .imaging import load_rgba, luminance, put_sprite, save_rgba
 
@@ -153,9 +153,9 @@ def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LI
 
 def hp_coverage(hp):
     """The HP and its label: in the print's own figures, or Gill Sans when they could not be lifted."""
-    lifted = numerals.coverage("hp", hp)
-    if lifted is not None:
-        return lifted
+    figures = lifted.coverage("hp", hp)
+    if figures is not None:
+        return figures
     hp_w = ts.text_width(hp, ts.COND_BOLD, HP_SIZE, HP_XSCALE)
     return ts.coverage([
         dict(text=hp, face=ts.COND_BOLD, size=HP_SIZE, x=HP_RIGHT, base=HP_BASE, xscale=HP_XSCALE, anchor="r"),
@@ -187,9 +187,18 @@ def energy(type_name, cx, cy, r, canvas, kind="cost"):
         put_sprite(canvas, sprite, cx, cy, scale=scale)
 
 
+def energy_symbol(type_name, cx, base, size):
+    """Coverage of an energy symbol in effect text, its gap centred on cx in a line of body text at size: the print's
+    own symbol (lifted.py), else inline_energy."""
+    printed = lifted.symbol(type_name, cx, base, size / BODY_SIZE)
+    if printed is not None:
+        return printed
+    return inline_energy(type_name, cx, base - ts.cap_height(BODY_FACE, size) / 2, size * INLINE_R)
+
+
 def inline_energy(type_name, cx, cy, r):
-    """Coverage of an energy symbol in effect text, as SV and Mega Evolution print it: a disc in the text's ink with
-    the type's symbol knocked out (cut from the Mega Evolution icon: what differs from its disc colour)."""
+    """Coverage of an energy symbol in effect text without the print's own: a disc in the text's ink with the type's
+    symbol knocked out (cut from the Mega Evolution icon: what differs from its disc colour)."""
     (crop, alpha, scx, scy, (ox, oy)), base_r = meframe.icon(type_name)
     lum = luminance(crop)
     yy, xx = np.mgrid[:crop.shape[0], :crop.shape[1]]
@@ -221,9 +230,11 @@ def sv_ex_layout(laid, pitch):
 
 
 def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_TO_BODY, fit_tracking=None,
-               red_edge=None, cost_r=COST_R, cost_dy=COST_DY):
+               red_edge=None, cost_r=COST_R, cost_dy=COST_DY, symbol=None):
     """Abilities then attacks, placed by layout(laid, pitch); body text shrinks until the layout fits.
-    red_edge: keyline under the red Ability names (default: a white one when the text has an edge)."""
+    red_edge: keyline under the red Ability names (default: a white one when the text has an edge).
+    symbol(type, centre x, baseline, body size): coverage of an energy symbol in effect text (energy_symbol)."""
+    symbol = symbol or energy_symbol
     blocks = [("ability", a) for a in card["abilities"]] + [("attack", a) for a in card["attacks"]]
     if not blocks:
         return None
@@ -257,9 +268,9 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
                               xscale=ATK_XSCALE))
             dmg = str(b.get("damage") or "").replace("x", "×")
             m = re.fullmatch(r"(\d+)([+×-]?)", dmg)
-            lifted = numerals.coverage("damage", dmg, base=top + atk_cap) if m else None
-            if lifted is not None:
-                np.maximum(drawn, lifted, out=drawn)
+            figures = lifted.coverage("damage", dmg, base=top + atk_cap) if m else None
+            if figures is not None:
+                np.maximum(drawn, figures, out=drawn)
             elif m:
                 digits, suffix = m.groups()
                 items.append(dict(text=digits, face=ATK_FACE, size=DMG_SIZE, x=DMG_RIGHT, base=top + atk_cap,
@@ -273,7 +284,7 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
             base, marks = body_top + i * pitch + body_cap, []
             items += ts.line_items(runs, tracking, size, BODY_X, base, marks)
             for cx in marks:
-                np.maximum(drawn, inline_energy(next(marked), cx, base - body_cap / 2, size * INLINE_R), out=drawn)
+                np.maximum(drawn, symbol(next(marked), cx, base, size), out=drawn)
     with layers.kind("text"):
         ts.stamp(canvas, np.maximum(ts.coverage(items), drawn), fill, edge)
     if red_items:
@@ -291,25 +302,25 @@ def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS, retr
     items = [dict(text="weakness", face=ts.MEDIUM, size=label, x=41, base=901),
              dict(text="resistance", face=ts.MEDIUM, size=label, x=229, base=901),
              dict(text="retreat", face=ts.MEDIUM, size=label, x=457, base=901)] if labels else []
-    lifted = []                                      # values in the print's own glyphs (Gill Sans without)
+    printed = []                                     # values in the print's own glyphs (Gill Sans without)
     if card["weakness"]:
         value = card["weakness"].get("value", "×2").replace("x", "×")
-        weakness = numerals.coverage("weakness", value)
+        weakness = lifted.coverage("weakness", value)
         if weakness is not None:
-            lifted.append(weakness)
+            printed.append(weakness)
         elif value.startswith("+"):                  # older cards: +20
             items.append(dict(text=value, **ROW_DIGITS, x=146))
         else:
             items += [dict(ROW_TIMES), dict(text=value.lstrip("×"), **ROW_DIGITS, x=163.5)]
     if card["resistance"]:
         value = card["resistance"].get("value", "-30").replace("−", "-")
-        resistance = numerals.coverage("resistance", value)
+        resistance = lifted.coverage("resistance", value)
         if resistance is not None:
-            lifted.append(resistance)
+            printed.append(resistance)
         else:
             items += [dict(ROW_DASH), dict(text=value.lstrip("-"), **ROW_DIGITS, x=349, tracking=-1.0)]
     with layers.kind("row_text"):
-        ts.stamp(canvas, np.maximum.reduce([ts.coverage(items), *lifted]), fill, edge)
+        ts.stamp(canvas, np.maximum.reduce([ts.coverage(items), *printed]), fill, edge)
     with layers.kind("row_icon"):
         for side in ("weakness", "resistance"):
             if card[side]:

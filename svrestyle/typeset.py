@@ -140,7 +140,7 @@ def runs_of(line_words):
 ENERGY_CODES = {"G": "Grass", "R": "Fire", "W": "Water", "L": "Lightning", "P": "Psychic", "F": "Fighting",
                 "D": "Darkness", "M": "Metal", "N": "Dragon", "C": "Colorless"}
 ENERGY_MARK = ""
-ENERGY_ADVANCE = 0.68          # me01-003: a 16 px symbol between spaces in 24.9 px body text
+ENERGY_ADVANCE = 0.93          # the print leaves a symbol 23 px between spaces in 24.9 px body text (130 SV / ME)
 
 
 def energy_text(text):

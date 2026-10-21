@@ -1,4 +1,4 @@
-"""HP, attack damage and weakness-row values set in the print's own figures.
+"""HP, attack damage, weakness-row values and energy symbols in effect text, set in the print's own glyphs.
 
 Scarlet & Violet and Mega Evolution print these in a Gill Sans whose figures are proportional (at HP size a 1 is
 24 px wide, a 0 32) and shaped unlike any Gill Sans face here: set in a font they miss the print by 2-4 px a digit,
@@ -11,6 +11,12 @@ anchor less the advances of the glyphs right of it and the few kerns between the
 Measured on 23 cards outside SOURCES (summed squared coverage off the print; the font setting this replaces in
 brackets): HP 1029 (14367; the best Gill Sans fit 8734), damage 870 (7635), weakness 157 (303), resistance 50 (250).
 Weakness and resistance only ever print x2 and -30: any other value is set in Gill Sans as before.
+
+Energy symbols in effect text print bare, in the text's ink, a little taller than its capitals. They are found on
+the print by laying a card's own text out as compose does and matching the words either side of each symbol's gap
+to the print; what stands out between them is the symbol. Each is placed from its gap's centre and the line's
+baseline, scaled with the text when it shrinks. On 51 symbols held out of SOURCES they miss the print by 1210 (the
+disc with the icon's symbol knocked out set before: 6924).
 """
 import functools
 import json
@@ -30,6 +36,7 @@ INK_SHARE = 85                  # percentile of how far the print stands out tha
 NOISE = 0.2                     # spread of a card's background near its print (ink units) past which it is skipped
 PAD = 3                         # px kept round a glyph's cut-out
 ALIGN_ROUNDS = 4
+AGREE = 0.8                     # least likeness (normalised correlation) of a sample to its glyph's mean
 MIN_PAIR = 3                    # samples a pair of glyphs needs for a kern of its own
 KERN_RIDGE, ADVANCE_RIDGE, ADVANCE_PRIOR = 4.0, 0.05, 25 * UP  # the fit's pull towards no kern / a common advance
 
@@ -44,10 +51,41 @@ NAME_LEFT = 200                 # px: the attack name is looked for from here to
 NAME_GLYPH_H = (12, 40)
 # Weakness-row values, past their icons (and the icons' shadows): x0, y0, x1, y1
 ROW_BOXES = {"weakness": (142, 880, 215, 916), "resistance": (336, 880, 410, 916)}
+WORDS = 48                      # px of our words matched either side of a symbol's gap
+GAP_HALF = 8                    # px either side of a gap's centre left out of them
+LINE_HALF = 16                  # px above and below the line's middle they cover
+SEARCH = (14, 40)               # px the print may sit off our layout: across, down (ex blocks stack differently)
+MATCH = 0.45                    # least correlation of the words with the print
+SYMBOL_BOX = (15, 26, 6)        # px: a symbol lies within this far either side of its gap's centre, above and
+                                # below the baseline; shapes reaching out of it are the words
 
 # Cards the glyphs are lifted from: plain panels, dark print, every figure and suffix many times over (held-out
 # measurement cards excluded).
 SOURCES = {
+    "energy": (
+        "me01-003", "me01-005", "me01-011", "me01-025", "me01-036", "me01-064", "me01-074", "me01-077", "me01-084",
+        "me02-007", "me02-013", "me02-015", "me02-016", "me02-018", "me02-039", "me02-040", "me02.5-010", "me02.5-024",
+        "me02.5-040", "me02.5-048", "me02.5-053", "me02.5-056", "me02.5-060", "me02.5-066", "me02.5-070", "me02.5-072",
+        "me02.5-084", "me02.5-089", "me02.5-099", "me02.5-105", "me02.5-107", "me02.5-113", "me02.5-117", "me02.5-120",
+        "me02.5-145", "me02.5-171", "me03-003", "me03-019", "me03-022", "me03-024", "me03-025", "me03-029", "me03-036",
+        "me03-066", "me04-022", "me04-122", "me05-060", "sv01-002", "sv01-019", "sv01-031", "sv01-032", "sv01-035",
+        "sv01-047", "sv01-062", "sv01-076", "sv01-079", "sv01-081", "sv01-104", "sv01-106", "sv01-114", "sv02-040",
+        "sv02-060", "sv02-064", "sv02-065", "sv02-151", "sv03-009", "sv03-025", "sv03-030", "sv03-041", "sv03-047",
+        "sv03-052", "sv03-074", "sv03-078", "sv03-082", "sv03-107", "sv03-109", "sv03-153", "sv03-172", "sv03.5-008",
+        "sv03.5-009", "sv03.5-010", "sv03.5-025", "sv03.5-047", "sv03.5-058", "sv03.5-059", "sv03.5-119", "sv03.5-137",
+        "sv03.5-144", "sv03.5-145", "sv03.5-146", "sv04-005", "sv04-015", "sv04-021", "sv04-022", "sv04-027",
+        "sv04-037", "sv04-038", "sv04-042", "sv04-054", "sv04-058", "sv04-063", "sv04-072", "sv04-093", "sv04-099",
+        "sv04-100", "sv04-104", "sv04-108", "sv04.5-012", "sv04.5-026", "sv04.5-042", "sv04.5-043", "sv04.5-067",
+        "sv05-016", "sv05-054", "sv05-059", "sv05-068", "sv05-092", "sv05-095", "sv05-118", "sv06-005", "sv06-011",
+        "sv06-016", "sv06-022", "sv06-025", "sv06-033", "sv06-095", "sv06-096", "sv06-123", "sv06-124", "sv06.5-005",
+        "sv06.5-012", "sv06.5-047", "sv07-014", "sv07-030", "sv07-042", "sv07-045", "sv07-050", "sv07-107", "sv07-118",
+        "sv08-021", "sv08-034", "sv08-059", "sv08-065", "sv08-068", "sv08-075", "sv08-079", "sv08-156", "sv08.5-005",
+        "sv08.5-011", "sv08.5-012", "sv08.5-044", "sv08.5-045", "sv08.5-049", "sv08.5-056", "sv08.5-070", "sv08.5-085",
+        "sv09-007", "sv09-032", "sv09-041", "sv09-047", "sv09-053", "sv09-055", "sv09-073", "sv09-115", "sv10-018",
+        "sv10-028", "sv10-036", "sv10-055", "sv10-056", "sv10-060", "sv10-101", "sv10-140", "sv10-145", "sv10.5b-016",
+        "sv10.5b-031", "sv10.5b-033", "sv10.5b-050", "sv10.5b-053", "sv10.5b-063", "sv10.5b-067", "sv10.5w-013",
+        "sv10.5w-019", "sv10.5w-025", "sv10.5w-034", "sv10.5w-047", "sv10.5w-048"
+    ),
     "hp": (
         "me01-002", "me01-005", "me01-006", "me01-007", "me01-008", "me01-010", "me01-011", "me01-013", "me01-014",
         "me01-016", "me01-021", "me01-023", "me01-024", "me01-025", "me01-026", "me01-027", "me01-028", "me01-030",
@@ -129,17 +167,43 @@ def coverage(kind, text, base=0.0):
     seq = sequence(kind, text)
     if glyphs is None or not text or any(c not in glyphs.shapes for c in seq):
         return None
-    canvas = np.zeros((H * UP, W * UP), np.float32)
-    for ch, x, y in place(glyphs, seq):
-        shape = glyphs.shapes[ch]
-        x0, y0 = round(x), round(y + base * UP)
-        sx, sy = max(0, -x0), max(0, -y0)
-        x1, y1 = min(W * UP, x0 + shape.shape[1]), min(H * UP, y0 + shape.shape[0])
-        if x1 <= x0 + sx or y1 <= y0 + sy:
-            continue
-        region = canvas[y0 + sy:y1, x0 + sx:x1]
-        np.maximum(region, shape[sy:sy + region.shape[0], sx:sx + region.shape[1]], out=region)
-    return cv2.resize(canvas, (W, H), interpolation=cv2.INTER_AREA)
+    return render([(glyphs.shapes[ch], x, y + base * UP) for ch, x, y in place(glyphs, seq)])
+
+
+def symbol(type_name, cx, base, scale=1.0):
+    """HxW coverage of a type's energy symbol in effect text, its gap centred on cx in the line on baseline base;
+    scale: the body text's size over the full size. None without lifted symbols."""
+    glyphs = load("energy")
+    if glyphs is None or type_name not in glyphs.shapes:
+        return None
+    shape = glyphs.shapes[type_name]
+    if scale != 1.0:
+        size = (max(1, round(shape.shape[1] * scale)), max(1, round(shape.shape[0] * scale)))
+        shape = cv2.resize(shape, size, interpolation=cv2.INTER_AREA)
+    return render([(shape, cx * UP + glyphs.x[type_name] * scale, base * UP + glyphs.y[type_name] * scale)])
+
+
+def render(pieces):
+    """HxW coverage of UP x shapes at UP x top-left corners, the most of them where they overlap."""
+    out = np.zeros((H, W), np.float32)
+    placed = [(shape, round(x), round(y)) for shape, x, y in pieces]
+    if not placed:
+        return out
+    x0 = min(x for _, x, _ in placed) // UP * UP
+    y0 = min(y for _, _, y in placed) // UP * UP
+    x1 = -(-max(x + s.shape[1] for s, x, _ in placed) // UP) * UP
+    y1 = -(-max(y + s.shape[0] for s, _, y in placed) // UP) * UP
+    tile = np.zeros((y1 - y0, x1 - x0), np.float32)
+    for shape, x, y in placed:
+        region = tile[y - y0:y - y0 + shape.shape[0], x - x0:x - x0 + shape.shape[1]]
+        np.maximum(region, shape, out=region)
+    small = tile.reshape(tile.shape[0] // UP, UP, tile.shape[1] // UP, UP).mean(axis=(1, 3))
+    X0, Y0 = x0 // UP, y0 // UP
+    sx, sy = max(0, -X0), max(0, -Y0)
+    X1, Y1 = min(W, X0 + small.shape[1]), min(H, Y0 + small.shape[0])
+    if X1 > X0 + sx and Y1 > Y0 + sy:
+        out[Y0 + sy:Y1, X0 + sx:X1] = small[sy:Y1 - Y0, sx:X1 - X0]
+    return out
 
 
 # ---------------------------------------------------------------- lifting
@@ -248,6 +312,63 @@ def row_samples(scan, value, box):
     return [(seq, j, cut(cov, s[4], *s[:4])) for j, s in enumerate(found)]
 
 
+def symbol_samples(card, scan):
+    """[(sequence, index, (shape, top-left from its gap's centre and the line's baseline))] of the energy symbols
+    printed in a card's effect text (card as modern.read_card gives it), where they are found."""
+    from . import compose, modern                  # they set text with these glyphs
+    marks = []
+
+    def record(type_name, cx, base, size):
+        marks.append((type_name, cx, base, size))
+        return np.zeros((H, W), np.float32)
+    text = modern._drawn(modern._moves, card, compose.WHITE, None, record).get("text")
+    if not marks or any(size != compose.BODY_SIZE for *_, size in marks):
+        return []                                  # shrunk text: the print may have shrunk it otherwise
+    cov, sign, noise = standout(scan, modern.MOVES_ZONE[card["family"]])
+    if sign < 0 or noise > NOISE:
+        return []
+    middle = compose.ts.cap_height(compose.BODY_FACE, compose.BODY_SIZE) / 2
+    out = []
+    for type_name, cx, base, _ in marks:
+        gap = find_gap(text, cov, cx, base - middle)
+        if gap is None:
+            continue
+        gx, dy = gap
+        gy = base + dy
+        half, above, below = SYMBOL_BOX
+        x0, y0, x1, y1 = gx - half, gy - above, gx + half, gy + below
+        inside = [s for s in shapes(cov, min_px=4)
+                  if s[0] > x0 and s[1] > y0 and s[0] + s[2] < x1 and s[1] + s[3] < y1]
+        if not inside:
+            continue
+        mask = np.logical_or.reduce([s[4] for s in inside])
+        left, top = min(s[0] for s in inside), min(s[1] for s in inside)
+        right, bottom = max(s[0] + s[2] for s in inside), max(s[1] + s[3] for s in inside)
+        shape, (cx4, cy4) = cut(cov, mask, left, top, right - left, bottom - top)
+        out.append(((type_name,), 0, (shape, (cx4 - round(gx * UP), cy4 - round(gy * UP)))))
+    return out
+
+
+def find_gap(text, cov, cx, cy):
+    """The print's (gap centre x, offset down) of a gap our text has at (cx, cy): our words either side of it
+    matched to the print, both needing to land on the same line. None when they do not match."""
+    cx, cy = round(cx), round(cy)
+    landed = []
+    for xa, xb in ((cx - WORDS, cx - GAP_HALF), (cx + GAP_HALF, cx + WORDS)):
+        words = text[cy - LINE_HALF:cy + LINE_HALF, xa:xb].astype(np.float32)
+        area = cov[cy - LINE_HALF - SEARCH[1]:cy + LINE_HALF + SEARCH[1], xa - SEARCH[0]:xb + SEARCH[0]]
+        if words.std() < 0.05 or area.shape[0] < words.shape[0] or area.shape[1] < words.shape[1]:
+            return None
+        _, score, _, (lx, ly) = cv2.minMaxLoc(cv2.matchTemplate(area, words, cv2.TM_CCOEFF_NORMED))
+        if score < MATCH:
+            return None
+        landed.append((lx - SEARCH[0], ly - SEARCH[1]))
+    (dxl, dyl), (dxr, dyr) = landed
+    if abs(dyl - dyr) > 1:
+        return None
+    return cx + (dxl + dxr) / 2, (dyl + dyr) / 2
+
+
 def name_baseline(scan, damage_left, top, bottom):
     """Row under the attack name's glyphs (most sit on the baseline), left of a damage on the same line."""
     box = (NAME_LEFT, max(0, top - 12), damage_left - 20, bottom + 8)
@@ -260,7 +381,8 @@ def name_baseline(scan, damage_left, top, bottom):
 
 def average(samples):
     """{glyph: (shape, [(sequence, index, UP x top-left of the shape's frame)])}: each glyph's samples aligned on
-    their running mean and averaged."""
+    their running mean and averaged; halfway, samples unlike the mean (a symbol's gap matched to the wrong words)
+    are dropped."""
     by_glyph = {}
     for seq, j, (shape, corner) in samples:
         by_glyph.setdefault(seq[j], []).append((seq, j, shape, corner))
@@ -271,12 +393,18 @@ def average(samples):
         mean = np.zeros((h, w), np.float32)
         first = items[0][2]
         mean[8 * UP:8 * UP + first.shape[0], 8 * UP:8 * UP + first.shape[1]] = first
-        for _ in range(ALIGN_ROUNDS):
-            total, frames = np.zeros_like(mean), []
+        for round_ in range(ALIGN_ROUNDS):
+            total, frames, kept = np.zeros_like(mean), [], []
             for seq, j, shape, (cx, cy) in items:
                 _, _, _, (lx, ly) = cv2.minMaxLoc(cv2.matchTemplate(mean, shape, cv2.TM_CCORR))
+                under = mean[ly:ly + shape.shape[0], lx:lx + shape.shape[1]]
+                agree = float((under * shape).sum() / (np.sqrt((under ** 2).sum() * (shape ** 2).sum()) + 1e-6))
+                if round_ == ALIGN_ROUNDS // 2 and agree < AGREE and len(items) > 2:
+                    continue
+                kept.append((seq, j, shape, (cx, cy)))
                 total[ly:ly + shape.shape[0], lx:lx + shape.shape[1]] += shape
                 frames.append((seq, j, (cx - lx, cy - ly)))
+            items = kept
             mean = total / len(items)
         out[ch] = (mean, frames)
     return out
@@ -326,6 +454,12 @@ def lift(kind, card_ids):
         card, scan = tcg.card(card_id), tcg.scan(card_id)
         if kind == "hp":
             samples += hp_samples(scan, str(card.get("hp", "")))
+        elif kind == "energy":
+            from . import modern
+            try:
+                samples += symbol_samples(modern.read_card(card_id), scan)
+            except SystemExit:                     # not a card the editor sets text on
+                continue
         elif kind in ROW_BOXES:
             side = (card.get("weaknesses" if kind == "weakness" else "resistances") or [{}])[0]
             value = str(side.get("value") or "").replace("x", "×")
@@ -341,13 +475,14 @@ def lift(kind, card_ids):
 
 # ---------------------------------------------------------------- cache
 def _files(kind):
-    folder = f"numerals-v{VERSION}"
+    folder = f"lifted-v{VERSION}"
     return cache.path("assets", folder, f"{kind}.npz"), cache.path("assets", folder, f"{kind}.json")
 
 
 @functools.lru_cache(maxsize=None)
 def load(kind):
-    """The glyphs of 'hp', 'damage', 'weakness' or 'resistance', lifted once and cached; None if none could be."""
+    """The glyphs of 'hp', 'damage', 'weakness', 'resistance' or 'energy', lifted once and cached; None if none
+    could be."""
     shapes_file, model_file = _files(kind)
     if not model_file.exists():
         glyphs = lift(kind, SOURCES[kind])

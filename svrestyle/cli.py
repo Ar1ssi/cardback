@@ -19,7 +19,7 @@ import sys
 import warnings
 from pathlib import Path
 
-from . import cache, foil, frame, inpaint, layers, meframe, numerals, refs, swsh, tcg
+from . import cache, foil, frame, inpaint, layers, lifted, meframe, refs, swsh, tcg
 from . import typeset as ts
 from .imaging import save_rgba
 
@@ -45,8 +45,8 @@ def cmd_prepare(a):
     print("ex assets built for:", ", ".join(refs.TYPES))
     meframe.build_all()
     print("Mega Evolution assets built for:", ", ".join(meframe.POOL))
-    lifted = [k for k in numerals.SOURCES if numerals.load(k) is not None]
-    print("print figures lifted for:", ", ".join(lifted) or "none (numbers set in Gill Sans)")
+    kinds = [k for k in lifted.SOURCES if lifted.load(k) is not None]
+    print("print glyphs lifted for:", ", ".join(kinds) or "none (set in Gill Sans)")
 
 
 def is_v(card_id):
