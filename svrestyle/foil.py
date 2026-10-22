@@ -29,7 +29,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, frame, layers, mecompose, meframe, refs, stage, swsh, tcg
+from . import cache, compose, frame, layers, mecompose, meframe, refs, retype, stage, swsh, tcg
 from .imaging import dilate
 
 W, H = 733, 1024
@@ -75,6 +75,17 @@ FIT_GAIN = 3.0
 FIT_TOL = 6.0        # plate levels: fits this much worse weigh e times less
 BRIDGE_SIGMAS = (6, 12, 24, 48, 96, 192)   # px: blurs that bridge what no peer shows
 OWN_FEATHER = 3      # px: soft edge between a card's own foil and the template's
+# A type change between white words (Darkness) and dark ones: reverse plates cut white lettering out and run the foil
+# through dark lettering (every ME type's plates, me1-me2), so the card's lettering and the row's labels follow.
+TYPE_TEXT = ("name", "hp", "text", "row_text")          # kinds an edit sets in the type's word ink
+LETTERING_ZONES = [(0, 0, W, 100), (0, 512, W, 914)]    # name bar; panel and weakness row (not the footer, always cut)
+LABEL_REF, LABEL_HEIGHT = "me01-087", 16   # Spiritomb (Darkness): its reverse plate cuts the row's labels; px tall
+GRAIN_SIGMA, GRAIN_SIZE, GRAIN_NEAR = 3, 0.7, 12   # px: the plate's grain is finer than GRAIN_SIGMA; its specks'
+                                                 # size; it is read this near the fills
+LETTER_FILL, LETTER_REACHED = (2, 5, 12, 30), 1e-3   # px blurs of the foil round a lettering cut-out that fill it
+LETTER_MAX = 2000        # px: a cut-out shape larger than this is no lettering
+LETTER_RIM = 6           # px round a cut-out the plate still shows it (its edge brightens up to 233 against 229)
+SPECK_MAX, SPECK_REACH = 120, 8   # px: a cut-out this small this near the lettering is part of it
 OWN_KNOWN = 0.5      # field's own weight above which a filled cut-out is the card's foil, not a guess
 # How a card's own plate prints a kind of ink (ink_value)
 INK_MIN = 20         # px: less printed ink than this is not judged
@@ -604,6 +615,76 @@ def block_cutout_value(img, cover, marks):
     return float(np.median(img[hit]))
 
 
+@functools.lru_cache(maxsize=1)
+def row_labels():
+    """Coverage (HxW) of the weakness row's labels as a white-lettering plate cuts them (LABEL_REF's: the labels
+    sit in the same place on every card): its small cut-outs in the row, not the rules or icons."""
+    from . import modern
+    img = plate(printings(LABEL_REF)["reverse"]).astype(np.float32)
+    x0, y0, x1, y1 = modern.ROW_LABELS
+    cut_px = np.zeros((H, W), np.uint8)
+    cut_px[y0:y1, x0:x1] = img[y0:y1, x0:x1] < MARK_DARK
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cut_px, connectivity=8)
+    letter = np.zeros(n, bool)
+    letter[1:] = (stats[1:, cv2.CC_STAT_AREA] <= SPECK_MAX) & (stats[1:, cv2.CC_STAT_HEIGHT] <= LABEL_HEIGHT)
+    near = dilate(letter[labels], MARK_GROW)
+    ground = float(np.median(img[y0:y1, x0:x1][img[y0:y1, x0:x1] >= MARK_DARK]))
+    return np.where(near, np.clip(1 - img / ground, 0, 1), 0).astype(np.float32)
+
+
+def lettering(words):
+    """Where a type change moves lettering between white and dark: the retyped words (retype.WORDS) in the name
+    bar, panel and row, and the row's labels."""
+    zones = np.zeros((H, W), np.float32)
+    for x0, y0, x1, y1 in LETTERING_ZONES:
+        zones[y0:y1, x0:x1] = 1
+    words = np.zeros((H, W), np.float32) if words is None else words
+    return np.maximum(words * zones, row_labels())
+
+
+def fill_from(img, ok):
+    """img filled from the ok pixels: each pixel from those nearest it (the finest of LETTER_FILL that reaches some)."""
+    out, missing = img.astype(np.float32).copy(), np.ones(img.shape, bool)
+    for sigma in LETTER_FILL:
+        value, weight = _smooth(img, ok, sigma)
+        take = missing & (weight > LETTER_REACHED)
+        out[take] = value[take]
+        missing &= ~take
+    return out
+
+
+def grain_like(img, ok):
+    """Noise with the plate's own fine grain (its spread over the ok pixels, robust to the odd edge), so a fill
+    does not show as a smooth patch."""
+    img = img.astype(np.float32)
+    fine = img - cv2.GaussianBlur(img, (0, 0), GRAIN_SIGMA)
+    spread = 1.4826 * float(np.median(np.abs(fine[ok]))) if ok.any() else 0.0
+    noise = cv2.GaussianBlur(np.random.default_rng(0).standard_normal(img.shape).astype(np.float32), (0, 0), GRAIN_SIZE)
+    return noise * (spread / max(float(noise.std()), 1e-6))
+
+
+def lettering_cutouts(img, letters):
+    """The plate's cut-outs of lettering, with the rim round them the plate still shows: every cut-out shape the
+    lettering touches, and the small marks beside it the word finder leaves (apostrophes, brackets, dots). Other
+    cut-outs (energy symbols, the Ability badge and red name, the row's rules) stay, rims and all."""
+    words = letters > 0.05
+    cut_px = img < MARK_DARK
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cut_px.astype(np.uint8), connectivity=8)
+    hit = np.zeros(n, bool)
+    hit[np.unique(labels[dilate(words, MARK_GROW) & cut_px])] = True
+    small = stats[:, cv2.CC_STAT_AREA] <= SPECK_MAX
+    near = np.zeros(n, bool)
+    near[np.unique(labels[dilate(words, SPECK_REACH) & cut_px])] = True
+    zones = np.zeros((H, W), bool)
+    for x0, y0, x1, y1 in LETTERING_ZONES:
+        zones[y0:y1, x0:x1] = True
+    hit[0] = False
+    hit &= stats[:, cv2.CC_STAT_AREA] <= LETTER_MAX     # not the border or the art window a letter touches
+    lettered = (hit | (small & near))[labels] & zones
+    kept = dilate(cut_px & ~lettered, MARK_GROW) & ~dilate(words, MARK_GROW)
+    return dilate(lettered | (words & zones), LETTER_RIM) & ~kept
+
+
 def build_modern(card_id, card, canvas, drawn, original):
     """Foil of a Scarlet & Violet / Mega Evolution card edited in place (modern.compose_card): its own printings,
     edited. Edits to the name or the Stage pieces re-make their part of each plate the way the card's own plate
@@ -630,6 +711,10 @@ def build_modern(card_id, card, canvas, drawn, original):
     shed = modern.stage_off(original, card) if "stage" in groups else np.zeros((H, W), bool)
     if original["stage"]:
         drawn.pop("stage", None)            # the card's own pieces, set again where they were: as printed
+    retyped = drawn.pop(retype.WORDS, None)
+    white_now = retype.white_ink(card["type"])
+    flip = "type" in edited and retype.white_ink(original["type"]) != white_now
+    letters_off = lettering(retyped) if flip else None
     out = {"front": modern_front(card_id, canvas), "base": None, "reverse": None}
     for key in ("base", "reverse"):
         record = old[key]
@@ -672,6 +757,14 @@ def build_modern(card_id, card, canvas, drawn, original):
                     img = np.where(area, own_field, img)
                 else:                                          # lit ink on plainer ground
                     img = fill(img, area)
+        if flip and key == "reverse":
+            for kind in TYPE_TEXT:
+                learned[kind] = None          # set by the type below, not as the old type's plate printed it
+            if not white_now:                 # the old white lettering's cut-outs: the plate's foil runs through
+                gone = lettering_cutouts(img, letters_off)
+                # from the foil round it only, past the rims: the row's rules and the icons are cut-outs too
+                source = ~dilate(gone | (img < MARK_DARK), MARK_GROW)
+                img = np.where(gone, fill_from(img, source) + grain_like(img, source & dilate(gone, GRAIN_NEAR)), img)
         letters = tab_letter_value(img, drawn) if original["stage"] else None
         img = retab(img, drawn)
         if letters is not None and "stage_text" in drawn:
@@ -689,6 +782,8 @@ def build_modern(card_id, card, canvas, drawn, original):
             img = cut(ex_stage(img, rest), rest, EX_CUT)
         elif key == "reverse":
             img = cut(img, rest, ME_REVERSE_CUT)
+            if flip and white_now:
+                img = cut(img, {**drawn, "lettering": letters_off}, TYPE_TEXT + ("lettering",))
         else:
             img = cut(img, rest, STAGE_CUT)
         spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)

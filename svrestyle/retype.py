@@ -22,7 +22,7 @@ import functools
 import cv2
 import numpy as np
 
-from . import compose, frame, mecompose, meframe, tcg
+from . import compose, frame, layers, mecompose, meframe, tcg
 from .imaging import dilate, fill_holes, grow, luminance
 
 W, H = 733, 1024
@@ -68,12 +68,18 @@ DISC_MIN = 150       # px: smallest disc shape
 TYPED = 14           # RGB distance between the two frames past which a pixel is the type's (else silver)
 BOX_SLACK = 30       # a footer-box pixel at least this far from the old frame is the box's, not its rim's ground
 SILVER = [(90, 484, 660, 510), meframe.COPYRIGHT]   # the Pokedex strip and the copyright line: as printed
+WORDS = "retyped_words"   # layers kind: the words set again in the new type's ink (foil.build_modern's plates)
 
 
 @functools.lru_cache(maxsize=None)
 def _dark_panel(type_name):
     x0, y0, x1, y1 = meframe.PANEL
     return float(np.median(luminance(meframe.template(type_name)[y0:y1, x0:x1]))) < DARK_PANEL
+
+
+def white_ink(type_name):
+    """True when the type prints its words white (Darkness)."""
+    return _dark_panel(type_name)
 
 
 def ink(type_name):
@@ -323,6 +329,8 @@ def recolour(rgba, card, new_type):
     for x0, y0, x1, y1 in SILVER:
         typed[y0:y1, x0:x1] = False
     typed = cv2.GaussianBlur(typed.astype(np.float32), (0, 0), 0.8)[..., None]
+    with layers.kind(WORDS):
+        layers.record(share * typed[..., 0])
     result = rgba.copy()
     result[..., :3] = typed * out + (1 - typed) * rgb
     x0, y0, x1, y1 = meframe.ART

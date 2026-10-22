@@ -114,7 +114,10 @@ ground by its contrast. Energy icons are found from the card's data (its costs m
 weakness row's icons where the composers set them); the Ability badge and red Ability names by their red, the names
 in a white keyline on a dark panel and none on a light one, as the Mega Evolution layout sets them. Silver parts
 (border, Pokedex strip, the row's rules, the Stage tab) stay as printed. Attack costs, weakness and resistance are
-left as they are: change them too if the new type needs it.
+left as they are: change them too if the new type needs it. With holofoil on, the reverse holo follows the ink:
+TCG Live's plates cut white lettering out (Darkness) and run the foil through dark lettering (every other type),
+so a card going to or from Darkness has its name, HP, text and the row's labels cut out, or filled with the foil
+around them (`foil.lettering_cutouts`); energy symbols, the badge, the rules and the footer stay as printed.
 
 The Mega Evolution frame templates now take the weakness row's lower rule and the panel's bottom rim from the median
 of the type's prints (every card's print reaches over them, and the fills blurred them away); the rebuilt templates

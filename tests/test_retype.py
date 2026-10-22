@@ -5,7 +5,7 @@ from unittest import mock
 
 import numpy as np
 
-from svrestyle import compose, edit, frame, meframe, modern, retype
+from svrestyle import compose, edit, foil, frame, layers, meframe, modern, retype
 
 W, H = 733, 1024
 ORANGE, TEAL, SILVER = (247, 174, 120), (0, 89, 104), (200, 200, 200)
@@ -62,6 +62,14 @@ class Recolour(unittest.TestCase):
         np.testing.assert_allclose(out[710, 75:95], np.tile(RED, (20, 1)), atol=1)            # the badge as printed
         np.testing.assert_allclose(out[496, 210:250], np.tile(frame.DARK_INK, (40, 1)), atol=1)  # silver: as printed
         np.testing.assert_array_equal(out[300:310, 300:310], np.tile((10, 200, 30), (10, 10, 1)))  # art untouched
+
+    def test_retyped_words_recorded_for_the_foil(self):
+        with layers.recording() as drawn:
+            retype.recolour(self.printed(), card(), "Darkness")
+        words = drawn[retype.WORDS]
+        self.assertGreater(words[602, 220:280].min(), 0.9)       # the word set again in the new ink
+        self.assertEqual(words[710, 75:95].max(), 0)              # the badge keeps its colours: no word
+        self.assertEqual(words[494:500, 200:260].max(), 0)        # the silver strip stays as printed
 
     def test_words_keep_their_ink_between_light_types(self):
         out = retype.recolour(self.printed(), card(), "Water")[..., :3]
@@ -140,3 +148,38 @@ class Editor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LetteringPlate(unittest.TestCase):
+    """A type change between white and dark lettering: reverse plates cut white lettering out (Darkness) and run
+    the foil through dark lettering (every other type, me1-me2 plates)."""
+    def plate(self):
+        img = np.full((H, W), 229, np.float32)
+        img[0:8, :] = 0                       # the border
+        img[40:80, 140:150] = 0               # a letter touching nothing
+        img[8:30, 300:304] = 0                # a letter joined to the border
+        img[600:620, 60:80] = 0               # an energy symbol beside the text
+        img[640:650, 200:300] = 0             # a line of text
+        img[640:643, 305:308] = 0             # an apostrophe the word finder missed
+        return img
+
+    def letters(self):
+        out = np.zeros((H, W), np.float32)
+        out[40:80, 140:150] = 1
+        out[10:30, 300:304] = 1
+        out[640:650, 200:300] = 1
+        return out
+
+    def test_cutouts_are_the_lettering_only(self):
+        gone = foil.lettering_cutouts(self.plate(), self.letters())
+        self.assertTrue(gone[40:80, 140:150].all() and gone[640:650, 200:300].all())
+        self.assertTrue(gone[640:643, 305:308].all())                # small marks beside the words go too
+        self.assertTrue(gone[34:37, 140:150].all())                   # with the rim the plate shows round them
+        self.assertFalse(gone[600:620, 60:80].any())                  # the energy symbol stays cut
+        self.assertFalse(gone[0:5, 200:400].any())                    # the border stays, though a letter joins it
+
+    def test_fill_takes_the_foil_round_it(self):
+        img = self.plate()
+        gone = foil.lettering_cutouts(img, self.letters())
+        filled = foil.fill_from(img, ~foil.dilate(gone | (img < foil.MARK_DARK), foil.MARK_GROW))
+        np.testing.assert_allclose(filled[gone & (img < foil.MARK_DARK)], 229, atol=1)
