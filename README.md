@@ -118,7 +118,7 @@ left as they are: change them too if the new type needs it.
 
 The Mega Evolution frame templates now take the weakness row's lower rule and the panel's bottom rim from the median
 of the type's prints (every card's print reaches over them, and the fills blurred them away); the rebuilt templates
-are cached as `me-v2`.
+are cached as `me-v3`.
 
 ### Trainers
 

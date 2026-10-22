@@ -13,10 +13,10 @@ import cv2
 import numpy as np
 
 from . import cache, inpaint, tcg
-from .imaging import dilate, disc_sprite, fill_holes, hsv, load_rgba, luminance, save_rgba
+from .imaging import dilate, disc_sprite, drop_small, fill_holes, hsv, load_rgba, save_rgba
 
 W, H = 733, 1024
-ASSET_VERSION = "2"
+ASSET_VERSION = "3"
 
 # Regular (non-ex) cards per type from Mega Evolution (me01) and Phantasmal Flames (me02). Cards of one type share
 # the same bar, panel and footer texture, so a pixel hidden by text on one card is taken from another. The first
@@ -55,6 +55,8 @@ FOOTER = (30, 914, 703, 995)
 # y0, y1. They lie under every card's grown print mask, so the fills blur them; they print the same on every card of
 # a type, so template() takes them from the median of the type's prints.
 LOWER_RULE = (911, 922)
+PRINT_HOLE = 3000                     # px: biggest hole in print that is print (a cost icon's middle is ~1100)
+SHAPE_MIN, SPECK_NEAR = 16, 6         # px: smaller standouts are grain unless this near a bigger one
 PANEL_RIM = (989, 998)
 COPYRIGHT = (120, 998, 620, 1021)
 # Where each band's fill may take its colour from (row between its lines, panel above the border, border).
@@ -126,9 +128,13 @@ def _printed(rgb, basic):
         mask[:200, :140] = True                    # stage tab and evolution portrait
     for box in [DEX_STRIP, PANEL, FOOTER, COPYRIGHT]:
         mask |= ink(rgb, box)
+    # Water's and Darkness's grain stands out in specks of a few px all over: grown, they would cover the footer
+    # whole, and no card would give it. A speck counts only beside a shape of print (punctuation, an i's dot).
+    shapes = drop_small(mask, SHAPE_MIN)
+    mask = shapes | (mask & dilate(shapes, SPECK_NEAR))
     for box in ROW_VALUES:
         mask |= row_ink(rgb, box)
-    return fill_holes(dilate(mask, 3))
+    return fill_holes(dilate(mask, 3), max_area=PRINT_HOLE)     # what print encloses: counters, an icon's middle
 
 
 def row_ink(rgb, box, threshold=60):

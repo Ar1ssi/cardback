@@ -16,10 +16,14 @@ def luminance(rgb):
     return (rgb[..., :3] * [0.299, 0.587, 0.114]).sum(-1)
 
 
-def fill_holes(mask):
-    n, labels = cv2.connectedComponents((~mask).astype(np.uint8), connectivity=4)
-    border = set(labels[0]) | set(labels[-1]) | set(labels[:, 0]) | set(labels[:, -1])
-    return mask | ~np.isin(labels, list(border))
+def fill_holes(mask, max_area=None):
+    """mask with what it encloses filled; max_area: only holes up to that many px."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((~mask).astype(np.uint8), connectivity=4)
+    hole = np.ones(n, bool)
+    hole[list(set(labels[0]) | set(labels[-1]) | set(labels[:, 0]) | set(labels[:, -1]))] = False
+    if max_area is not None:
+        hole &= stats[:, cv2.CC_STAT_AREA] <= max_area
+    return mask | hole[labels]
 
 
 def drop_small(mask, min_px):
