@@ -145,24 +145,31 @@
       <div id="rowMenu" class="rowmenu" role="menu" tabindex="-1" hidden></div>
       <p id="undoBar" class="undo" hidden><span id="undoText"></span><button id="undoBtn" type="button" class="small">Undo</button></p>
       <p class="hint">Every card you load or add joins this list; × takes one out (with its edits). The list and your edits save themselves after every change (as a dated project until you name it, top right) and open on their own next time.</p>
-      <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
+      <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Older Trainers become Scarlet &amp; Violet Trainers; newer Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
     </section>
 
     <div id="editor" hidden>
       <section>
         <h2><span>Card <span id="layoutBadge" class="badge"></span></span><span id="cardTitle" class="badge"></span></h2>
         <div class="row">
-          <div><label for="prefix">Prefix (Galarian, Hisuian…)</label><input id="prefix" type="text"></div>
+          <div data-pokemon><label for="prefix">Prefix (Galarian, Hisuian…)</label><input id="prefix" type="text"></div>
           <div><label for="name">Name</label><input id="name" type="text"></div>
           <div class="narrow"><label for="hp">HP</label><input id="hp" type="text" inputmode="numeric"></div>
         </div>
-        <div class="row">
+        <div class="row" data-trainer>
+          <div class="narrow"><label for="kindSel">Trainer type</label>
+            <select id="kindSel"><option value="Item">Item</option><option value="Supporter">Supporter</option><option value="Stadium">Stadium</option><option value="Tool">Pokémon Tool</option></select></div>
+          <div data-supporter><label for="character">Character (Supporters)</label><input id="character" type="text"></div>
+        </div>
+        <div data-trainer><label for="effect">Card text</label><textarea id="effect" rows="6"></textarea></div>
+        <p class="hint" data-trainer>One paragraph per line. The Trainer type's rule is printed by the frame, so leave it out of the text. {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols. HP: only fossils and dolls played as Pokémon (they print it at the right of the name and get their Ability under the text); an attack makes the card a Technical Machine.</p>
+        <div class="row" data-pokemon>
           <div class="narrow"><label for="stageSel">Stage</label>
             <select id="stageSel"><option value="0">Basic</option><option value="1">Stage 1</option><option value="2">Stage 2</option><option value="3">Mega</option></select></div>
           <div data-stage><label for="evolves_from">Evolves from</label><input id="evolves_from" type="text"></div>
           <div data-stage><label for="portrait">Portrait from card (optional)</label><input id="portrait" type="text" placeholder="found by name"></div>
         </div>
-        <p class="hint" data-stage>The portrait is the pre-evolution's picture from a Scarlet &amp; Violet or Mega Evolution card that evolves from it. Name a card id to choose: a Stage card gives its portrait, any other card the middle of its art.</p>
+        <p class="hint" data-stage data-pokemon>The portrait is the pre-evolution's picture from a Scarlet &amp; Violet or Mega Evolution card that evolves from it. Name a card id to choose: a Stage card gives its portrait, any other card the middle of its art.</p>
         <div data-restyle><label for="illustrator">Illustrator</label><input id="illustrator" type="text"></div>
         <div data-me><label for="flavor">Flavour text</label><textarea id="flavor" rows="2"></textarea></div>
       </section>
@@ -178,7 +185,7 @@
         <p class="hint">Click an energy below an attack to add it to the cost; click a cost symbol to remove it. Damage: a number, optionally followed by +, × or −. In text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols.</p>
       </section>
 
-      <section>
+      <section data-pokemon>
         <h2><span>Weakness, resistance, retreat</span></h2>
         <div class="row">
           <span id="weakIcon" class="side-icon"></span>
@@ -199,7 +206,7 @@
         <p class="hint">Click a retreat symbol to remove it. With holofoil on, the foil plates follow these icons.</p>
       </section>
 
-      <section>
+      <section data-pokemon>
         <h2><span>Holofoil</span><span id="foilBadge" class="badge"></span></h2>
         <label style="display:flex; gap:6px; align-items:center; margin:0"><input id="foilOn" type="checkbox"> Re-make the TCG Live holofoil with every render</label>
         <div class="row">
@@ -218,7 +225,7 @@
         <div class="row">
           <div data-ex><label for="style">ex layout</label>
             <select id="style"><option value="hybrid">Full art (no panel)</option><option value="panel">Translucent type panel</option></select></div>
-          <div data-restyle><label for="showAttacks">Abilities &amp; attacks</label>
+          <div data-restyle data-pokemon><label for="showAttacks">Abilities &amp; attacks</label>
             <select id="showAttacks"><option value="1">Shown</option><option value="0">Left off the card</option></select></div>
         </div>
         <div class="row" style="margin-top: 10px">
@@ -234,7 +241,7 @@
 
   <div class="preview">
     <div id="errors"></div>
-    <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards. Scarlet &amp; Violet and Mega Evolution cards are edited in place.</div>
+    <div id="placeholder" class="placeholder">Load a card by its TCGdex id, or import a custom-set export.<br><br>Pokémon V become Scarlet &amp; Violet ex cards; regular Sun &amp; Moon and Sword &amp; Shield Pokémon become Mega Evolution cards. Scarlet &amp; Violet and Mega Evolution cards are edited in place. Older Trainers (Items, Supporters, Stadiums, Pokémon Tools) become Scarlet &amp; Violet Trainers.</div>
     <div class="cardrow">
       <div class="cardcol">
         <div id="viewbar" class="viewbar" hidden>
@@ -366,12 +373,13 @@ function fillForm() {
   const { layout, name, id } = state.current;
   const card = state.edits[id];
   $("editor").hidden = false;
-  $("layoutBadge").textContent = { ex: "→ Scarlet & Violet ex", me: "→ Mega Evolution", modern: "edited in place" }[layout];
+  $("layoutBadge").textContent = { ex: "→ Scarlet & Violet ex", me: "→ Mega Evolution", modern: "edited in place",
+    trainer: "→ Scarlet & Violet Trainer" }[layout];
   $("cardTitle").textContent = `${id} · ${name}`;
-  document.querySelectorAll("[data-me]").forEach((n) => (n.hidden = layout !== "me"));
-  document.querySelectorAll("[data-ex]").forEach((n) => (n.hidden = layout !== "ex"));
-  document.querySelectorAll("[data-restyle]").forEach((n) => (n.hidden = layout === "modern"));
-  for (const k of ["prefix", "name", "hp", "evolves_from", "portrait", "illustrator", "flavor"]) $(k).value = card[k] ?? "";
+  showFor(layout);
+  for (const k of ["prefix", "name", "hp", "evolves_from", "portrait", "illustrator", "flavor", "character", "effect"]) $(k).value = card[k] ?? "";
+  $("kindSel").value = card.kind || "Item";
+  drawKind();
   $("stageSel").value = String(card.stage || 0);
   drawStage();
   setSide("weak", card.weakness, "×2");
@@ -381,6 +389,18 @@ function fillForm() {
   $("showAttacks").value = state.options[id].attacks ? "1" : "0";
   drawBlocks();
   drawChanges();
+}
+
+// A node shows when every data-* layout mark on it holds for the card loaded.
+function showFor(layout) {
+  const holds = { me: layout === "me", ex: layout === "ex", restyle: layout !== "modern",
+    pokemon: layout !== "trainer", trainer: layout === "trainer" };
+  document.querySelectorAll("[data-me], [data-ex], [data-restyle], [data-pokemon], [data-trainer]").forEach((n) =>
+    (n.hidden = !Object.keys(holds).every((k) => !(k in n.dataset) || holds[k])));
+}
+
+function drawKind() {
+  document.querySelectorAll("[data-supporter]").forEach((n) => (n.hidden = $("kindSel").value !== "Supporter"));
 }
 
 function drawStage() {
@@ -477,6 +497,11 @@ function setRetreat(n) {
 // ---------------------------------------------------------------- edits
 function readForm() {
   const card = state.edits[state.current.id];
+  if (state.current.layout === "trainer") {
+    for (const k of ["name", "hp", "illustrator", "character", "effect"]) card[k] = $(k).value;
+    card.kind = $("kindSel").value;
+    return;
+  }
   for (const k of ["prefix", "name", "hp", "illustrator"]) card[k] = $(k).value;
   card.stage = Number($("stageSel").value);
   card.evolves_from = $("evolves_from").value;
@@ -501,7 +526,8 @@ function changed() {
 function payload(id) {
   const edits = state.edits[id];
   const opt = state.options[id] || { style: "hybrid", attacks: true };
-  return { id, edits, style: opt.style, attacks: opt.attacks, foil: $("foilOn").checked };
+  const layout = (state.setCards.find((c) => c.id === id) || state.current || {}).layout;
+  return { id, edits, style: opt.style, attacks: opt.attacks, foil: $("foilOn").checked && layout !== "trainer" };
 }
 
 async function renderNow() {
@@ -520,7 +546,7 @@ async function renderNow() {
     $("downloadBtn").disabled = false;
     state.changes[id] = data.changes || [];
     drawChanges(); showView();
-    $("downloadFoilBtn").disabled = !$("foilOn").checked;
+    $("downloadFoilBtn").disabled = !payload(id).foil;
     await setFoil(data.foil || null);
     showWarnings(data.warnings);
     status("");
@@ -1019,7 +1045,7 @@ function drawSet() {
       el("span", {},
         ...(state.changes[c.id] && state.changes[c.id].length ? [el("span", { class: "badge changed-count", title: state.changes[c.id].join("\n") },
           `${state.changes[c.id].length} changed`), " "] : []),
-        el("span", { class: "badge" }, (c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit" }[c.layout])
+        el("span", { class: "badge" }, (c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit", trainer: "→ Trainer" }[c.layout])
           + (state.rendered.has(c.id) ? " ✓" : "")))),
     el("button", { class: "remove", title: `Remove ${c.name} from the set`, "aria-label": `Remove ${c.name}`,
                    onclick: () => removeCard(c.id) }, "×"))));
@@ -1282,8 +1308,9 @@ async function init() {
   });
   $("retreatLess").addEventListener("click", () => setRetreat(state.edits[state.current.id].retreat - 1));
   $("retreatMore").addEventListener("click", () => setRetreat(state.edits[state.current.id].retreat + 1));
-  for (const id of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor"])
+  for (const id of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor", "character", "effect"])
     $(id).addEventListener("input", changed);
+  $("kindSel").addEventListener("change", () => { drawKind(); changed(); });
   $("portrait").addEventListener("change", changed);         // a card id: render once it is typed in full
   $("stageSel").addEventListener("change", () => {
     drawStage();

@@ -17,7 +17,6 @@ import os
 import re
 import warnings
 from pathlib import Path
-from urllib.parse import quote
 
 import cv2
 import numpy as np
@@ -394,11 +393,7 @@ def art_sprite(card_id):
 
 
 def _search(field, name):
-    """TCGdex card briefs whose `field` equals name (cached)."""
-    tcgdex_name = name.replace("’", "'")          # TCGdex writes a straight apostrophe (Farfetch'd)
-    slug = re.sub(r"[^\w-]+", "_", tcgdex_name)
-    return cache.fetch_json(f"{tcg.TCGDEX}/cards?{field}=eq:{quote(tcgdex_name)}",
-                            cache.path("data", f"search-{field}-{slug}.json")) or []
+    return tcg.search(field, name)
 
 
 def _official(card_id):

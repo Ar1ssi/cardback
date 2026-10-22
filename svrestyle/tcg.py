@@ -7,6 +7,7 @@ import os
 import re
 import warnings
 from pathlib import Path
+from urllib.parse import quote
 
 import numpy as np
 from PIL import Image
@@ -38,6 +39,8 @@ TCGLIVE_SETS = {
 # Sets released as a pair under one number: TCGdex suffixes the number (sv10.5b), pokemontcg.io and TCG Live prefix the
 # series with the mascot's letter (zsv10pt5, zsv10-5: Zekrom's Black Bolt; Reshiram's White Flare).
 PAIRED_SETS = {"sv10.5b": "z", "sv10.5w": "r"}
+# Radiant Collections number apart from their set (bw11-RC20 is not bw11-20): no TCG Live id is known for them.
+SUBSET_PREFIXES = ("RC",)
 CORNER_REF = "sv03-135"   # its pokemontcg.io scan's alpha gives TCG Live fronts the printed card's rounded corners
 
 
@@ -50,6 +53,14 @@ def card(card_id):
 
 def set_info(set_id):
     return cache.fetch_json(f"{TCGDEX}/sets/{set_id}", cache.path("data", f"set-{set_id}.json"))
+
+
+def search(field, value):
+    """TCGdex card briefs whose `field` equals value (cached)."""
+    value = value.replace("’", "'")          # TCGdex writes a straight apostrophe (Farfetch'd)
+    slug = re.sub(r"[^\w-]+", "_", value)
+    return cache.fetch_json(f"{TCGDEX}/cards?{field}=eq:{quote(value)}",
+                            cache.path("data", f"search-{field}-{slug}.json")) or []
 
 
 def _split(card_id):
@@ -82,6 +93,8 @@ def tcglive_id(card_id):
     digits = re.fullmatch(r"[A-Za-z]*0*(\d+)", local)
     if not digits:
         raise ValueError(f"{card_id}: no card number")
+    if local.upper().startswith(SUBSET_PREFIXES):
+        raise ValueError(f"{card_id}: a sub-set card, numbered apart from its set (no TCG Live id known)")
     return f"{set_id}_{int(digits.group(1)) + offset}"
 
 
@@ -128,9 +141,14 @@ def _open(dest):
 
 def _tcglive_scan(card_id, dest):
     """Crop the TCG Live front to the card and give it rounded corners. False if the extract lacks the card."""
+    try:
+        live_id = tcglive_id(card_id)
+    except ValueError as e:                   # xy10-111a, bw11-RC20: no TCG Live id to look for
+        warnings.warn(f"{e}: using pokemontcg.io")
+        return False
     front = tcglive_front(card_id)
     if front is None:
-        warnings.warn(f"{card_id}: not in the TCG Live extract ({tcglive_id(card_id)}), using pokemontcg.io")
+        warnings.warn(f"{card_id}: not in the TCG Live extract ({live_id}), using pokemontcg.io")
         return False
     if front.size != (1024, 1024):
         front = front.resize((1024, 1024), Image.LANCZOS)

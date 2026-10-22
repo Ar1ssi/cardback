@@ -80,10 +80,22 @@ def rarity_symbol(rarity):
     return "rare"
 
 
-def card_number(local, official):
+LONE_SUBSET_SERIES = ("dp", "pl", "col")       # TCGdex serie ids
+
+
+def card_number(local, official, s=None):
+    """The footer's number. s, the TCGdex set: a Black Star promo prints its number alone (DP05, 28), and so does a
+    Diamond & Pearl, Platinum or Call of Legends sub-set card (pl1-SH4, pl4-AR1, col1-SL1: their runs span sets); a
+    later sub-set prints its own count (bw11 RC20/RC25, g1 RC1/RC32)."""
+    if s and "Promo" in (s.get("name") or ""):
+        return local
     m = re.fullmatch(r"([A-Za-z]+)(\d+)", local)
+    if m and ((s or {}).get("serie") or {}).get("id") in LONE_SUBSET_SERIES:
+        return local
     if m and official:                                   # Shiny Vault and similar: SV33/SV94
-        return f"{local}/{m.group(1)}{official}"
+        listed = [c.get("localId", "") for c in (s or {}).get("cards") or []]
+        count = sum(bool(re.fullmatch(rf"{m.group(1)}\d+", i)) for i in listed)
+        return f"{local}/{m.group(1)}{count or official}"
     if local.isdigit() and official:
         return f"{int(local):0{len(str(official))}d}/{official}"
     return local
@@ -124,7 +136,7 @@ def read_card(card_id):
         "resistance": (c.get("resistances") or [None])[0], "retreat": int(c.get("retreat") or 0),
         "illustrator": c.get("illustrator") or "", "reg_mark": c.get("regulationMark") or "",
         "set_code": set_code(c["set"]["id"], s),
-        "number": card_number(c.get("localId", ""), official), "year": (s.get("releaseDate") or "")[:4],
+        "number": card_number(c.get("localId", ""), official, s), "year": (s.get("releaseDate") or "")[:4],
         "rarity": rarity_symbol(c.get("rarity")), "flavor": printed(c.get("description")),
         "dex_line": species_line(c),
         # Mega Evolution cards (used to check the layout against the real print) keep their own portrait.

@@ -4,7 +4,8 @@
   python -m svrestyle gui [--port 8765] --fonts DIR  editor in the browser: edit attacks, abilities, weakness...
   python -m svrestyle card ID [ID ...] --fonts DIR   render cards (TCGdex ids, e.g. swsh6-99)
       Pokemon V become Scarlet & Violet ex cards; regular Sun & Moon / Sword & Shield Pokemon become Mega
-      Evolution regular cards.
+      Evolution regular cards; Trainers before Scarlet & Violet (Items, Supporters, Stadiums, Pokemon Tools)
+      become Scarlet & Violet Trainers (--style, --no-attacks, --foil and --debug are for Pokemon only).
       --style hybrid|panel   ex only. hybrid (default): art runs behind the text; panel: SV translucent panel
       --no-attacks           leave out abilities and attacks (names, text, costs, damage)
       --out DIR              where PNGs go (default ./out); --debug also writes the art-cleaning mask overlay
@@ -15,11 +16,13 @@
 import argparse
 import json
 import os
+import re
 import sys
 import warnings
 from pathlib import Path
 
-from . import cache, foil, frame, inpaint, layers, lifted, meframe, refs, swsh, tcg
+from . import (badges, cache, foil, frame, inpaint, layers, lifted, meframe, oldwindow, refs, swsh, tcg, trainer,
+               trainerframe)
 from . import typeset as ts
 from .imaging import save_rgba
 
@@ -45,12 +48,35 @@ def cmd_prepare(a):
     print("ex assets built for:", ", ".join(refs.TYPES))
     meframe.build_all()
     print("Mega Evolution assets built for:", ", ".join(meframe.POOL))
+    trainerframe.build_all()
+    for layout in oldwindow.LAYOUTS:
+        oldwindow.reference(layout)
+    for badge, (era, _) in badges.POOL.items():
+        badges.look(badge, trainer.ERA_ART[era])
+    print("Trainer frames built for:", ", ".join(trainerframe.KINDS), "; older layouts:", ", ".join(oldwindow.LAYOUTS),
+          "; badges:", ", ".join(badges.POOL))
     kinds = [k for k in lifted.SOURCES if lifted.load(k) is not None]
     print("print glyphs lifted for:", ", ".join(kinds) or "none (set in Gill Sans)")
 
 
 def is_v(card_id):
     return tcg.card(card_id).get("name", "").endswith(" V")
+
+
+def is_trainer(card_id):
+    return tcg.card(card_id).get("category") == "Trainer"
+
+
+def file_slug(name):
+    """'Type: Null' -> 'type-null': a colon would name an NTFS stream, not a file."""
+    return re.sub(r"[^\w-]+", "-", name.strip().lower()).strip("-")
+
+
+def render_trainer(card_id, out):
+    img, report = trainer.compose_card(card_id)
+    path = out / f"{card_id}-{file_slug(report['card']['name'])}-trainer.png"
+    save_rgba(img, path)
+    return path
 
 
 def cmd_card(a):
@@ -64,13 +90,20 @@ def cmd_card(a):
     failed = 0
     for card_id in a.ids:
         try:
+            if is_trainer(card_id):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    path = render_trainer(card_id, out)
+                notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
+                print(f"{card_id}: {path}" + "".join(f"\n  warning: {n}" for n in notes))
+                continue
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
                 v = is_v(card_id)
                 with layers.recording() as drawn:
                     img, report = compose(card_id, opts) if v else mecompose.compose_card(card_id, opts.attacks)
             c = report["card"]
-            slug = (c["prefix"] + " " + c["name"]).strip().lower().replace(" ", "-")
+            slug = file_slug(c["prefix"] + " " + c["name"])
             stem = f"{card_id}-{slug}-ex-{suffix}" if v else f"{card_id}-{slug}-me" + ("" if opts.attacks else "-no-attacks")
             path = out / f"{stem}.png"
             save_rgba(img, path)
@@ -100,7 +133,7 @@ def cmd_gui(a):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="svrestyle", description="Restyle older cards: V -> Scarlet & Violet ex, "
-                                                           "regular -> Mega Evolution")
+                                                           "regular -> Mega Evolution, Trainers -> Scarlet & Violet")
     sub = p.add_subparsers(dest="cmd", required=True)
     pp = sub.add_parser("prepare", help="check dependencies, download the model, build frame assets")
     pp.add_argument("--fonts")

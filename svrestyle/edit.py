@@ -1,8 +1,8 @@
 """The part of a card the GUI lets you change, and the checks on it.
 
-A card dict comes from compose.read_card (ex layout) or mecompose.read_card (Mega Evolution layout). editable()
-picks the fields shown in the editor; apply() writes edited values back onto a copy after checking them, so the
-composers only ever see well-formed data.
+A card dict comes from compose.read_card (ex layout), mecompose.read_card (Mega Evolution layout) or
+trainer.read_card (Trainers: they have a "kind" and no retreat). editable() picks the fields shown in the editor;
+apply() writes edited values back onto a copy after checking them, so the composers only ever see well-formed data.
 """
 import copy
 import re
@@ -11,6 +11,11 @@ ENERGY = ("Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darknes
 MAX_ABILITIES, MAX_ATTACKS, MAX_COST, MAX_RETREAT = 2, 4, 5, 5
 STAGES = (0, 1, 2, 3)                                # Basic, Stage 1, Stage 2, Mega (custom: stage.MEGA)
 MAX_NAME, MAX_EFFECT, MAX_FLAVOR = 40, 400, 220
+# Trainers: their kind (the Gen 9 frame), and their text, paragraphs a line apart (the longest old ones, fossils,
+# run to 500 characters).
+TRAINER_KINDS = ("Item", "Supporter", "Stadium", "Tool")
+MAX_TRAINER_TEXT, MAX_PARAGRAPHS = 800, 6
+TRAINER_SCALAR = {"name": 60, "character": MAX_NAME, "illustrator": MAX_NAME}
 
 DAMAGE = re.compile(r"(\d{1,4})?([+×x-])?")        # 120, 30+, 50×, 10-, or empty (no damage printed)
 WEAKNESS = re.compile(r"[×x+]\d{1,3}")              # ×2 (current), +20 (older cards)
@@ -37,19 +42,35 @@ def printed(text):
     return text.replace("'", "’")
 
 
+def is_trainer(card):
+    return "kind" in card
+
+
 def editable(card):
     """The editor's view of a card (plain JSON)."""
+    if is_trainer(card):
+        return _trainer_editable(card)
     out = {k: card.get(k, "") for k in SCALAR if k in card}
-    out["abilities"] = [{"name": a.get("name", ""), "effect": a.get("effect", "")} for a in card["abilities"]]
-    out["attacks"] = [{"cost": list(a.get("cost") or []), "name": a.get("name", ""),
-                       "damage": str(a.get("damage") or ""), "effect": a.get("effect") or ""}
-                      for a in card["attacks"]]
+    out["abilities"], out["attacks"] = _blocks_view(card)
     for side in ("weakness", "resistance"):
         v = card.get(side)
         out[side] = {"type": v["type"], "value": v.get("value", "")} if v else None
     out["retreat"] = card["retreat"]
     out["stage"] = card.get("stage", 0)
     out["portrait"] = card.get("portrait", "")
+    return out
+
+
+def _blocks_view(card):
+    return ([{"name": a.get("name", ""), "effect": a.get("effect", "")} for a in card["abilities"]],
+            [{"cost": list(a.get("cost") or []), "name": a.get("name", ""), "damage": str(a.get("damage") or ""),
+              "effect": a.get("effect") or ""} for a in card["attacks"]])
+
+
+def _trainer_editable(card):
+    out = {k: card.get(k, "") for k in TRAINER_SCALAR}
+    out.update(kind=card["kind"], hp=card.get("hp", ""), effect=card.get("effect", ""))
+    out["abilities"], out["attacks"] = _blocks_view(card)
     return out
 
 
@@ -109,11 +130,47 @@ def _side(v, field, pattern, example):
     return {"type": _energy(v.get("type"), f"{field} type"), "value": value}
 
 
+def _paragraphs(value, field):
+    """Text of paragraphs a line apart (a blank line or a line break): each one's spacing tidied, empty ones out."""
+    if not isinstance(value, str):
+        raise ValueError(f"{field}: expected text")
+    if len(value) > MAX_TRAINER_TEXT:
+        raise ValueError(f"{field}: at most {MAX_TRAINER_TEXT} characters")
+    paragraphs = [printed(" ".join(p.split())) for p in value.splitlines() if p.strip()]
+    if len(paragraphs) > MAX_PARAGRAPHS:
+        raise ValueError(f"{field}: at most {MAX_PARAGRAPHS} paragraphs")
+    return "\n".join(paragraphs)
+
+
+def _apply_trainer(out, edits):
+    for key, limit in TRAINER_SCALAR.items():
+        if key in edits:
+            out[key] = _text(edits[key], key, limit, required=key == "name")
+    if "kind" in edits:
+        if edits["kind"] not in TRAINER_KINDS:
+            raise ValueError(f"kind: one of {', '.join(TRAINER_KINDS)}")
+        out["kind"] = edits["kind"]
+    if "hp" in edits:
+        out["hp"] = _text(edits["hp"], "hp", 4)
+        if out["hp"] and not re.fullmatch(r"\d{1,3}0", out["hp"]):
+            raise ValueError("hp: empty, or a multiple of 10 up to 9990 (fossils and dolls)")
+    if "effect" in edits:
+        out["effect"] = _paragraphs(edits["effect"], "text")
+    if "abilities" in edits:
+        out["abilities"] = [_ability(a, i) for i, a in enumerate(_list(edits["abilities"], "abilities",
+                                                                        MAX_ABILITIES))]
+    if "attacks" in edits:
+        out["attacks"] = [_attack(a, i) for i, a in enumerate(_list(edits["attacks"], "attacks", MAX_ATTACKS))]
+    return out
+
+
 def apply(card, edits):
     """A copy of card with the edits applied. Raises ValueError (with a message for the user) on bad input."""
     if not isinstance(edits, dict):
         raise ValueError("edits: expected an object")
     out = copy.deepcopy(card)
+    if is_trainer(card):
+        return _apply_trainer(out, edits)
     for key, limit in SCALAR.items():
         if key in edits and key in card:
             out[key] = _text(edits[key], key, limit, required=key == "name")
@@ -217,9 +274,26 @@ def _blocks(kind, old, new, diff, line):
     return out
 
 
+def _trainer_changes(a, b):
+    out = []
+    for key, label in (("name", "Name"), ("character", "Character"), ("kind", "Trainer type"), ("hp", "HP")):
+        if a.get(key) != b.get(key):
+            out.append(_was(label, a.get(key) or "none", b.get(key) or "none"))
+    if a["effect"] != b["effect"]:
+        out.append(_was("Text", _quote(a["effect"].replace("\n", " / ")), _quote(b["effect"].replace("\n", " / "))))
+    out += _blocks("Ability", a["abilities"], b["abilities"], _ability_diff,
+                   lambda x: f"{x['name']}: {_quote(x['effect'])}")
+    out += _blocks("Attack", a["attacks"], b["attacks"], _attack_diff, _attack_line)
+    if a.get("illustrator") != b.get("illustrator"):
+        out.append(_was("Illustrator", _quote(a.get("illustrator")), _quote(b.get("illustrator"))))
+    return out
+
+
 def changes(before, after):
     """What differs between two card dicts, one line per change, in the order the card prints it."""
     a, b = editable(before), editable(after)
+    if is_trainer(before):
+        return _trainer_changes(a, b)
     out = []
     name = lambda c: f"{c.get('prefix', '')} {c.get('name', '')}".strip()
     if name(a) != name(b):

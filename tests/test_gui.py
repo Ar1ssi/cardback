@@ -85,11 +85,14 @@ class ImportSet(unittest.TestCase):
             {"id": "swsh3-88", "name": "Tyranitar", "supertype": "Pokémon"},
             {"id": "swsh3-88", "name": "Tyranitar", "supertype": "Pokémon"},
             {"id": "me01-114", "name": "Boss's Orders", "supertype": "Trainer"},
+            {"id": "swsh1-156", "name": "Air Balloon", "supertype": "Trainer"},
+            {"id": "sv01-258", "name": "Basic Grass Energy", "supertype": "Energy"},
             {"id": "../x", "name": "bad"}]}
         out = gui.import_set(data)["cards"]
         self.assertEqual([(c["id"], c.get("layout"), c.get("skip")) for c in out],
                          [("sv09-080", "modern", None), ("swsh6-97", "ex", None), ("swsh3-88", "me", None),
-                          ("me01-114", None, "not a Pokémon")])
+                          ("me01-114", None, "a Scarlet & Violet Trainer already"), ("swsh1-156", "trainer", None),
+                          ("sv01-258", None, "not a Pokémon or Trainer")])
 
     def test_rejects_other_json(self):
         with self.assertRaises(gui.UserError):

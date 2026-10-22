@@ -1,14 +1,16 @@
 """Local web GUI: load a card, edit its name, HP, abilities, attacks (costs, damage, text), weakness, resistance and
 retreat, and render it in the ex or Mega Evolution layout (Scarlet & Violet and Mega Evolution cards: edited in
-place, see modern.py), with its TCG Live holofoil re-made to fit the edits; or import a custom-set export and
-restyle or edit every Pokemon in it. Standard library only; serves on 127.0.0.1.
+place, see modern.py), with its TCG Live holofoil re-made to fit the edits; or load an older Trainer (Item,
+Supporter, Stadium, Pokemon Tool), edit its name, type and text, and render it as a Scarlet & Violet Trainer
+(trainer.py); or import a custom-set export and restyle or edit every Pokemon and Trainer in it. Standard library
+only; serves on 127.0.0.1.
 
   python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--no-browser]
 
 API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
   GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available
-  GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern", name, card: editable fields}
+  GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern"|"trainer", name, card: editable fields}
   POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout, changes,
                               foil?: {front: URL, base, reverse: {png: base64 white plate (card size), shader,
                               material, cc, textures: {wp, etch?, cf?: URL}} | null}}
@@ -63,7 +65,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, edit, foil, layers, mecompose, meframe, modern, tcg
+from . import cache, compose, edit, foil, layers, mecompose, meframe, modern, tcg, trainer
 
 PAGE = Path(__file__).with_name("gui.html")
 STATIC = Path(__file__).with_name("static")
@@ -110,12 +112,15 @@ def layout_of(card_id):
         data = tcg.card(card_id)
     except (ValueError, cache.DownloadError) as e:
         raise UserError(str(e)) from e
+    if data.get("category") == "Trainer":
+        return "trainer"
     return "ex" if data.get("name", "").endswith(" V") else "me"
 
 
 def read(card_id):
     layout = layout_of(card_id)
-    reader = {"ex": compose.read_card, "me": mecompose.read_card, "modern": modern.read_card}[layout]
+    reader = {"ex": compose.read_card, "me": mecompose.read_card, "modern": modern.read_card,
+              "trainer": trainer.read_card}[layout]
     try:
         card = reader(card_id)
     except SystemExit as e:                     # the composers refuse unsupported cards this way
@@ -128,7 +133,7 @@ def read(card_id):
 def card_summary(card_id):
     layout, card = read(card_id)
     return {"id": card_id, "layout": layout, "name": f"{card['prefix']} {card['name']}".strip(),
-            "type": card["type"], "card": edit.editable(card)}
+            "type": card.get("type", card.get("kind")), "card": edit.editable(card)}
 
 
 def _png(arr, mode=None):
@@ -149,11 +154,16 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
     if key in _renders:
         _renders.move_to_end(key)
         return _renders[key]
-    layout, original = read(card_id)
-    card = edit.apply(original, edits) if edits else original
     with _render_lock, warnings.catch_warnings(record=True) as caught, layers.recording() as drawn:
         warnings.simplefilter("always")
-        if layout == "modern":
+        layout, original = read(card_id)        # its warnings shown too (a Trainer's kind guessed, its text missing)
+        if holo and layout == "trainer":
+            raise UserError("holofoil is made for Pokemon cards only: turn it off for Trainers")
+        card = edit.apply(original, edits) if edits else original
+        if layout == "trainer":
+            img, _ = trainer.compose_card(card_id, card=card)
+            built = None
+        elif layout == "modern":
             img, report = modern.compose_card(card_id, card, original)
             built = foil.build_modern(card_id, card, img, drawn, original) if holo else None
         else:
@@ -175,7 +185,8 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
     return result
 
 
-LAYOUT_NOTES = {"ex": "Restyled as a Scarlet & Violet ex card", "me": "Restyled as a Mega Evolution card"}
+LAYOUT_NOTES = {"ex": "Restyled as a Scarlet & Violet ex card", "me": "Restyled as a Mega Evolution card",
+                "trainer": "Restyled as a Scarlet & Violet Trainer"}
 
 
 def card_changes(card_id, edits=None, style="hybrid", attacks=True):
@@ -185,7 +196,7 @@ def card_changes(card_id, edits=None, style="hybrid", attacks=True):
     notes = []
     if layout in LAYOUT_NOTES:
         notes.append(LAYOUT_NOTES[layout] + (" (translucent type panel)" if layout == "ex" and style == "panel" else ""))
-        if not attacks:
+        if not attacks and layout != "trainer":
             notes.append("Abilities and attacks left off")
     return tcg.card(card_id).get("name", card_id), notes + edit.changes(original, card)
 
@@ -313,8 +324,13 @@ def import_set(data):
             continue
         seen.add(cid)
         entry = {"id": cid, "name": c.get("name", "")}
-        if c.get("supertype") not in (None, "Pokémon", "Pokemon"):
-            entry["skip"] = "not a Pokémon"
+        if c.get("supertype") == "Trainer":
+            if modern.is_modern(cid):
+                entry["skip"] = "a Scarlet & Violet Trainer already"
+            else:
+                entry["layout"] = "trainer"
+        elif c.get("supertype") not in (None, "Pokémon", "Pokemon"):
+            entry["skip"] = "not a Pokémon or Trainer"
         elif modern.is_modern(cid):
             entry["layout"] = "modern"
         else:

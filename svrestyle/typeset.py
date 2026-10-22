@@ -48,12 +48,27 @@ def cap_height(face, size):
     return (b[3] - b[1]) / SS
 
 
+NO_GLYPH = "\U000F0000"     # a private-use code point no font maps: it draws the face's empty box
+
+
+def _glyph(f, ch):
+    mask = f.getmask(ch)
+    return mask.size, bytes(mask)
+
+
+def missing_glyphs(text, face):
+    """The characters of text the face has no glyph for (Gill Sans: Greek, arrows): they would print as its box."""
+    f = font(face, 20)
+    box = _glyph(f, NO_GLYPH)
+    return sorted({ch for ch in text if not ch.isspace() and _glyph(f, ch) == box})
+
+
 def coverage(items):
     """items: dicts(text, face, size, x, base, xscale=1, tracking=0, anchor='l'|'c'|'r', thin=0) -> HxW float
     coverage. thin: px taken off each side of every stroke, for a weight between two faces (1 / SS px steps)."""
     canvas = np.zeros((H * SS, W * SS), np.float32)
     for it in items:
-        text = it["text"]
+        text = it["text"].replace(GLUE, " ")
         if not text:
             continue
         f = font(it["face"], it["size"])
@@ -140,6 +155,9 @@ def runs_of(line_words):
 ENERGY_CODES = {"G": "Grass", "R": "Fire", "W": "Water", "L": "Lightning", "P": "Psychic", "F": "Fighting",
                 "D": "Darkness", "M": "Metal", "N": "Dragon", "C": "Colorless"}
 ENERGY_MARK = ""
+# A space no line breaks at: drawn and measured as a space, but part of the word either side (Trainer text keeps a
+# number with the word after it, trainer.glue_numbers).
+GLUE = ""
 ENERGY_ADVANCE = 0.93          # the print leaves a symbol 23 px between spaces in 24.9 px body text (130 SV / ME)
 
 
@@ -155,7 +173,7 @@ def energy_text(text):
 
 def length(text, face, size):
     """Width of text in px, energy marks included."""
-    return (font(face, size).getlength(text.replace(ENERGY_MARK, "")) / SS
+    return (font(face, size).getlength(text.replace(ENERGY_MARK, "").replace(GLUE, " ")) / SS
             + text.count(ENERGY_MARK) * ENERGY_ADVANCE * size)
 
 
@@ -185,6 +203,46 @@ def justify(text, size, full_width, natural_tracking, fit_tracking=None):
     return lines
 
 
+LOOSE_LIMIT = 2.0          # px of letter-spacing past which a composed line counts as badly loose
+
+
+def compose_paragraph(text, size, full_width, natural_tracking, min_tracking):
+    """Line breaks for the paragraph as a whole, the way a paragraph composer sets it: of every way to break it,
+    the one whose full lines stay closest to the natural letter-spacing (least sum of squared deviations), no line
+    squeezed below min_tracking; the last line keeps the natural spacing when it fits. Trainer text breaks like this
+    (it squeezes one line hard rather than leave the next loose). -> [(runs, tracking)] as justify."""
+    ws = words(text)
+    if not ws:
+        return []
+    n = len(ws)
+    best = [None] * (n + 1)              # best[j]: (cost, start of the last line, its tracking) for words[:j]
+    best[0] = (0.0, None, None)
+    for j in range(1, n + 1):
+        for i in range(j - 1, -1, -1):
+            if best[i] is None:
+                continue
+            runs = runs_of(ws[i:j])
+            chars = sum(len(t) for t, _ in runs)
+            natural = runs_width(runs, size, 0)
+            needed = (full_width - natural) / max(1, chars - 1)
+            if needed < min_tracking and i < j - 1:
+                break                                     # longer lines are only tighter
+            if j == n and needed >= natural_tracking:
+                cost, tracking = 0.0, natural_tracking
+            else:
+                tracking = needed
+                cost = (needed - natural_tracking) ** 2 + 1e3 * max(0.0, needed - LOOSE_LIMIT)
+            total = best[i][0] + cost
+            if best[j] is None or total < best[j][0]:
+                best[j] = (total, i, tracking)
+    lines, j = [], n
+    while j > 0:
+        _, i, tracking = best[j]
+        lines.append((runs_of(ws[i:j]), tracking))
+        j = i
+    return lines[::-1]
+
+
 def line_items(runs, tracking, size, x, base, marks=None):
     """Coverage items for one line of runs. marks: a list that gets the centre x of each energy mark, in order."""
     items, cursor = [], x
@@ -197,5 +255,5 @@ def line_items(runs, tracking, size, x, base, marks=None):
                 cursor += advance + tracking
             if part:
                 items.append(dict(text=part, face=face, size=size, x=cursor, base=base, tracking=tracking))
-                cursor += font(face, size).getlength(part) / SS + tracking * len(part)
+                cursor += font(face, size).getlength(part.replace(GLUE, " ")) / SS + tracking * len(part)
     return items

@@ -13,6 +13,9 @@ Give it TCGdex card ids; it picks the layout from the card:
   inpainted out and its pre-evolution picture moved into the Mega Evolution portrait ring, and the card is set on a
   blank Mega Evolution frame of its type with name, HP, Pokedex line, abilities/attacks, weakness row, flavour text
   and footer.
+- **Trainers** (Item, Supporter, Stadium, Pokemon Tool; Sword & Shield back to Base Set) -> **Scarlet & Violet
+  Trainer**: the old art moves into the Gen 9 window and the card is set on the Gen 9 frame of its kind (see
+  Trainers below).
 
 ```sh
 pip install -r requirements.txt            # torch: --index-url https://download.pytorch.org/whl/cpu
@@ -22,6 +25,7 @@ python -m svrestyle prepare                # once: model + reference scans + fra
 python -m svrestyle card swsh6-99 --no-attacks          # Galarian Slowking V -> ex, full art, no attacks
 python -m svrestyle card swsh9-040 swsh1-138 --style panel
 python -m svrestyle card swsh3-88 sm10-19 sma-SV33      # Tyranitar, Kartana, Shiny Vault Kartana -> Mega Evolution
+python -m svrestyle card base1-91 ex3-87 dp1-114 swsh1-156   # Bill, Mr. Briney's Compassion, Speed Stadium, Air Balloon
 python -m unittest discover tests
 ```
 
@@ -98,6 +102,33 @@ lettering is swapped, so each card keeps its own tab and border. On the holofoil
 SV ex frame's silver value on ex cards and are left out elsewhere; the portrait, lettering and "Evolves from" line
 are cut out.
 
+### Trainers
+
+Older Items, Supporters, Stadiums and Pokemon Tools become Scarlet & Violet / Mega Evolution Trainers
+(`trainer.py`). Technical Machines are Tools, as they are from Sword & Shield on; a card TCGdex types Item but whose
+text is a Tool's (attaching itself, or lending an attack: Curse Powder, the e-Card Cubes) is a Tool too. The first sets
+print no type: the kind comes from the rule the text holds, else Item (with a warning).
+
+- **Frame**: every SV / ME Trainer of a kind prints the same frame, so `trainerframe.py` builds each kind's from the
+  median of real prints (name, text and footer taken off; the rule pill and tabs kept). `prepare` builds them.
+- **Art**: Sun & Moon to HeartGold SoulSilver cards have one art window per era (`trainer.ERA_ART`). Older scans are
+  photographs that sit a few px off and a few percent larger or smaller, so `oldwindow.py` registers each card's frame
+  to its layout's mean frame (Base Set, e-Card, EX, Diamond & Pearl, and XY Evolutions' redrawn Base Set layout) and
+  carries the layout's window over. The art is scaled to cover the Gen 9 window. Era marks over the art (Single /
+  Rapid / Fusion Strike, TAG TEAM, Team Plasma) are found by their learned masks and painted out with LaMa
+  (`badges.py`).
+- **Text** from TCGdex: the old rule sentences the Gen 9 pill prints instead are taken out (a Supporter whose text
+  needs its place beside the Active Pokemon keeps it); spelled-out types print as energy symbols; a choice's options
+  print as hanging bullets; straight quotes become curly. The effect is justified by letter-spacing and broken for the
+  paragraph as a whole, its first baseline on the prints' grid. Fossils and dolls get their HP in the bar and "a N-HP
+  Basic {C} Pokemon" in the text; Technical Machines their attacks, set like the Mega Evolution cards'.
+- **Refused**: full-art, gold and other special prints (no art window to move), ACE SPEC and Prism Star cards, GX-attack
+  Z-Crystals and Team Flare Hyper Gear (rules no Gen 9 frame prints), Chaos Tower (played either way up), Classic
+  Collection reprints, TCG Pocket cards, and sets of no known layout.
+
+Gill Sans has no Greek letters: a name like "Miracle Sphere α" renders with a warning and an empty box for the letter;
+edit the text in the editor.
+
 ### Editor (GUI)
 
 ```sh
@@ -120,6 +151,9 @@ icons are cut out where they are drawn); preview the foil on the card or the whi
 reverse holo), and download the card with its foil textures as a zip (the custom-set zip includes them too). The preview re-renders as you
 edit, in exactly the card layout the command line produces; download one PNG, or every card of an imported set as a
 zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
+A Trainer has its own fields: name, a Supporter's character, kind (Item, Supporter, Stadium or Tool), HP (fossils and
+dolls), illustrator and effect text (a paragraph per line), and its Abilities or attacks; holofoil is for Pokemon
+only, and a custom set's Scarlet & Violet Trainers are listed as already Gen 9.
 
 The foil preview is TCG Live's own: its TPCi/Cards3D shaders (the extract's WebApp translation to WebGL,
 `WebApp/web/data/foil/`) and MAT_Cards3D_* materials, with their spectrum, shine, glitter and pattern textures

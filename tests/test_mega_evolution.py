@@ -68,6 +68,20 @@ class Footer(unittest.TestCase):
         self.assertEqual(mecompose.card_number("19", 214), "019/214")
         self.assertEqual(mecompose.card_number("088", 189), "088/189")
 
+    def test_promo_and_subset_numbers(self):
+        # dpp / np promos print the number alone; bw11's Radiant Collection counts its own 25 (TCGdex set data)
+        self.assertEqual(mecompose.card_number("DP05", 56, {"name": "DP Black Star Promos"}), "DP05")
+        self.assertEqual(mecompose.card_number("28", 40, {"name": "Nintendo Black Star Promos"}), "28")
+        bw11 = {"name": "Legendary Treasures", "cards": [{"localId": str(n)} for n in range(1, 114)] +
+                [{"localId": f"RC{n}"} for n in range(1, 26)]}
+        self.assertEqual(mecompose.card_number("RC20", 113, bw11), "RC20/RC25")
+        self.assertEqual(mecompose.card_number("20", 113, bw11), "020/113")
+        # pl1-SH4 and col1-SL1 print the number alone (scans): the SH run spans sets, 3 a set
+        pl1 = {"name": "Platinum", "serie": {"id": "pl"}, "cards": [{"localId": f"SH{n}"} for n in (4, 5, 6)]}
+        self.assertEqual(mecompose.card_number("SH4", 127, pl1), "SH4")
+        self.assertEqual(mecompose.card_number("SL1", 95, {"name": "Call of Legends", "serie": {"id": "col"}}), "SL1")
+        self.assertEqual(mecompose.card_number("12", 127, pl1), "012/127")
+
     def test_rarity(self):
         self.assertEqual(mecompose.rarity_symbol("Common"), "common")
         self.assertEqual(mecompose.rarity_symbol("Uncommon"), "uncommon")

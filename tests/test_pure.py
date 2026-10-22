@@ -44,6 +44,13 @@ class TcgLiveId(unittest.TestCase):
         self.assertEqual(tcg.tcglive_id("sv10.5b-086"), "zsv10-5_86")      # bundles zsv10-5_en_086
         self.assertEqual(tcg.tcglive_id("sv10.5w-172"), "rsv10-5_172")
 
+    def test_radiant_collection_has_no_id(self):
+        # bw11-RC20 is Elesa, bw11-20 a Vulpix: no TCG Live id rather than the wrong card's
+        with self.assertRaises(ValueError):
+            tcg.tcglive_id("bw11-RC20")
+        with mock.patch.object(tcg, "TCGLIVE", "x"), self.assertWarns(UserWarning):
+            self.assertFalse(tcg._tcglive_scan("bw11-RC20", None))
+
     def test_no_extract_means_no_front(self):
         with mock.patch.object(tcg, "TCGLIVE", None):
             self.assertIsNone(tcg.tcglive_front("swsh6-99"))
