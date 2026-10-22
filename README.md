@@ -174,7 +174,8 @@ edits (Undo puts it back); the find box above the list narrows it to the cards w
 (Enter opens the first). Drag a row to move it, or right click it to send it to the top or bottom; the list's
 order is the order Render all, the zip and the change log use. The page saves itself 0.3 s after each change - the list, every
 card's edits and options, the card open and the holofoil switch - and opens it again on its own next time. Work
-with no name yet is saved as "<set> <date time>" (or "Untitled <date time>"); type a name and Save to rename it. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
+with no name yet is saved as "<set> <date time>" (or "Untitled <date time>"); type a name and Save to rename it. New starts an empty project (the open one is saved first and stays in the list);
+it saves itself with its first change, or under the name typed and Save. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
 or deleted from the same bar, from any browser that reaches the server.
 
 Working together: everyone with the same project open edits one copy. Each change goes to the server as a patch of

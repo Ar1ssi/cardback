@@ -116,6 +116,7 @@
   <label class="tight" style="margin:0"><button id="importBtn" type="button">Import custom set…</button></label>
   <input id="setFile" type="file" accept=".json,application/json" hidden>
   <span class="project" role="group" aria-label="Project">
+    <button id="newProjectBtn" type="button" title="Start a new, empty project (the one open stays saved)">New</button>
     <select id="projectSel" aria-label="Saved projects"><option value="">Saved projects…</option></select>
     <button id="openProjectBtn" type="button">Open</button>
     <input id="projectName" type="text" placeholder="Project name" aria-label="Project name" style="max-width: 170px">
@@ -750,8 +751,20 @@ function untitledName() {
   const set = $("setName").textContent.trim();
   const t = new Date(), two = (n) => String(n).padStart(2, "0");
   const when = `${t.getFullYear()}-${two(t.getMonth() + 1)}-${two(t.getDate())} ${two(t.getHours())}.${two(t.getMinutes())}`;
-  const base = set && set !== "Cards" ? set.replace(/[^\w .,'()&+#-]+/g, " ").trim().slice(0, 40) : "Untitled";
+  const base = set && set !== "Cards" ? set.replace(/[^\w .,'()&+#-]+/g, " ").trim().slice(0, 36) : "Untitled";
   return `${base || "Untitled"} ${when}`;
+}
+
+// untitledName, numbered past the projects already saved: a patch to a name that exists joins that project, so
+// two pieces of unnamed work started in the same minute (New right after the first) must not share one.
+async function freshName() {
+  const file = (name) => name.trim().toLowerCase().replace(/[^\w-]+/g, "-").replace(/^-+|-+$/g, "");   // project_file
+  const base = untitledName();
+  let taken = new Set();
+  try {
+    taken = new Set((await (await api("/api/projects")).json()).projects.map((p) => file(p.name)));
+  } catch (e) { /* the list is out of reach: the patch below fails the same way and is tried again */ }
+  for (let i = 2, name = base; ; name = `${base} (${i++})`) if (!taken.has(file(name))) return name;
 }
 
 function autosave() {
@@ -775,10 +788,10 @@ async function pushChanges() {
   const first = !state.project;
   const patch = diffData(projectData(), first ? emptyData() : state.synced);
   if (!patch) return;
-  if (first) { state.project = untitledName(); state.autoNamed = true; state.synced = emptyData(); }
+  state.sending = true;                                      // from here: changes meanwhile wait for this one
+  if (first) { state.project = await freshName(); state.autoNamed = true; state.synced = emptyData(); }
   const before = state.synced;
   state.synced = applyPatch(state.synced, patch);
-  state.sending = true;
   try {
     const out = await (await api("/api/projects/patch", { name: state.project, patch, client: CLIENT })).json();
     state.rev = Math.max(state.rev, out.rev);
@@ -843,6 +856,34 @@ async function openProject(name) {
     if (localStorage.getItem(LAST_PROJECT) === name) localStorage.removeItem(LAST_PROJECT);
     showError(`Could not open “${name}”: ${e.message}`);
   }
+}
+
+// A fresh page: the project open is saved first (it goes on as is, under its name), then the list and edits are
+// cleared. The new project saves itself with its first change, like any unnamed work, or under the name typed.
+async function newProject() {
+  clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+  while (state.sending) await new Promise((done) => setTimeout(done, 50));
+  await pushChanges();
+  if (state.saveTimer) {                                     // pushChanges failed and will try again: keep the page
+    showError("The project open could not be saved, so it stays on the page; try New again in a moment.");
+    return;
+  }
+  clearTimeout(state.renderTimer);
+  state.renderSeq += 1;                                      // a render still on its way is for the old project
+  $("renderBtn").disabled = false;
+  leaveProject("New project: add cards, or name it and Save.");
+  localStorage.removeItem(LAST_PROJECT);
+  Object.assign(state, { setCards: [], edits: {}, options: {}, changes: {}, rendered: new Set(), removed: null });
+  $("undoBar").hidden = true;
+  $("setName").textContent = "Cards";
+  $("findCards").value = "";
+  $("projectName").value = "";
+  $("projectSel").value = "";
+  showError("");
+  closeCard();
+  drawSet();
+  $("projectName").focus();
 }
 
 function leaveProject(note) {
@@ -1343,6 +1384,7 @@ async function init() {
   $("changelogBtn").addEventListener("click", downloadChangelog);
   $("viewSel").addEventListener("change", showView);
   $("zipBtn").addEventListener("click", downloadZip);
+  $("newProjectBtn").addEventListener("click", newProject);
   $("openProjectBtn").addEventListener("click", () => openProject($("projectSel").value));
   $("projectSel").addEventListener("change", () => { if ($("projectSel").value) $("projectName").value = $("projectSel").value; });
   $("saveProjectBtn").addEventListener("click", () => saveProject($("projectName").value));
