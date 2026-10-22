@@ -43,7 +43,17 @@ ROW_ICONS = {"weakness": (127.0, 895.8, 13.1), "resistance": (319.6, 895.8, 13.1
              "retreat": (540.3, 895.8, 12.6, 30)}
 NAME_TO_BODY = 41                          # from the name cap top (icon top + 4); 40 on attacks, 42 on abilities
 RED_ON_DARK = (compose.WHITE, 1.0, 1.0)     # Spiritomb: red Ability name, thin white keyline
+# Footer fitted on me1 / me2 prints (dark ink): the number on 22 (its ink 35% closer than the ex cards' footer
+# gives), the illustrator line on 90 (16% closer), the rarity marks on 55 commons, 23 uncommons and 12 rares (a
+# fifth to a third larger than the ex cards', 22-28% closer).
+FOOTER = {"illus": dict(size=16.3, xscale=0.97, x=44, base=952.5),
+          "number": dict(gap=4.5, size=17.0, xscale=1.12, base=986.5),
+          "rarity": {"common": dict(gap=6, base=979.5, scale=1.3), "uncommon": dict(gap=7.5, base=979.5, scale=1.2),
+                     "rare": dict(gap=7.5, base=980.5, scale=1.2), "*": dict(gap=6, base=980.5, scale=1.0)}}
 BODY_FIT_TRACK = 0.0                       # a word stays on the line if it fits untracked (Kadabra line 1)
+# Text breaks for the paragraph as a whole, a number with the word after it, no line tighter than BODY_MIN_TRACK:
+# the breaks of 64 of 84 me1 panels (line by line: 53) and 37 of 60 me2 (29); one me1 panel lost, no me2 one.
+BODY_MIN_TRACK = -0.1
 
 
 # ---------------------------------------------------------------- card data
@@ -292,9 +302,10 @@ def compose_card(card_id, attacks=True, card=None):
     name_and_hp(canvas, card, prof)
     dex_line(canvas, card)
     shrink = None if not attacks else compose.text_block(canvas, card, fill, None, layout=me_layout, name_to_body=NAME_TO_BODY,
-                                fit_tracking=BODY_FIT_TRACK, red_edge=RED_ON_DARK if white_text else None,
+                                fit_tracking=BODY_FIT_TRACK, min_tracking=BODY_MIN_TRACK,
+                                red_edge=RED_ON_DARK if white_text else None,
                                 cost_r=COST_R, cost_dy=COST_DY)
     compose.weakness_row(canvas, card, fill, None, labels=False, icons=ROW_ICONS)
-    compose.footer(canvas, card, white_text, rarity=card["rarity"])
+    compose.footer(canvas, card, white_text, rarity=card["rarity"], keyline=False, style=FOOTER)
     flavor(canvas, card, fill)
     return canvas, {"card": card, "body_scale": shrink}

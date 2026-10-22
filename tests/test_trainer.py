@@ -201,9 +201,9 @@ class Text(unittest.TestCase):
         self.assertEqual(trainer.split_name("Boss’s Orders (Giovanni)", "Item"), ("Boss’s Orders (Giovanni)", ""))
 
     def test_numbers_stay_with_the_next_word(self):
-        self.assertEqual(trainer.glue_numbers("draw 3 cards, 1 of them"), f"draw 3{trainer.ts.GLUE}cards, "
+        self.assertEqual(trainer.ts.glue_numbers("draw 3 cards, 1 of them"), f"draw 3{trainer.ts.GLUE}cards, "
                                                                             f"1{trainer.ts.GLUE}of them")
-        self.assertEqual(trainer.glue_numbers("HP 30"), "HP 30")
+        self.assertEqual(trainer.ts.glue_numbers("HP 30"), "HP 30")
 
     def test_first_baseline_snaps_to_the_grid(self):
         self.assertEqual(trainer.snap(trainer.GRID_TOP), trainer.GRID_TOP)

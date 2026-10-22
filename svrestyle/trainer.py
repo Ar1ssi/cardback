@@ -396,11 +396,6 @@ def snap(base):
     return GRID_TOP - GRID_STEP * round((GRID_TOP - base) / GRID_STEP)
 
 
-def glue_numbers(text):
-    """A number stays on the line of the word after it ('30 more damage', '1 of your'), as the prints break."""
-    return re.sub(r"(?<!\S)(\d+) (?=\S)", lambda m: m[1] + ts.GLUE, text)
-
-
 def lay_paragraphs(paragraphs, k, blank=True, tracking=(BODY_TRACK, BODY_MIN_TRACK)):
     """-> ([(row, runs, tracking, symbol types, indent, bullet)], rows) at body scale k; a row is a line or, when
     blank, the blank between paragraphs (not between a choice's options). tracking: (natural, tightest)."""
@@ -411,7 +406,7 @@ def lay_paragraphs(paragraphs, k, blank=True, tracking=(BODY_TRACK, BODY_MIN_TRA
         if i and blank and not (option and paragraphs[i - 1].startswith(BULLET)):
             row += 1
         indent = BULLET_INDENT * k if option else 0
-        text, types = ts.energy_text(glue_numbers(para[len(BULLET):].lstrip() if option else para))
+        text, types = ts.energy_text(ts.glue_numbers(para[len(BULLET):].lstrip() if option else para))
         marked = iter(types)
         for n, (runs, track) in enumerate(ts.compose_paragraph(text, size, BODY_FULL_W - indent, *tracking)):
             count = sum(t.count(ts.ENERGY_MARK) for t, _ in runs)
@@ -516,5 +511,5 @@ def compose_card(card_id, card=None):
         layers.record(a[..., 0])
     xscale = name_and_character(canvas, card)
     scale = body(canvas, card)
-    compose.footer(canvas, card, False, rarity=card["rarity"], shift=FOOTER_SHIFT)
+    compose.footer(canvas, card, False, rarity=card["rarity"], shift=FOOTER_SHIFT, keyline=False)
     return canvas, {"card": card, "name_xscale": round(xscale, 3), "body_scale": scale}

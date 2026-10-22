@@ -1,9 +1,13 @@
-"""Mega Evolution regular layout: pure logic, checked against what real me1 cards print. No network, model or fonts.
+"""Mega Evolution regular layout: pure logic, checked against what real me1 cards print. No network or model; the text breaks need the fonts (SVRESTYLE_FONTS).
 Run: python -m unittest discover tests"""
+import os
 import unittest
 from unittest import mock
 
-from svrestyle import mecompose, tcg
+import numpy as np
+
+from svrestyle import compose, mecompose, tcg
+from svrestyle import typeset as ts
 
 PITCH = 29
 
@@ -129,3 +133,28 @@ class ReadCard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.environ.get("SVRESTYLE_FONTS"), "needs the Gill Sans faces (SVRESTYLE_FONTS)")
+class TextBreaks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        ts.configure(os.environ["SVRESTYLE_FONTS"])
+
+    def test_number_goes_with_the_next_word(self):
+        # me01-005 Exeggutor, Guard Press (TCGdex text): the print breaks "...this Pokémon takes / 30 less damage"
+        effect = ("During your opponent’s next turn, this Pokémon takes 30 less damage from attacks "
+                  "(after applying Weakness and Resistance).")
+        card = {"id": "me01-005", "abilities": [], "attacks": [{"name": "Guard Press", "cost": ["Grass"],
+                                                                 "damage": "30", "effect": effect}]}
+        seen = []
+
+        def layout(laid, pitch):
+            seen.append(laid)
+            return [600], True
+
+        canvas = np.zeros((1024, 733, 4), np.float32)
+        compose.text_block(canvas, card, np.zeros(3, np.float32), None, layout=layout,
+                           fit_tracking=mecompose.BODY_FIT_TRACK, min_tracking=mecompose.BODY_MIN_TRACK)
+        first = "".join(t for t, _ in seen[0][0][2][0][0])
+        self.assertTrue(first.endswith("takes"), first)

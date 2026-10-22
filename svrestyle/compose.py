@@ -241,8 +241,11 @@ def held_left(coverage, limit):
 
 
 def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_TO_BODY, fit_tracking=None,
-               red_edge=None, cost_r=COST_R, cost_dy=COST_DY, symbol=None, body_size=BODY_SIZE, dmg_limit=None):
+               red_edge=None, cost_r=COST_R, cost_dy=COST_DY, symbol=None, body_size=BODY_SIZE, dmg_limit=None,
+               min_tracking=None):
     """Abilities then attacks, placed by layout(laid, pitch); body text shrinks until the layout fits.
+    min_tracking: break each text as a paragraph (typeset.compose_paragraph, no line tighter than this), a number
+    staying with the word after it; default: line by line (typeset.justify, words joining while they fit_tracking).
     red_edge: keyline under the red Ability names (default: a white one when the text has an edge).
     symbol(type, centre x, baseline, body size): coverage of an energy symbol in effect text (energy_symbol).
     dmg_limit: x a damage's ink may not pass (a Trainer's narrower panel: "30+" moves left)."""
@@ -250,10 +253,12 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
     blocks = [("ability", a) for a in card["abilities"]] + [("attack", a) for a in card["attacks"]]
     if not blocks:
         return None
-    effects = [ts.energy_text(b.get("effect")) for _, b in blocks]     # (text with marks, symbol types)
+    glued = ts.glue_numbers if min_tracking is not None else (lambda t: t)
+    effects = [ts.energy_text(glued(b.get("effect") or "")) for _, b in blocks]   # (text with marks, symbol types)
     for k in SHRINK_STEPS:
         size, pitch = body_size * k, round(BODY_PITCH * k)
-        laid = [(kind, b, ts.justify(text, size, BODY_FULL_W, BODY_TRACK, fit_tracking) if text else [])
+        laid = [(kind, b, (ts.justify(text, size, BODY_FULL_W, BODY_TRACK, fit_tracking) if min_tracking is None else
+                           ts.compose_paragraph(text, size, BODY_FULL_W, BODY_TRACK, min_tracking)) if text else [])
                 for (kind, b), (text, _) in zip(blocks, effects)]
         tops, fits = layout(laid, pitch)
         if fits:
@@ -343,27 +348,38 @@ def weakness_row(canvas, card, fill, edge, labels=True, icons=SV_ROW_ICONS, retr
             energy("Colorless", x0 + pitch * i, y, r, canvas)
 
 
-def rarity_mark(symbol, x, y=980.5):
+def rarity_mark(symbol, x, y=980.5, scale=1.0):
     """Coverage of the rarity symbol(s) starting at x: 'common' circle, 'uncommon' diamond, 'rare' star,
-    'double' two stars (Double Rare, as on ex)."""
+    'double' two stars (Double Rare, as on ex). scale: their size against the ex cards'."""
+    k = scale
     if symbol == "common":
         yy, xx = np.mgrid[:H, :W]
-        return np.clip(5.6 - np.hypot(xx - (x + 6), yy - y), 0, 1).astype(np.float32)
+        return np.clip(5.6 * k - np.hypot(xx - (x + 6 * k), yy - y), 0, 1).astype(np.float32)
     if symbol == "uncommon":
         yy, xx = np.mgrid[:H, :W]
-        return np.clip(6.8 - (np.abs(xx - (x + 6.5)) + np.abs(yy - y)), 0, 1).astype(np.float32)
-    stars = ts.star(x + 7, y, 7.6, 3.1)
+        return np.clip(6.8 * k - (np.abs(xx - (x + 6.5 * k)) + np.abs(yy - y)), 0, 1).astype(np.float32)
+    stars = ts.star(x + 7 * k, y, 7.6 * k, 3.1 * k)
     if symbol == "double":
-        stars = np.maximum(stars, ts.star(x + 24, y, 7.6, 3.1))
+        stars = np.maximum(stars, ts.star(x + 24 * k, y, 7.6 * k, 3.1 * k))
     return stars
 
 
-def footer(canvas, card, white_text, rarity="double", shift=None):
+# The footer as the ex cards print it (Absol, Alakazam): the illustrator line, the card number after the set box,
+# the rarity mark after the number ("*": every symbol; a symbol's own entry overrides it). Layouts measured apart
+# pass their own (mecompose.FOOTER).
+FOOTER = {"illus": dict(size=15.5, xscale=0.97, x=46, base=953),
+          "number": dict(gap=8.5, size=16.6, xscale=1.11, base=988),
+          "rarity": {"*": dict(gap=6, base=980.5, scale=1.0)}}
+
+
+def footer(canvas, card, white_text, rarity="double", shift=None, keyline=True, style=None):
     """shift: {part: (dx, dy)} moves the illustrator line ("illus"), the regulation mark and set code boxes
     ("boxes"), the card number ("number"), the rarity mark ("rarity") and the copyright line ("copyright") off where
-    the Pokemon cards print them (Trainers: trainer.FOOTER_SHIFT)."""
+    the Pokemon cards print them (Trainers: trainer.FOOTER_SHIFT). keyline: the illustrator, number and rarity in a
+    keyline, as ex cards print them over their art; Mega Evolution regular cards and Trainers print none.
+    style: FOOTER's parts, as another layout prints them."""
     with layers.kind("footer"):
-        _footer(canvas, card, white_text, rarity, shift or {})
+        _footer(canvas, card, white_text, rarity, shift or {}, keyline, {**FOOTER, **(style or {})})
 
 
 def _set_box(code):
@@ -383,16 +399,20 @@ def footer_boxes(reg_mark, set_code):
     return out
 
 
-def _footer(canvas, card, white_text, rarity, shift):
-    ink, keyline = (WHITE, DARK_KEYLINE) if white_text else (np.array(frame.DARK_INK, np.float32), LIGHT_KEYLINE)
+def _footer(canvas, card, white_text, rarity, shift, keyline, style):
+    ink, edge = (WHITE, DARK_KEYLINE) if white_text else (np.array(frame.DARK_INK, np.float32), LIGHT_KEYLINE)
+    keyline = edge if keyline else None
     dark = np.array([38, 33, 38], np.float32)
     ix, iy = shift.get("illus", (0, 0))
     bx, by = shift.get("boxes", (0, 0))
     nx, ny = shift.get("number", (0, 0))
     rx, ry = shift.get("rarity", (0, 0))
     cx, cy = shift.get("copyright", (0, 0))
-    ts.stamp(canvas, ts.coverage([dict(text=f"Illus. {card['illustrator']}", face=ts.BOLD_ITALIC, size=15.5,
-                                       x=46 + ix, base=953 + iy, xscale=0.97)]), ink, keyline)
+    illus, number = style["illus"], style["number"]
+    mark = {**style["rarity"].get("*", {}), **style["rarity"].get(rarity, {})}
+    ts.stamp(canvas, ts.coverage([dict(text=f"Illus. {card['illustrator']}", face=ts.BOLD_ITALIC,
+                                       size=illus["size"], x=illus["x"] + ix, base=illus["base"] + iy,
+                                       xscale=illus["xscale"])]), ink, keyline)
     if card["reg_mark"]:
         ts.stamp(canvas, ts.rounded_box(44.5 + bx, 960.5 + by, 62.5 + bx, 987.5 + by, 3), dark)
         ts.stamp(canvas, ts.rounded_box(45.6 + bx, 961.6 + by, 61.4 + bx, 986.4 + by, 2.2), WHITE)
@@ -408,13 +428,15 @@ def _footer(canvas, card, white_text, rarity, shift):
                                            base=981 + by, xscale=0.8),
                                       dict(text="EN", face=ts.COND_BOLD, size=11.5, x=left + code_w + 1.5,
                                            base=981 + by, xscale=0.85)]), WHITE)
-        num_x = box_x1 + 8.5
+        num_x = box_x1 + number["gap"]
     else:                                   # promos print no set code: the number follows the regulation mark
         num_x = 71.0 if card["reg_mark"] else 46.0
-    ts.stamp(canvas, ts.coverage([dict(text=card["number"], face=ts.HEAVY_ITALIC, size=16.6, x=num_x + nx,
-                                       base=988 + ny, xscale=1.11)]), ink, keyline)
-    num_right = num_x + ts.text_width(card["number"], ts.HEAVY_ITALIC, 16.6, 1.11)
-    ts.stamp(canvas, rarity_mark(rarity, num_right + 6 + rx, 980.5 + ry), ink, keyline)
+    ts.stamp(canvas, ts.coverage([dict(text=card["number"], face=ts.HEAVY_ITALIC, size=number["size"],
+                                       x=num_x + nx, base=number["base"] + ny, xscale=number["xscale"])]),
+             ink, keyline)
+    num_right = num_x + ts.text_width(card["number"], ts.HEAVY_ITALIC, number["size"], number["xscale"])
+    ts.stamp(canvas, rarity_mark(rarity, num_right + mark["gap"] + rx, mark["base"] + ry, mark["scale"]), ink,
+             keyline)
     ts.stamp(canvas, ts.coverage([dict(text=f"©{card['year']} Pokémon / Nintendo / Creatures / GAME FREAK",
                                        face=ts.REGULAR, size=12.6, x=367 + cx, base=1011 + cy, anchor="c")]),
              COPYRIGHT_GREY)

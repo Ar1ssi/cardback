@@ -125,6 +125,7 @@ def _moves(canvas, card, fill, edge=None, symbol=None):
         return compose.text_block(canvas, card, fill, edge, symbol=symbol)
     return compose.text_block(canvas, card, fill, edge, layout=mecompose.me_layout,
                               name_to_body=mecompose.NAME_TO_BODY, fit_tracking=mecompose.BODY_FIT_TRACK,
+                              min_tracking=mecompose.BODY_MIN_TRACK,
                               cost_r=mecompose.COST_R, cost_dy=mecompose.COST_DY, symbol=symbol)
 
 

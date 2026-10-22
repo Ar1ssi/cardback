@@ -155,8 +155,8 @@ def runs_of(line_words):
 ENERGY_CODES = {"G": "Grass", "R": "Fire", "W": "Water", "L": "Lightning", "P": "Psychic", "F": "Fighting",
                 "D": "Darkness", "M": "Metal", "N": "Dragon", "C": "Colorless"}
 ENERGY_MARK = ""
-# A space no line breaks at: drawn and measured as a space, but part of the word either side (Trainer text keeps a
-# number with the word after it, trainer.glue_numbers).
+# A space no line breaks at: drawn and measured as a space, but part of the word either side (the prints keep a
+# number with the word after it, glue_numbers).
 GLUE = ""
 ENERGY_ADVANCE = 0.93          # the print leaves a symbol 23 px between spaces in 24.9 px body text (130 SV / ME)
 
@@ -204,6 +204,11 @@ def justify(text, size, full_width, natural_tracking, fit_tracking=None):
 
 
 LOOSE_LIMIT = 2.0          # px of letter-spacing past which a composed line counts as badly loose
+
+
+def glue_numbers(text):
+    """A number stays on the line of the word after it ('30 more damage', '1 of your'), as the prints break."""
+    return re.sub(r"(?<!\S)(\d+) (?=\S)", lambda m: m[1] + GLUE, text)
 
 
 def compose_paragraph(text, size, full_width, natural_tracking, min_tracking):
