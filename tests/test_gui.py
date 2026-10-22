@@ -95,6 +95,25 @@ class ImportSet(unittest.TestCase):
                           ("sv01-258", None, "not a Pokémon or Trainer")])
         self.assertEqual([c.get("gen9") for c in out if c.get("layout") == "trainer"], [True, False])
 
+    def test_opened_project_looks_at_skipped_cards_again(self):
+        # me01-117 Forest of Vitality: TCGdex category Trainer (Stadium); saved when Trainers were skipped
+        cards = [{"id": "me01-117", "name": "Forest of Vitality", "skip": "not a Pokémon"},
+                 {"id": "me03-086", "name": "Growing Grass Energy", "skip": "not a Pokémon"},
+                 {"id": "swsh1-156", "name": "Air Balloon", "layout": "trainer"},
+                 {"id": "me04-001", "name": "Weedle", "layout": "modern"}]
+        category = {"me01-117": "Trainer", "me03-086": "Energy"}
+        with mock.patch.object(gui.tcg, "card", side_effect=lambda i: {"id": i, "category": category[i]}):
+            out = gui._current_entries(cards)
+        self.assertEqual(out, [{"id": "me01-117", "name": "Forest of Vitality", "layout": "trainer", "gen9": True},
+                               {"id": "me03-086", "name": "Growing Grass Energy", "skip": "not a Pokémon or Trainer"},
+                               {"id": "swsh1-156", "name": "Air Balloon", "layout": "trainer", "gen9": False},
+                               {"id": "me04-001", "name": "Weedle", "layout": "modern"}])
+
+    def test_skipped_card_stays_when_tcgdex_fails(self):
+        card = {"id": "me01-117", "name": "Forest of Vitality", "skip": "not a Pokémon"}
+        with mock.patch.object(gui.tcg, "card", side_effect=gui.cache.DownloadError("offline")):
+            self.assertEqual(gui._current_entries([card]), [card])
+
     def test_rejects_other_json(self):
         with self.assertRaises(gui.UserError):
             gui.import_set([1, 2])

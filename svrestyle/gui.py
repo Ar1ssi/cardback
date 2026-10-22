@@ -323,17 +323,38 @@ def import_set(data):
         if not edit.valid_card_id(cid) or cid in seen:
             continue
         seen.add(cid)
-        entry = {"id": cid, "name": c.get("name", "")}
-        if c.get("supertype") == "Trainer":
-            entry.update(layout="trainer", gen9=modern.is_modern(cid))
-        elif c.get("supertype") not in (None, "Pokémon", "Pokemon"):
-            entry["skip"] = "not a Pokémon or Trainer"
-        elif modern.is_modern(cid):
-            entry["layout"] = "modern"
-        else:
-            entry["layout"] = "ex" if str(c.get("name", "")).endswith(" V") else "me"
-        out.append(entry)
+        out.append(_set_entry(cid, c.get("name", ""), c.get("supertype")))
     return {"name": data.get("name", ""), "cards": out}
+
+
+def _set_entry(cid, name, supertype):
+    """A set list's entry: the layout the card gets, or why it is skipped. supertype: the export's or TCGdex's."""
+    entry = {"id": cid, "name": name}
+    if supertype == "Trainer":
+        entry.update(layout="trainer", gen9=modern.is_modern(cid))
+    elif supertype not in (None, "Pokémon", "Pokemon"):
+        entry["skip"] = "not a Pokémon or Trainer"
+    elif modern.is_modern(cid):
+        entry["layout"] = "modern"
+    else:
+        entry["layout"] = "ex" if str(name).endswith(" V") else "me"
+    return entry
+
+
+def _current_entries(cards):
+    """A saved list as this version sorts it: projects keep each card's entry from their import, so a card once
+    skipped (Trainers were, before they could be edited) is looked at again. A card TCGdex can't give stays as saved."""
+    out = []
+    for c in cards:
+        if isinstance(c, dict) and c.get("skip") and edit.valid_card_id(c.get("id")):
+            try:
+                c = _set_entry(c["id"], c.get("name", ""), tcg.card(c["id"]).get("category"))
+            except (ValueError, cache.DownloadError):
+                pass
+        elif isinstance(c, dict) and c.get("layout") == "trainer" and "gen9" not in c:
+            c = {**c, "gen9": modern.is_modern(c.get("id"))}
+        out.append(c)
+    return out
 
 
 def zip_renders(items, title=""):
@@ -388,6 +409,8 @@ def load_project(name):
         raise UserError(f"no saved project {name.strip()!r}")
     p = json.loads(f.read_text(encoding="utf-8"))
     p.setdefault("rev", 0)
+    if isinstance(p.get("data"), dict) and isinstance(p["data"].get("cards"), list):
+        p["data"]["cards"] = _current_entries(p["data"]["cards"])
     return p
 
 
