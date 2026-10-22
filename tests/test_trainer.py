@@ -462,6 +462,20 @@ class GuiTrainer(unittest.TestCase):
         self.assertEqual((summary["layout"], summary["type"], summary["card"]["kind"]),
                          ("trainer", "Supporter", "Supporter"))
 
+    def test_gen9_trainers_get_the_trainer_layout(self):
+        # sv01-166 Arven, TCGdex: category Trainer, trainerType Supporter
+        with mock.patch.object(gui.tcg, "card", return_value=tcgdex(id="sv01-166", name="Arven", set={"id": "sv01"})):
+            self.assertEqual(gui.layout_of("sv01-166"), "trainer")
+        arven = trainer_card(id="sv01-166", name="Arven", era="modern")
+        with mock.patch.object(gui, "read", return_value=("trainer", arven)):
+            self.assertTrue(gui.card_summary("sv01-166")["gen9"])
+        with mock.patch.object(gui, "read", return_value=("trainer", arven)),                 mock.patch.object(gui.tcg, "card", return_value=tcgdex(id="sv01-166", name="Arven")):
+            self.assertEqual(gui.card_changes("sv01-166"), ("Arven", []))
+
+    def test_gen9_pokemon_keep_the_modern_layout(self):
+        with mock.patch.object(gui.tcg, "card", return_value={"id": "sv09-080", "category": "Pokemon", "name": "Larvitar"}):
+            self.assertEqual(gui.layout_of("sv09-080"), "modern")
+
     def test_no_holofoil_for_trainers(self):
         with mock.patch.object(gui, "read", return_value=("trainer", trainer_card())), \
                 mock.patch.object(gui.tcg, "TCGLIVE", "x"), self.assertRaises(gui.UserError):

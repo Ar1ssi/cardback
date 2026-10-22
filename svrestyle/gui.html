@@ -146,7 +146,7 @@
       <div id="rowMenu" class="rowmenu" role="menu" tabindex="-1" hidden></div>
       <p id="undoBar" class="undo" hidden><span id="undoText"></span><button id="undoBtn" type="button" class="small">Undo</button></p>
       <p class="hint">Every card you load or add joins this list; × takes one out (with its edits). The list and your edits save themselves after every change (as a dated project until you name it, top right) and open on their own next time.</p>
-      <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Older Trainers become Scarlet &amp; Violet Trainers; newer Trainers and Energy are listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
+      <p class="hint">Older cards are restyled; Scarlet &amp; Violet and Mega Evolution cards keep their look and only what you edit is set again. Older Trainers become Scarlet &amp; Violet Trainers; Scarlet &amp; Violet and Mega Evolution Trainers keep their art and their text is set again. Energy is listed but skipped. Edits you make to a card are kept for the zip; with holofoil on, the zip also holds each card's foil textures.</p>
     </section>
 
     <div id="editor" hidden>
@@ -373,11 +373,11 @@ async function loadCard(id) {
 }
 
 function fillForm() {
-  const { layout, name, id } = state.current;
+  const { layout, name, id, gen9 } = state.current;
   const card = state.edits[id];
   $("editor").hidden = false;
   $("layoutBadge").textContent = { ex: "→ Scarlet & Violet ex", me: "→ Mega Evolution", modern: "edited in place",
-    trainer: "→ Scarlet & Violet Trainer" }[layout];
+    trainer: gen9 ? "Trainer, set again" : "→ Scarlet & Violet Trainer" }[layout];
   $("cardTitle").textContent = `${id} · ${name}`;
   showFor(layout);
   for (const k of ["prefix", "name", "hp", "evolves_from", "portrait", "illustrator", "flavor", "character", "effect"]) $(k).value = card[k] ?? "";
@@ -1092,7 +1092,7 @@ function drawSet() {
       el("span", {},
         ...(state.changes[c.id] && state.changes[c.id].length ? [el("span", { class: "badge changed-count", title: state.changes[c.id].join("\n") },
           `${state.changes[c.id].length} changed`), " "] : []),
-        el("span", { class: "badge" }, (c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit", trainer: "→ Trainer" }[c.layout])
+        el("span", { class: "badge" }, (c.skip ? c.skip : { ex: "→ ex", me: "→ Mega Evolution", modern: "edit", trainer: c.gen9 ? "edit" : "→ Trainer" }[c.layout])
           + (state.rendered.has(c.id) ? " ✓" : "")))),
     el("button", { class: "remove", title: `Remove ${c.name} from the set`, "aria-label": `Remove ${c.name}`,
                    onclick: () => removeCard(c.id) }, "×"))));

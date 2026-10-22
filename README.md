@@ -171,7 +171,8 @@ edit, in exactly the card layout the command line produces; download one PNG, or
 zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
 A Trainer has its own fields: name, a Supporter's character, kind (Item, Supporter, Stadium or Tool), HP (fossils and
 dolls), illustrator and effect text (a paragraph per line), and its Abilities or attacks; holofoil is for Pokemon
-only, and a custom set's Scarlet & Violet Trainers are listed as already Gen 9.
+only. A Scarlet & Violet or Mega Evolution Trainer is edited too: it keeps its art and is set again, text and
+all, on its kind's Gen 9 frame (an inline ex logo in its text prints as plain "ex").
 
 The foil preview is TCG Live's own: its TPCi/Cards3D shaders (the extract's WebApp translation to WebGL,
 `WebApp/web/data/foil/`) and MAT_Cards3D_* materials, with their spectrum, shine, glitter and pattern textures

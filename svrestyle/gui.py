@@ -1,8 +1,8 @@
 """Local web GUI: load a card, edit its name, HP, abilities, attacks (costs, damage, text), weakness, resistance and
 retreat, and render it in the ex or Mega Evolution layout (Scarlet & Violet and Mega Evolution cards: edited in
-place, see modern.py), with its TCG Live holofoil re-made to fit the edits; or load an older Trainer (Item,
-Supporter, Stadium, Pokemon Tool), edit its name, type and text, and render it as a Scarlet & Violet Trainer
-(trainer.py); or import a custom-set export and restyle or edit every Pokemon and Trainer in it. Standard library
+place, see modern.py), with its TCG Live holofoil re-made to fit the edits; or load a Trainer (Item, Supporter,
+Stadium, Pokemon Tool), edit its name, type and text, and render it as a Scarlet & Violet Trainer (trainer.py;
+a Scarlet & Violet or Mega Evolution Trainer keeps its art and is set again on its kind's frame); or import a custom-set export and restyle or edit every Pokemon and Trainer in it. Standard library
 only; serves on 127.0.0.1.
 
   python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--no-browser]
@@ -106,14 +106,14 @@ class Render(tuple):
 def layout_of(card_id):
     if not edit.valid_card_id(card_id):
         raise UserError(f"{card_id!r} is not a TCGdex card id (like swsh6-99 or sm10-19)")
-    if modern.is_modern(card_id):
-        return "modern"
     try:
         data = tcg.card(card_id)
     except (ValueError, cache.DownloadError) as e:
         raise UserError(str(e)) from e
-    if data.get("category") == "Trainer":
+    if data.get("category") == "Trainer":       # a Scarlet & Violet Trainer too: set again on its own kind's frame
         return "trainer"
+    if modern.is_modern(card_id):
+        return "modern"
     return "ex" if data.get("name", "").endswith(" V") else "me"
 
 
@@ -133,7 +133,7 @@ def read(card_id):
 def card_summary(card_id):
     layout, card = read(card_id)
     return {"id": card_id, "layout": layout, "name": f"{card['prefix']} {card['name']}".strip(),
-            "type": card.get("type", card.get("kind")), "card": edit.editable(card)}
+            "type": card.get("type", card.get("kind")), "gen9": modern.is_modern(card_id), "card": edit.editable(card)}
 
 
 def _png(arr, mode=None):
@@ -194,7 +194,7 @@ def card_changes(card_id, edits=None, style="hybrid", attacks=True):
     layout, original = read(card_id)
     card = edit.apply(original, edits) if edits else original
     notes = []
-    if layout in LAYOUT_NOTES:
+    if layout in LAYOUT_NOTES and not modern.is_modern(card_id):     # a Gen 9 Trainer is set again, not restyled
         notes.append(LAYOUT_NOTES[layout] + (" (translucent type panel)" if layout == "ex" and style == "panel" else ""))
         if not attacks and layout != "trainer":
             notes.append("Abilities and attacks left off")
@@ -325,10 +325,7 @@ def import_set(data):
         seen.add(cid)
         entry = {"id": cid, "name": c.get("name", "")}
         if c.get("supertype") == "Trainer":
-            if modern.is_modern(cid):
-                entry["skip"] = "a Scarlet & Violet Trainer already"
-            else:
-                entry["layout"] = "trainer"
+            entry.update(layout="trainer", gen9=modern.is_modern(cid))
         elif c.get("supertype") not in (None, "Pokémon", "Pokemon"):
             entry["skip"] = "not a Pokémon or Trainer"
         elif modern.is_modern(cid):
