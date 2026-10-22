@@ -12,6 +12,8 @@ was edited is taken off and set again in the same layouts the restyles use.
   badge). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular cards share
   it), ex cards in the Absol ex layout, in the old block's own ink (print_ink: its fill colour, and its keyline when
   the text is outlined over full art).
+- Type (regular cards): the card's print is lifted off its type's frame and set on the new type's (retype.py), in the
+  new type's ink; what is set again takes that ink too.
 What is taken off is rebuilt by LaMa (cached per card and set of edited parts), except in the weakness row, which
 is filled along its pixel rows (fill_band). Energy written {G}, {R} ... in effect text prints as its symbol.
 """
@@ -21,13 +23,14 @@ import warnings
 import cv2
 import numpy as np
 
-from . import cache, compose, edit, frame, inpaint, layers, mecompose, meframe, stage, tcg
+from . import cache, compose, edit, frame, inpaint, layers, mecompose, meframe, retype, stage, tcg
 from .imaging import dilate, fill_holes, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
 MODERN = ("sv", "me")
 GROUPS = {"name": ("prefix", "name", "hp"), "moves": ("abilities", "attacks"),
-          "row": ("weakness", "resistance", "retreat"), "stage": ("stage", "evolves_from", "portrait")}
+          "row": ("weakness", "resistance", "retreat"), "stage": ("stage", "evolves_from", "portrait"),
+          "type": ("type",)}
 
 # Abilities and attacks sit in this zone: x0, y0, x1, y1 (under the window bar / Pokedex strip, above the weakness
 # row).
@@ -565,6 +568,19 @@ def _block_colour(scan, original):
     return ink_colour(scan, strokes & ~dilate(drawn > 0.1, 6))
 
 
+def still_printed(original, card, groups):
+    """The card as it is still printed once the edited groups are taken off: what retype keeps of its print."""
+    shown = dict(original)
+    if "moves" in groups:
+        shown.update(abilities=[], attacks=[])
+    if "row" in groups:
+        shown.update({side: None for side in _row_sides(original, card)})
+        shown["retreat"] = min(original["retreat"], card["retreat"])
+    if "stage" in groups and not card["stage"]:
+        shown["stage"] = 0
+    return shown
+
+
 def compose_card(card_id, card, original=None):
     """-> (RGBA float32 733x1024, report). card: read_card's dict, edited; original: as printed (default: read)."""
     original = original or read_card(card_id)
@@ -572,8 +588,14 @@ def compose_card(card_id, card, original=None):
     scan = tcg.scan(card_id)
     if not groups:
         return scan.copy(), {"card": card, "edited": [], "taken_off": None}
-    canvas, mask = cleaned(card_id, original, groups, card)
-    canvas = canvas.copy()
+    parts = tuple(g for g in groups if g != "type")
+    if parts:
+        canvas, mask = cleaned(card_id, original, parts, card)
+        canvas = canvas.copy()
+    else:
+        canvas, mask = scan.copy(), np.zeros((H, W), bool)
+    if "type" in groups:
+        canvas = retype.recolour(canvas, still_printed(original, card, groups), card["type"])
     if "stage" in groups:
         own = lambda: stage.disc_sprite(card_id)
         printed = bool(original["stage"])
@@ -582,12 +604,14 @@ def compose_card(card_id, card, original=None):
         logo = card_logo(scan, original) if card["family"] == "ex" else None
         _name(canvas, card, logo)
     if "moves" in groups:
-        fill, edge = print_ink(scan, MOVES_ZONE[original["family"]]) or (_block_colour(scan, original), None)
+        fill, edge = ((retype.ink(card["type"]), None) if "type" in groups else
+                      print_ink(scan, MOVES_ZONE[original["family"]]) or (_block_colour(scan, original), None))
         shrink = _moves(canvas, card, fill, edge)
         if shrink is not None and shrink < 1:
             warnings.warn(f"{card_id}: ability/attack text set at {shrink:.0%} to fit")
     if "row" in groups:
-        fill, edge = print_ink(scan, ROW_LABELS) or (_row_colour(scan, original, card), None)
+        fill, edge = ((retype.ink(card["type"]), None) if "type" in groups else
+                      print_ink(scan, ROW_LABELS) or (_row_colour(scan, original, card), None))
         _row(canvas, row_on(original, card), fill, edge)
     canvas[..., 3] = scan[..., 3]
     return canvas, {"card": card, "edited": list(groups), "taken_off": mask}

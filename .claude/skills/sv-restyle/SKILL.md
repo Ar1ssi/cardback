@@ -11,7 +11,9 @@ or `SVRESTYLE_TCGLIVE`: the game's own 1024x1024 card fronts, cropped to the sam
 scans in `svrestyle/refs.py`); regular Pokemon -> Mega Evolution regular card (frame built from me1/me2 scans listed
 in `svrestyle/meframe.py`); Trainer -> Scarlet & Violet Trainer (frame per kind from SV / ME prints,
 `svrestyle/trainerframe.py`; old art windows per era in `svrestyle/trainer.py`, registered on pre-HGSS scans by
-`svrestyle/oldwindow.py`). Cards already from Scarlet & Violet or Mega Evolution need nothing.
+`svrestyle/oldwindow.py`). Cards already from Scarlet & Violet or Mega Evolution need nothing. In the editor, a
+regular (one-Prize) Pokemon can change type: restyled cards take the new type's frame, SV / ME cards are recoloured
+on their own print (`svrestyle/retype.py`).
 
 ## 1. Setup (once per machine/session)
 1. `pip install numpy pillow opencv-python-headless` and `pip install torch --index-url https://download.pytorch.org/whl/cpu`

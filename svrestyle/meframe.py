@@ -16,7 +16,7 @@ from . import cache, inpaint, tcg
 from .imaging import dilate, disc_sprite, fill_holes, hsv, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
-ASSET_VERSION = "1"
+ASSET_VERSION = "2"
 
 # Regular (non-ex) cards per type from Mega Evolution (me01) and Phantasmal Flames (me02). Cards of one type share
 # the same bar, panel and footer texture, so a pixel hidden by text on one card is taken from another. The first
@@ -51,6 +51,11 @@ DEX_STRIP = (96, 486, 652, 508)
 PANEL = (44, 512, 690, 870)
 ROW_VALUES = [(112, 880, 202, 910), (302, 880, 404, 910), (515, 880, 700, 910)]   # weakness/resistance/retreat
 FOOTER = (30, 914, 703, 995)
+# The weakness row's lower rule (silver, its shadow fading into the panel under it) and the panel's bottom rim: rows
+# y0, y1. They lie under every card's grown print mask, so the fills blur them; they print the same on every card of
+# a type, so template() takes them from the median of the type's prints.
+LOWER_RULE = (911, 922)
+PANEL_RIM = (989, 998)
 COPYRIGHT = (120, 998, 620, 1021)
 # Where each band's fill may take its colour from (row between its lines, panel above the border, border).
 CONTEXT = {ROW_VALUES[0]: (30, 880, 703, 910), FOOTER: (30, 914, 703, 995), COPYRIGHT: (0, 998, W, 1024)}
@@ -195,8 +200,17 @@ def template(type_name):
             feather = cv2.GaussianBlur(fill.astype(np.float32), (0, 0), 1.5)[..., None] * fill[..., None]
             filled[..., :3] = filled[..., :3] * (1 - feather) + (colour + 0.7 * noise) * feather
         clean = filled
+    for rows in (LOWER_RULE, PANEL_RIM):
+        clean[rows[0]:rows[1], :, :3] = _median_rows(ids, rows)
     save_rgba(clean, out)
     return clean
+
+
+def _median_rows(ids, rows):
+    """Rows y0..y1 of the given cards' prints, each pixel their median: what one card prints over there, the
+    others do not."""
+    y0, y1 = rows
+    return np.median(np.stack([tcg.scan(i)[y0:y1, :, :3] for i in ids]), axis=0)
 
 
 def stage_sprite(stage):

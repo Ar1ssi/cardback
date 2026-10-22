@@ -156,7 +156,9 @@
           <div data-pokemon><label for="prefix">Prefix (Galarian, Hisuian…)</label><input id="prefix" type="text"></div>
           <div><label for="name">Name</label><input id="name" type="text"></div>
           <div class="narrow"><label for="hp">HP</label><input id="hp" type="text" inputmode="numeric"></div>
+          <div class="narrow" id="typeBox"><label for="typeSel">Type</label><select id="typeSel"></select></div>
         </div>
+        <p class="hint" id="typeHint">Regular Pokémon (one Prize) can change type: the frame, the name-bar icon and the text colour follow. Attack costs, weakness and resistance stay as they are; change them too if the new type needs it.</p>
         <div class="row" data-trainer>
           <div class="narrow"><label for="kindSel">Trainer type</label>
             <select id="kindSel"><option value="Item">Item</option><option value="Supporter">Supporter</option><option value="Stadium">Stadium</option><option value="Tool">Pokémon Tool</option></select></div>
@@ -381,6 +383,9 @@ function fillForm() {
   for (const k of ["prefix", "name", "hp", "evolves_from", "portrait", "illustrator", "flavor", "character", "effect"]) $(k).value = card[k] ?? "";
   $("kindSel").value = card.kind || "Item";
   drawKind();
+  // only regular Pokémon carry a type the editor may change (an ex's frame is its own)
+  $("typeBox").hidden = $("typeHint").hidden = !("type" in card);
+  if ("type" in card) $("typeSel").value = card.type;
   $("stageSel").value = String(card.stage || 0);
   drawStage();
   setSide("weak", card.weakness, "×2");
@@ -504,6 +509,7 @@ function readForm() {
     return;
   }
   for (const k of ["prefix", "name", "hp", "illustrator"]) card[k] = $(k).value;
+  if ("type" in card) card.type = $("typeSel").value;
   card.stage = Number($("stageSel").value);
   card.evolves_from = $("evolves_from").value;
   card.portrait = $("portrait").value.trim();
@@ -1301,6 +1307,7 @@ async function init() {
   document.addEventListener("input", (e) => {
     if (e.target.matches("textarea, input[type=text]") && e.target.id !== "cardId") accentPokemon(e.target);
   }, true);
+  $("typeSel").replaceChildren(...state.meta.energy.map((t) => el("option", { value: t }, t)));
   for (const sel of [$("weakType"), $("resType")]) {
     sel.replaceChildren(el("option", { value: "" }, "None"), ...state.meta.energy.map((t) => el("option", { value: t }, t)));
   }
@@ -1352,6 +1359,7 @@ async function init() {
   for (const id of ["prefix", "name", "hp", "evolves_from", "illustrator", "flavor", "character", "effect"])
     $(id).addEventListener("input", changed);
   $("kindSel").addEventListener("change", () => { drawKind(); changed(); });
+  $("typeSel").addEventListener("change", changed);
   $("portrait").addEventListener("change", changed);         // a card id: render once it is typed in full
   $("stageSel").addEventListener("change", () => {
     drawStage();

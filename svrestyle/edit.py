@@ -3,6 +3,7 @@
 A card dict comes from compose.read_card (ex layout), mecompose.read_card (Mega Evolution layout) or
 trainer.read_card (Trainers: they have a "kind" and no retreat). editable() picks the fields shown in the editor;
 apply() writes edited values back onto a copy after checking them, so the composers only ever see well-formed data.
+Regular Pokemon (family "regular": one Prize, no rule box) can change type; ex cards keep theirs.
 """
 import copy
 import re
@@ -46,11 +47,18 @@ def is_trainer(card):
     return "kind" in card
 
 
+def retypes(card):
+    """Whether the card's type can be changed: regular Pokemon only (an ex's frame and rule box are its own)."""
+    return card.get("family") == "regular"
+
+
 def editable(card):
     """The editor's view of a card (plain JSON)."""
     if is_trainer(card):
         return _trainer_editable(card)
     out = {k: card.get(k, "") for k in SCALAR if k in card}
+    if retypes(card):
+        out["type"] = card["type"]
     out["abilities"], out["attacks"] = _blocks_view(card)
     for side in ("weakness", "resistance"):
         v = card.get(side)
@@ -177,6 +185,10 @@ def apply(card, edits):
     if "hp" in edits:
         if not re.fullmatch(r"\d{1,3}0", out["hp"]):
             raise ValueError("hp: a multiple of 10, up to 9990")
+    if "type" in edits and edits["type"] != card["type"]:
+        if not retypes(card):
+            raise ValueError("type: only regular Pokémon (one Prize) can change type")
+        out["type"] = _energy(edits["type"], "type")
     if "abilities" in edits:
         out["abilities"] = [_ability(a, i) for i, a in enumerate(_list(edits["abilities"], "abilities",
                                                                         MAX_ABILITIES))]
@@ -300,6 +312,8 @@ def changes(before, after):
         out.append(_was("Name", name(a), name(b)))
     if a.get("hp") != b.get("hp"):
         out.append(_was("HP", a.get("hp"), b.get("hp")))
+    if a.get("type") != b.get("type"):
+        out.append(_was("Type", a.get("type"), b.get("type")))
     if a.get("stage", 0) != b.get("stage", 0):
         out.append(_was("Stage", STAGE_NAMES[a.get("stage", 0)], STAGE_NAMES[b.get("stage", 0)]))
     if b.get("stage") and a.get("evolves_from") != b.get("evolves_from"):

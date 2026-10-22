@@ -366,6 +366,23 @@ def footer(canvas, card, white_text, rarity="double", shift=None):
         _footer(canvas, card, white_text, rarity, shift or {})
 
 
+def _set_box(code):
+    """Widths of the set code and "EN", and the right edge of the set box around them."""
+    code_w = ts.text_width(code, ts.COND_BOLD, 19.5, 0.8)
+    en_w = ts.text_width("EN", ts.COND_BOLD, 11.5, 0.85)
+    return code_w, en_w, max(115.5, 73 + code_w + 1.5 + en_w + 3)
+
+
+def footer_boxes(reg_mark, set_code):
+    """Coverage of the footer's regulation-mark and set boxes, where the Pokemon cards print them."""
+    out = np.zeros((H, W), np.float32)
+    if reg_mark:
+        out = np.maximum(out, ts.rounded_box(44.5, 960.5, 62.5, 987.5, 3))
+    if set_code:
+        out = np.maximum(out, ts.rounded_box(67.5, 960.5, _set_box(set_code)[2], 987.5, 3.2))
+    return out
+
+
 def _footer(canvas, card, white_text, rarity, shift):
     ink, keyline = (WHITE, DARK_KEYLINE) if white_text else (np.array(frame.DARK_INK, np.float32), LIGHT_KEYLINE)
     dark = np.array([38, 33, 38], np.float32)
@@ -382,9 +399,7 @@ def _footer(canvas, card, white_text, rarity, shift):
         ts.stamp(canvas, ts.coverage([dict(text=card["reg_mark"], face=ts.COND_BOLD, size=19.5, x=53.6 + bx,
                                            base=981 + by, anchor="c")]), dark)
     if card["set_code"]:
-        code_w = ts.text_width(card["set_code"], ts.COND_BOLD, 19.5, 0.8)
-        en_w = ts.text_width("EN", ts.COND_BOLD, 11.5, 0.85)
-        box_x1 = max(115.5, 73 + code_w + 1.5 + en_w + 3)
+        code_w, en_w, box_x1 = _set_box(card["set_code"])
         ts.stamp(canvas, ts.rounded_box(67.5 + bx, 960.5 + by, box_x1 + bx, 987.5 + by, 3.2), dark)
         ts.stamp(canvas, ts.rounded_box(69.0 + bx, 962.0 + by, box_x1 - 1.5 + bx, 986.0 + by, 2.4), WHITE)
         ts.stamp(canvas, ts.rounded_box(70.2 + bx, 963.2 + by, box_x1 - 2.7 + bx, 984.8 + by, 1.8), [28, 24, 28])

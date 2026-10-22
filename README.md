@@ -102,6 +102,24 @@ lettering is swapped, so each card keeps its own tab and border. On the holofoil
 SV ex frame's silver value on ex cards and are left out elsewhere; the portrait, lettering and "Evolves from" line
 are cut out.
 
+### Type (regular Pokemon)
+
+A regular Pokemon (one Prize: no ex, V or other rule) can change type in the editor. A card restyled as a Mega
+Evolution card is simply set on the new type's frame. A Scarlet & Violet or Mega Evolution card keeps its own print
+(`retype.py`): every regular card of a type prints the same frame (`meframe.template`), so what the card prints that
+its type's frame does not (words, numbers, icons, the footer's boxes, the Stage pieces, a Trainer's medallion) is
+found against its own background and set on the new type's frame. Words take the new type's ink, each pixel at its
+share of ink (Darkness prints white, the others dark); everything else keeps its colours, its rim blended onto the new
+ground by its contrast. Energy icons are found from the card's data (its costs matched in the cost column, the
+weakness row's icons where the composers set them); the Ability badge and red Ability names by their red, the names
+in a white keyline on a dark panel and none on a light one, as the Mega Evolution layout sets them. Silver parts
+(border, Pokedex strip, the row's rules, the Stage tab) stay as printed. Attack costs, weakness and resistance are
+left as they are: change them too if the new type needs it.
+
+The Mega Evolution frame templates now take the weakness row's lower rule and the panel's bottom rim from the median
+of the type's prints (every card's print reaches over them, and the fills blurred them away); the rebuilt templates
+are cached as `me-v2`.
+
 ### Trainers
 
 Older Items, Supporters, Stadiums and Pokemon Tools become Scarlet & Violet / Mega Evolution Trainers
@@ -141,7 +159,7 @@ serves the port) and shares it through a Cloudflare quick tunnel (needs `cloudfl
 changes every time the tunnel starts.
 
 Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. For each
-card you can change the name (and regional prefix), HP, stage, "Evolves from" and portrait, illustrator and flavour
+card you can change the name (and regional prefix), HP, type (regular Pokemon), stage, "Evolves from" and portrait, illustrator and flavour
 text, add, remove and
 reorder abilities and attacks, pick each attack's energy cost from the type icons, set its damage (a number with an
 optional +, × or −) and text, and set weakness (type and ×2 / +10…+40), resistance (type and −10…−40) and
@@ -162,7 +180,7 @@ render's front, plates, etch and cold foil (`svrestyle/static/foil.js`, the same
 The card turns with the pointer for the light, else sways slowly. three.js 0.185.0 is vendored in
 `svrestyle/static/three/` (MIT, LICENSE.txt there); the page needs WebGL2.
 
-Changes: every render lists what differs from the printed card (the restyle itself, name, HP, stage, "Evolves
+Changes: every render lists what differs from the printed card (the restyle itself, name, HP, type, stage, "Evolves
 from", portrait, each ability and attack by name: cost, damage, text, added, removed, reordered; weakness,
 resistance, retreat, illustrator, flavour text); the card list counts them per card. View the card edited, as
 printed, or both side by side. "Changelog (.md)" writes every card's changes as Markdown, and each zip download
@@ -212,6 +230,8 @@ How it works, module by module:
 - `meframe.py` - blank Mega Evolution frames: Mega Evolution cards of one type share the same bar, panel and footer
   texture, so each printed pixel of a base card is taken from another card of the type that has nothing printed
   there (LaMa only for what every card covers); plus the silver Stage 1 / Stage 2 pieces from Kadabra and Alakazam.
+- `retype.py` - a Scarlet & Violet / Mega Evolution regular card's print lifted off its type's frame and set on
+  another's (see Type above).
 - `stage.py` - Stage pieces, evolution portrait (found on TCGdex) and "Evolves from" line, for every layout.
 - `edit.py` / `gui.py` / `gui.html` - the editor: which fields can change and the checks on them, the local HTTP
   server, and the page.

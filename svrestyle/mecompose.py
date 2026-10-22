@@ -129,7 +129,7 @@ def read_card(card_id):
         b["effect"] = printed(b.get("effect"))
         b["name"] = printed(b.get("name"))
     return {
-        "id": card_id, "type": types[0], "prefix": prefix, "name": name[len(prefix):].strip(),
+        "id": card_id, "family": "regular", "type": types[0], "prefix": prefix, "name": name[len(prefix):].strip(),
         "hp": str(c.get("hp", "")), "stage": {"Basic": 0, "Stage1": 1, "Stage2": 2}[c["stage"]],
         "evolves_from": printed(c.get("evolveFrom")), "portrait": "", "abilities": c.get("abilities") or [],
         "attacks": c.get("attacks") or [], "weakness": (c.get("weaknesses") or [None])[0],
