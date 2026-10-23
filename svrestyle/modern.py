@@ -103,6 +103,9 @@ def read_card(card_id):
         "abilities": c.get("abilities") or [], "attacks": c.get("attacks") or [],
         "weakness": (c.get("weaknesses") or [None])[0], "resistance": (c.get("resistances") or [None])[0],
         "retreat": int(c.get("retreat") or 0),
+        # not drawn (the print keeps its own footer); carried for the ptcg-sim export (export.py)
+        "illustrator": c.get("illustrator") or "", "reg_mark": c.get("regulationMark") or "",
+        "rarity": mecompose.rarity_symbol(c.get("rarity")),
     }
 
 

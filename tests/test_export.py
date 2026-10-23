@@ -157,3 +157,55 @@ class Zip(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Http(unittest.TestCase):
+    """The two routes over HTTP: /api/export-set (rendering mocked) and /api/suggest (no key)."""
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        cls.server = gui.make_server(0)
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def call(self, path, body):
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(self.base + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.headers.get("Content-Type"), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("Content-Type"), e.read()
+
+    def test_export_set(self):
+        fake = gui.Render(png_bytes(), [], "me")
+        with mock.patch.object(gui, "read", return_value=("me", pokemon())), \
+                mock.patch.object(gui, "render", return_value=fake), \
+                mock.patch.object(gui, "changelog", return_value="# log"):
+            status, ctype, body = self.call("/api/export-set", {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"})
+            self.assertEqual((status, ctype), (200, "application/zip"))
+            names = zipfile.ZipFile(io.BytesIO(body)).namelist()
+            self.assertEqual(sorted(names), ["customhbw/001/high.webp", "customhbw/001/low.webp", "customhbw/CHANGELOG.md",
+                                             "customhbw/set.json"])
+            status, _, body = self.call("/api/export-set", {"items": [{"id": "swsh3-88"}], "code": "bad code"})
+            self.assertEqual(status, 400)
+            self.assertIn("set code", json.loads(body)["error"])
+            self.assertEqual(self.call("/api/export-set", {"items": [], "code": "HBW"})[0], 400)
+
+    def test_suggest_without_a_key_is_a_502_and_meta_says_so(self):
+        import urllib.request
+        with mock.patch.dict("os.environ", {}, clear=True):
+            status, _, body = self.call("/api/suggest", {"text": "flip coin", "kind": "attack"})
+            self.assertEqual(status, 502)
+            self.assertIn("ANTHROPIC_API_KEY", json.loads(body)["error"])
+            with urllib.request.urlopen(self.base + "/api/meta", timeout=10) as r:
+                meta = json.loads(r.read())
+        self.assertFalse(meta["suggest"])
+        self.assertIn("Active Pokémon", meta["terms"])
+        self.assertEqual(self.call("/api/suggest", {"text": "", "kind": "attack"})[0], 400)

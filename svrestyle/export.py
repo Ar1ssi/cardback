@@ -50,14 +50,20 @@ def card_name(card, layout="me"):
     return f"{name} ex" if is_ex(card, layout) else name
 
 
+def straight(text):
+    """TCGdex writes a straight apostrophe (the card prints a curly one, which edit.printed makes); the simulator's
+    parsers read TCGdex text, so the export writes TCGdex's."""
+    return (text or "").replace("’", "'")
+
+
 def _attack(a):
     damage = a.get("damage") or ""
-    return {"cost": list(a.get("cost") or []), "name": a.get("name", ""), "effect": a.get("effect") or "",
+    return {"cost": list(a.get("cost") or []), "name": straight(a.get("name", "")), "effect": straight(a.get("effect")),
             "damage": int(damage) if isinstance(damage, str) and damage.isdigit() else damage}
 
 
 def _ability(a):
-    return {"type": "Ability", "name": a.get("name", ""), "effect": a.get("effect", "")}
+    return {"type": "Ability", "name": straight(a.get("name", "")), "effect": straight(a.get("effect", ""))}
 
 
 def _side(v):
@@ -90,7 +96,7 @@ def mega_stage(card):
 def tcgdex_record(card, layout, set_id, local_id, source):
     """One card of the editor (edit.apply's result) as a TCGdex card record for the simulator.
     source: {id, edits, style, attacks, foil} - what made it, kept under "custom" for re-import."""
-    rec = {"id": f"{set_id}-{local_id}", "localId": local_id, "name": card_name(card, layout),
+    rec = {"id": f"{set_id}-{local_id}", "localId": local_id, "name": straight(card_name(card, layout)),
            "image": f"{IMAGE_ROOT}/{set_id}/{local_id}", "illustrator": card.get("illustrator") or "",
            "regulationMark": card.get("reg_mark") or "", "legal": {"standard": False, "expanded": False},
            "custom": {"source": source["id"], "layout": layout, "edits": source.get("edits") or {},
@@ -98,7 +104,7 @@ def tcgdex_record(card, layout, set_id, local_id, source):
                       "foil": bool(source.get("foil"))}}
     if edit.is_trainer(card):
         rec.update(category="Trainer", trainerType=card["kind"],
-                   effect="\n\n".join(p for p in card.get("effect", "").split("\n") if p.strip()),
+                   effect="\n\n".join(straight(p) for p in card.get("effect", "").split("\n") if p.strip()),
                    rarity=RARITY.get(card.get("rarity"), "Uncommon"))
         if card.get("hp"):
             rec["hp"] = int(card["hp"])
@@ -116,11 +122,11 @@ def tcgdex_record(card, layout, set_id, local_id, source):
                retreat=int(card.get("retreat") or 0),
                rarity="Double rare" if is_ex(card, layout) else RARITY.get(card.get("rarity"), "Rare"))
     if stage:
-        rec["evolveFrom"] = card.get("evolves_from") or ""
+        rec["evolveFrom"] = straight(card.get("evolves_from"))
     if is_ex(card, layout):
         rec["suffix"] = "ex"
     if card.get("flavor"):
-        rec["description"] = card["flavor"]
+        rec["description"] = straight(card["flavor"])
     return rec
 
 
