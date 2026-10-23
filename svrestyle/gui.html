@@ -142,6 +142,10 @@
       <h2><span id="setName">Cards</span>
         <span class="tools"><button id="renderAllBtn" class="small">Render all</button><button id="changelogBtn" class="small" title="Every card's changes from its printed card, as Markdown">Changelog (.md)</button><button id="zipBtn" class="small primary">Download all (.zip)</button></span></h2>
       <div class="addrow">
+        <input id="setCode" type="text" maxlength="5" placeholder="Set code for ptcg-sim, 2–5 capitals (HBW)" aria-label="Set code" autocomplete="off" style="max-width: 300px">
+        <button id="exportSetBtn" type="button" class="small primary" disabled title="Type a set code first">Download for ptcg-sim (.zip)</button>
+      </div>
+      <div class="addrow">
         <input id="addIds" type="text" placeholder="Add cards: TCGdex ids, e.g. sv10.5b-001, swsh5-92" aria-label="Card ids to add">
         <button id="addBtn" type="button" class="small">Add</button>
       </div>
@@ -749,12 +753,13 @@ async function showFoil() {
 const SYNC_DELAY = 300;
 const CLIENT = (window.crypto && crypto.randomUUID && crypto.randomUUID()) || Math.random().toString(36).slice(2);
 const sameJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-const emptyData = () => ({ version: 1, setName: "", cards: [], edits: {}, options: {}, current: null, foil: false });
+const emptyData = () => ({ version: 1, setName: "", cards: [], edits: {}, options: {}, current: null, foil: false, code: "" });
 const withDefaults = (data) => ({ ...emptyData(), ...(data || {}) });
 
 function projectData() {
   return { version: 1, setName: $("setName").textContent, cards: state.setCards, edits: state.edits,
-           options: state.options, current: state.current ? state.current.id : null, foil: $("foilOn").checked };
+           options: state.options, current: state.current ? state.current.id : null, foil: $("foilOn").checked,
+           code: $("setCode").value };
 }
 
 // What `local` changed from `base`, as a patch (null: nothing). The server's apply_patch reads it the same way.
@@ -926,6 +931,7 @@ async function openProject(name) {
     $("undoBar").hidden = true;
     $("setName").textContent = data.setName || p.name;
     $("foilOn").checked = !!data.foil && !$("foilOn").disabled;
+    $("setCode").value = data.code || "";
     $("projectSel").value = p.name;
     $("saved").textContent = `Opened “${p.name}”`;
     drawSet();
@@ -1139,6 +1145,11 @@ async function importSet(file) {
     const known = new Set(state.setCards.map((c) => c.id));
     state.setCards.push(...data.cards.filter((c) => !known.has(c.id)));
     $("setName").textContent = data.name || file.name;
+    // a set.json this editor exported brings its edits, options and set code back
+    for (const [id, edits] of Object.entries(data.edits || {})) if (!known.has(id)) state.edits[id] = edits;
+    for (const [id, options] of Object.entries(data.options || {})) if (!known.has(id)) state.options[id] = options;
+    if (data.code && !$("setCode").value) $("setCode").value = data.code;
+    if (data.foil && !$("foilOn").disabled) $("foilOn").checked = true;
     drawSet();
     autosave();
     const first = data.cards.find((c) => !c.skip);
@@ -1170,7 +1181,18 @@ function drawSet() {
     el("button", { class: "remove", title: `Remove ${c.name} from the set`, "aria-label": `Remove ${c.name}`,
                    onclick: () => removeCard(c.id) }, "×"))));
   $("zipBtn").disabled = $("renderAllBtn").disabled = $("changelogBtn").disabled = todo === 0;
+  drawExportButton(todo);
   markActive();
+}
+
+// The ptcg-sim export needs a set code (2–5 capitals or digits: the code a decklist prints, "4 Tyranitar HBW 1").
+const SET_CODE = /^[A-Z0-9]{2,5}$/;
+function drawExportButton(todo = state.setCards.filter((c) => !c.skip).length) {
+  const code = $("setCode").value;
+  const ok = SET_CODE.test(code) && todo > 0;
+  $("exportSetBtn").disabled = !ok;
+  $("exportSetBtn").title = ok ? `Set id custom${code.toLowerCase()}: unzip into the simulator's client/src/assets/custom-sets/`
+    : code && !SET_CODE.test(code) ? "Set code: 2 to 5 capital letters or digits" : "Type a set code first";
 }
 
 function markActive() {
@@ -1367,6 +1389,21 @@ async function downloadZip() {
   finally { $("zipBtn").disabled = false; }
 }
 
+// The whole list as one custom set for ptcg-sim: <set id>/set.json + the cards as WebP (export.py).
+async function downloadSimSet() {
+  const items = state.setCards.filter((c) => !c.skip).map((c) => payload(c.id));
+  const code = $("setCode").value;
+  if (!SET_CODE.test(code) || !items.length) return;
+  status(`Building the ptcg-sim set of ${items.length} cards (renders any not done yet)…`);
+  $("exportSetBtn").disabled = true;
+  try {
+    const blob = await (await api("/api/export-set", { items, title: $("setName").textContent, code })).blob();
+    save(blob, `custom${code.toLowerCase()}.zip`);
+    status("");
+  } catch (e) { status(""); showError(e.message); }
+  finally { drawExportButton(); }
+}
+
 function save(blob, filename) {
   const a = el("a", { href: URL.createObjectURL(blob), download: filename });
   document.body.append(a); a.click(); a.remove();
@@ -1469,6 +1506,14 @@ async function init() {
   $("changelogBtn").addEventListener("click", downloadChangelog);
   $("viewSel").addEventListener("change", showView);
   $("zipBtn").addEventListener("click", downloadZip);
+  $("exportSetBtn").addEventListener("click", downloadSimSet);
+  $("setCode").addEventListener("input", () => {
+    const [start, end] = [$("setCode").selectionStart, $("setCode").selectionEnd];
+    $("setCode").value = $("setCode").value.toUpperCase();
+    $("setCode").setSelectionRange(start, end);
+    drawExportButton();
+    autosave();
+  });
   $("newProjectBtn").addEventListener("click", newProject);
   $("openProjectBtn").addEventListener("click", () => openProject($("projectSel").value));
   $("projectSel").addEventListener("change", () => { if ($("projectSel").value) $("projectName").value = $("projectSel").value; });

@@ -25,7 +25,12 @@ API (JSON in and out unless noted):
   GET  /api/foil/tex/NAME.png the materials' textures (spectrum, shine, glitter, patterns), lossless
   GET  /api/original/ID.png   the printed card (the scan the render starts from), for comparing
   GET  /api/icon/TYPE.png     the energy icon used on cards (PNG)
-  POST /api/set               a ptcg-sim custom-set export -> {cards: [{id, name, layout | skip}]}
+  POST /api/set               a ptcg-sim custom-set export ({cards: [{id, name, supertype}]}) -> {name, cards:
+                              [{id, name, layout | skip}]}; or a set.json this editor exported (export.py) ->
+                              also {code, edits, options, foil}: the cards with their edits restored
+  POST /api/export-set        {items: [{id, edits?, style?, attacks?, foil?}], title?, code} -> application/zip:
+                              the set for ptcg-sim (<set id>/set.json, <nnn>/high.webp + low.webp, CHANGELOG.md;
+                              see export.py)
   POST /api/zip               {items: [{id, edits?, style?, attacks?, foil?}], title?} -> application/zip (with foil
                               also the 1024x1024 front, the white plates and <card>-foil.json, see foil.files), and
                               CHANGELOG.md
@@ -69,7 +74,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, edit, foil, layers, mecompose, meframe, modern, tcg, trainer, wording
+from . import cache, compose, edit, export, foil, layers, mecompose, meframe, modern, tcg, trainer, wording
 
 PAGE = Path(__file__).with_name("gui.html")
 STATIC = Path(__file__).with_name("static")
@@ -318,9 +323,15 @@ def icon_png(type_name):
 
 
 def import_set(data):
-    """Cards of a ptcg-sim custom-set export that need restyling, with the layout each gets."""
+    """Cards of a ptcg-sim custom-set export that need restyling, with the layout each gets; a set.json this editor
+    exported comes back with its edits and options too."""
     if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
         raise UserError("expected a custom-set export (a JSON object with a \"cards\" list)")
+    if export.is_set_data(data):
+        try:
+            return export.import_set_data(data, _set_entry)
+        except ValueError as e:
+            raise UserError(str(e)) from e
     out, seen = [], set()
     for c in data["cards"]:
         cid = c.get("id") if isinstance(c, dict) else None
@@ -359,6 +370,18 @@ def _current_entries(cards):
             c = {**c, "gen9": modern.is_modern(c.get("id"))}
         out.append(c)
     return out
+
+
+def export_set(items, title, code):
+    """The list as a ptcg-sim custom set (export.py), rendering any card not rendered yet."""
+    if not isinstance(items, list) or not items:
+        raise UserError("items: a non-empty list")
+    if len(items) > MAX_ZIP_ITEMS:
+        raise UserError(f"items: at most {MAX_ZIP_ITEMS} per download")
+    try:
+        return export.export_zip(items, title, code, read=read, render=render, apply=edit.apply, changelog=changelog)
+    except ValueError as e:
+        raise UserError(str(e)) from e
 
 
 def zip_renders(items, title=""):
@@ -456,6 +479,7 @@ def save_project(name, data, client=None):
 def apply_patch(data, patch):
     """The project data with a page's changes made. patch: {cards?: {removed: [id], added: [{index, card}],
     order?: [id]}, edits?: {id: {field: value} | null}, options?: {id: object | null}, setName?, foil?, current?}.
+    code: the set code for the ptcg-sim export (export.py).
     A card's edits change field by field, so two people editing different fields of one card both keep theirs; null
     drops a card's edits or options. order is the list as the page has it: the cards it names take the places those
     cards hold, in its order, and cards it does not name (someone else's, just added) keep theirs. The page's
@@ -496,7 +520,7 @@ def apply_patch(data, patch):
                 held[card_id] = {**(held.get(card_id) or {}), **value}
             else:
                 held[card_id] = value
-    for key in ("setName", "foil", "current"):
+    for key in ("setName", "foil", "current", "code"):
         if key in patch:
             out[key] = patch[key]
     return out
@@ -724,6 +748,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": str(e)}, HTTPStatus.BAD_GATEWAY)
             elif url.path == "/api/zip":
                 self._send(HTTPStatus.OK, zip_renders(body.get("items"), body.get("title", "")), "application/zip")
+            elif url.path == "/api/export-set":
+                self._send(HTTPStatus.OK, export_set(body.get("items"), body.get("title", ""), body.get("code")),
+                           "application/zip")
             elif url.path == "/api/changelog":
                 self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
                            "text/markdown; charset=utf-8")

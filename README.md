@@ -214,6 +214,20 @@ pass through Cloudflare quick tunnels; event streams do not). Two people editing
 cards, both keep their work; the same field at once, the later one wins. Text being typed is never overwritten
 while it is unsent. The header shows how many people have the project open.
 
+### Custom sets for ptcg-sim
+
+The list is also a custom set the simulator (Ar1ssi/vibecodepokemontcg2) plays. Type a set code (2-5 capitals or
+digits, the code a decklist prints: `4 Tyranitar HBW 1`) above the list and click "Download for ptcg-sim (.zip)". The
+zip holds one folder, `custom<code>/` (`customhbw/`): `set.json` with every card in TCGdex's record shape (name, HP,
+type, stage, attacks, Abilities, weakness, resistance, retreat, Trainer text; your edits applied), each card as
+`<nnn>/high.webp` (733x1024) and `low.webp`, numbered in list order, and the CHANGELOG. Unzip it into the simulator's
+`client/src/assets/custom-sets/` and restart its server: the set shows under the deck builder's Custom pill, its cards
+import from a decklist by that code, and the rules engine reads their text like any printed card's (the simulator's
+TCGdex proxy serves the folder as TCGdex records). Each card in `set.json` also keeps the TCGdex card it was made from
+with your edits (`custom`), so "Import custom set…" opens the `set.json` again with everything restored. A Mega card's
+stage is the slot it evolves into (one above its pre-evolution, looked up on TCGdex; Stage 1 when that fails, noted in
+the CHANGELOG). Foil textures are not part of this export. `svrestyle/export.py` is the code.
+
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.
 
