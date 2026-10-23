@@ -9,7 +9,11 @@ only; serves on 127.0.0.1.
 
 API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
-  GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available
+  GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available,
+                              the wording terms the page capitalises as you type, whether /api/suggest works
+  POST /api/suggest           {text, kind: "attack"|"ability"|"trainer", card?: {name, type, stage, hp}} ->
+                              {text, notes: [str]}: the text rewritten in printed-card wording by Claude
+                              (wording.suggest; needs ANTHROPIC_API_KEY in the server's environment)
   GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern"|"trainer", name, card: editable fields}
   POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout, changes,
                               foil?: {front: URL, base, reverse: {png: base64 white plate (card size), shader,
@@ -65,7 +69,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, edit, foil, layers, mecompose, meframe, modern, tcg, trainer
+from . import cache, compose, edit, foil, layers, mecompose, meframe, modern, tcg, trainer, wording
 
 PAGE = Path(__file__).with_name("gui.html")
 STATIC = Path(__file__).with_name("static")
@@ -664,6 +668,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif url.path == "/api/meta":
                 self._json({"energy": list(edit.ENERGY), "styles": list(STYLES),
+                            "terms": [term for term, _ in wording.TERMS], "suggest": wording.available(),
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
                             "weakness": list(edit.WEAKNESS_VALUES), "resistance": list(edit.RESISTANCE_VALUES),
@@ -712,6 +717,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(out)
             elif url.path == "/api/set":
                 self._json(import_set(body))
+            elif url.path == "/api/suggest":
+                try:
+                    self._json(wording.suggest(body.get("text"), body.get("kind", "attack"), body.get("card")))
+                except wording.SuggestionError as e:
+                    self._json({"error": str(e)}, HTTPStatus.BAD_GATEWAY)
             elif url.path == "/api/zip":
                 self._send(HTTPStatus.OK, zip_renders(body.get("items"), body.get("title", "")), "application/zip")
             elif url.path == "/api/changelog":

@@ -55,6 +55,11 @@
   .msg { border-radius: 8px; padding: 8px 10px; margin: 8px 0; font-size: 13px; white-space: pre-wrap; }
   .msg.warn { background: var(--warn-bg); color: var(--warn-ink); }
   .msg.err { background: var(--err-bg); color: var(--err-ink); }
+  .wording { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+  .suggest { border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 13px; }
+  .suggest-text { white-space: pre-wrap; margin-bottom: 6px; }
+  .suggest ul { margin: 0 0 6px; padding-left: 18px; color: var(--muted); }
+  .suggest .err { color: var(--err-ink); }
   .status { color: var(--muted); font-size: 12px; min-height: 18px; }
   .setlist { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
   .setlist .row { display: flex; border-bottom: 1px solid var(--line); }
@@ -167,7 +172,8 @@
             <select id="kindSel"><option value="Item">Item</option><option value="Supporter">Supporter</option><option value="Stadium">Stadium</option><option value="Tool">Pokémon Tool</option></select></div>
           <div data-supporter><label for="character">Character (Supporters)</label><input id="character" type="text"></div>
         </div>
-        <div data-trainer><label for="effect">Card text</label><textarea id="effect" rows="6"></textarea></div>
+        <div data-trainer><label for="effect">Card text</label><textarea id="effect" rows="6" data-wording></textarea>
+          <div id="effectWording" class="wording"></div></div>
         <p class="hint" data-trainer>One paragraph per line. The Trainer type's rule is printed by the frame, so leave it out of the text. {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols. HP: only fossils and dolls played as Pokémon (they print it at the right of the name and get their Ability under the text); an attack makes the card a Technical Machine.</p>
         <div class="row" data-pokemon>
           <div class="narrow"><label for="stageSel">Stage</label>
@@ -352,6 +358,67 @@ function accentPokemon(input) {
   input.setSelectionRange(start, end);
 }
 
+// The TCG's fixed terms print with capitals ("Active Pokémon", "Knocked Out"); effect fields get them as they are
+// typed, the caret kept (capitalising never changes the length). The list is the server's (wording.TERMS, which
+// edit.apply applies to every saved edit too); a term is a whole word, plurals included, never inside {R}.
+let termPatterns = null;
+function fixTerms(input) {
+  if (!termPatterns) {
+    termPatterns = (state.meta.terms || []).map((term) => {
+      const words = term.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[eé]/g, "[eé]"));
+      return [term, new RegExp(`(?<![\\w\\-])${words.join("\\s+")}(e?s)?(?!\\w)`, "giu")];
+    });
+  }
+  const fixed = input.value.split(/(\{[A-Za-z]\})/).map((piece, i) => i % 2 ? piece : termPatterns.reduce((text, [term, re]) =>
+    text.replace(re, (found, plural) => {
+      if (found.length > 2 && found === found.toUpperCase()) return found;
+      const out = term + (plural || "");
+      return out.length === found.length ? out : found;
+    }), piece)).join("");
+  if (fixed === input.value) return;
+  const [start, end] = [input.selectionStart, input.selectionEnd];
+  input.value = fixed;
+  input.setSelectionRange(start, end);
+}
+
+// "Suggest wording": Claude rewrites an effect in printed-card wording (server /api/suggest, needs the server's
+// ANTHROPIC_API_KEY). The suggestion shows under the field with Use / Dismiss; nothing changes until Use.
+function suggestTools(getText, setText, kind) {
+  const button = el("button", { class: "small", type: "button" }, "Suggest wording");
+  const box = el("div", { class: "suggest", hidden: true });
+  const enabled = !!(state.meta && state.meta.suggest);
+  button.disabled = !enabled;
+  if (!enabled) button.title = "Set ANTHROPIC_API_KEY in the server's environment to enable suggestions";
+  button.addEventListener("click", async () => {
+    const text = getText();
+    if (!text.trim()) { showError("Type some text to rewrite first."); return; }
+    button.disabled = true;
+    box.hidden = false;
+    box.replaceChildren(el("span", {}, "Asking Claude…"));
+    try {
+      const card = state.current ? state.edits[state.current.id] : {};
+      const context = { name: card.name, type: card.type, stage: card.stage, hp: card.hp, kind: card.kind };
+      const data = await (await api("/api/suggest", { text, kind, card: context })).json();
+      if (data.text === text) {
+        box.replaceChildren(el("span", {}, "Reads like a printed card already."),
+          el("div", { class: "tools" }, el("button", { class: "small", type: "button", onclick: () => { box.hidden = true; } }, "OK")));
+      } else {
+        box.replaceChildren(
+          el("div", { class: "suggest-text" }, data.text),
+          ...(data.notes && data.notes.length ? [el("ul", {}, ...data.notes.map((n) => el("li", {}, n)))] : []),
+          el("div", { class: "tools" },
+            el("button", { class: "small primary", type: "button", onclick: () => { setText(data.text); box.hidden = true; } }, "Use"),
+            el("button", { class: "small", type: "button", onclick: () => { box.hidden = true; } }, "Dismiss")));
+      }
+    } catch (e) {
+      box.replaceChildren(el("span", { class: "err" }, e.message));
+    } finally {
+      button.disabled = !enabled;
+    }
+  });
+  return [button, box];
+}
+
 // ---------------------------------------------------------------- loading
 async function loadCard(id) {
   id = (id || "").trim();
@@ -440,12 +507,15 @@ function blockTools(list, i, redraw) {
     el("button", { class: "small", title: "Remove", "aria-label": "Remove", onclick: () => { list.splice(i, 1); redraw(); changed(); } }, "✕"));
 }
 
-function textInput(obj, key, label, multiline) {
+// kind ("ability" | "attack"): an effect field, which gets printed-term capitals as typed and a Suggest wording button.
+function textInput(obj, key, label, multiline, kind) {
   const id = `f${Math.random().toString(36).slice(2)}`;
-  const input = multiline ? el("textarea", { id, rows: 2 }) : el("input", { id, type: "text" });
+  const input = multiline ? el("textarea", { id, rows: 2, "data-wording": !!kind }) : el("input", { id, type: "text" });
   input.value = obj[key] ?? "";
   input.addEventListener("input", () => { obj[key] = input.value; changed(); });
-  return [el("label", { for: id }, label), input];
+  if (!kind) return [el("label", { for: id }, label), input];
+  const tools = suggestTools(() => input.value, (text) => { input.value = text; obj[key] = text; changed(); }, kind);
+  return [el("label", { for: id }, label), input, el("div", { class: "wording" }, ...tools)];
 }
 
 function drawBlocks() {
@@ -453,7 +523,7 @@ function drawBlocks() {
   const lim = state.meta.limits;
   $("abilities").replaceChildren(...card.abilities.map((a, i) => el("div", { class: "block" },
     el("div", { class: "block-head" }, `Ability ${i + 1}`, blockTools(card.abilities, i, drawBlocks)),
-    ...textInput(a, "name", "Name"), ...textInput(a, "effect", "Text", true))));
+    ...textInput(a, "name", "Name"), ...textInput(a, "effect", "Text", true, "ability"))));
   $("addAbility").disabled = card.abilities.length >= lim.abilities;
 
   $("attacks").replaceChildren(...card.attacks.map((a, i) => {
@@ -481,7 +551,7 @@ function drawBlocks() {
         el("div", {}, ...textInput(a, "name", "Name")),
         el("div", { class: "narrow" }, el("label", {}, "Damage"), num),
         el("div", { class: "narrow" }, el("label", {}, "Modifier"), suffix)),
-      ...textInput(a, "effect", "Text (optional)", true));
+      ...textInput(a, "effect", "Text (optional)", true, "attack"));
   }));
   $("addAttack").disabled = card.attacks.length >= lim.attacks;
 }
@@ -1309,7 +1379,11 @@ async function init() {
   // capture phase: runs before each field's own input handler, so edits store the accented text
   document.addEventListener("input", (e) => {
     if (e.target.matches("textarea, input[type=text]") && e.target.id !== "cardId") accentPokemon(e.target);
+    if (e.target.matches("[data-wording]")) fixTerms(e.target);
   }, true);
+  $("effectWording").replaceChildren(...suggestTools(() => $("effect").value, (text) => {
+    $("effect").value = text; changed();
+  }, "trainer"));
   $("typeSel").replaceChildren(...state.meta.energy.map((t) => el("option", { value: t }, t)));
   for (const sel of [$("weakType"), $("resType")]) {
     sel.replaceChildren(el("option", { value: "" }, "None"), ...state.meta.energy.map((t) => el("option", { value: t }, t)));

@@ -4,9 +4,13 @@ A card dict comes from compose.read_card (ex layout), mecompose.read_card (Mega 
 trainer.read_card (Trainers: they have a "kind" and no retreat). editable() picks the fields shown in the editor;
 apply() writes edited values back onto a copy after checking them, so the composers only ever see well-formed data.
 Regular Pokemon (family "regular": one Prize, no rule box) can change type; ex cards keep theirs.
+Effect text (abilities, attacks, Trainer text) also gets the TCG's fixed terms in their printed capitals
+(wording.fix_terms); names and flavour text are kept as typed.
 """
 import copy
 import re
+
+from . import wording
 
 ENERGY = ("Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal", "Dragon", "Colorless")
 MAX_ABILITIES, MAX_ATTACKS, MAX_COST, MAX_RETREAT = 2, 4, 5, 5
@@ -111,7 +115,7 @@ def _ability(a, i):
     if not isinstance(a, dict):
         raise ValueError(f"ability {i + 1}: expected an object")
     return {"name": _text(a.get("name", ""), f"ability {i + 1} name", MAX_NAME, required=True),
-            "effect": _text(a.get("effect", ""), f"ability {i + 1} text", MAX_EFFECT, required=True)}
+            "effect": wording.fix_terms(_text(a.get("effect", ""), f"ability {i + 1} text", MAX_EFFECT, required=True))}
 
 
 def _attack(a, i):
@@ -124,7 +128,7 @@ def _attack(a, i):
     if not m or (m.group(2) and not m.group(1)):
         raise ValueError(f"{field} damage: a number with an optional +, × or - after it (e.g. 120, 30+, 50×)")
     return {"cost": cost, "name": _text(a.get("name", ""), f"{field} name", MAX_NAME, required=True),
-            "damage": damage, "effect": _text(a.get("effect", "") or "", f"{field} text", MAX_EFFECT)}
+            "damage": damage, "effect": wording.fix_terms(_text(a.get("effect", "") or "", f"{field} text", MAX_EFFECT))}
 
 
 def _side(v, field, pattern, example):
@@ -144,7 +148,7 @@ def _paragraphs(value, field):
         raise ValueError(f"{field}: expected text")
     if len(value) > MAX_TRAINER_TEXT:
         raise ValueError(f"{field}: at most {MAX_TRAINER_TEXT} characters")
-    paragraphs = [printed(" ".join(p.split())) for p in value.splitlines() if p.strip()]
+    paragraphs = [wording.fix_terms(printed(" ".join(p.split()))) for p in value.splitlines() if p.strip()]
     if len(paragraphs) > MAX_PARAGRAPHS:
         raise ValueError(f"{field}: at most {MAX_PARAGRAPHS} paragraphs")
     return "\n".join(paragraphs)

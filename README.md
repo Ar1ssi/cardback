@@ -200,6 +200,14 @@ with no name yet is saved as "<set> <date time>" (or "Untitled <date time>"); ty
 it saves itself with its first change, or under the name typed and Save. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
 or deleted from the same bar, from any browser that reaches the server.
 
+Wording help: effect text (abilities, attacks, Trainer text) gets the TCG's fixed terms in their printed capitals as
+you type - "active pokemon" becomes "Active Pokémon", "knocked out" "Knocked Out", "energy card" "Energy card" - and
+the server does the same to every saved edit (`svrestyle/wording.py`; the list is the terms the ptcg-sim card corpora
+print capitalised, counted by `scripts/wording_terms.py`). Names and flavour text are left as typed. "Suggest wording"
+under each effect field asks Claude (model `claude-haiku-5-5`, through the Anthropic Messages API) for the same effect
+in printed-card wording; the suggestion shows with its notes and nothing changes until you click Use. It needs
+`ANTHROPIC_API_KEY` in the server's environment (the key never reaches the page); without it the button is disabled.
+
 Working together: everyone with the same project open edits one copy. Each change goes to the server as a patch of
 only the cards and fields that changed, and the others' pages take it in about half a second (long polls, which
 pass through Cloudflare quick tunnels; event streams do not). Two people editing different fields, or different
