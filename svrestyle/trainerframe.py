@@ -19,7 +19,7 @@ from . import cache, meframe, tcg
 from .imaging import dilate, hsv, load_rgba, save_rgba
 
 W, H = 733, 1024
-ASSET_VERSION = "1"
+ASSET_VERSION = "2"
 KINDS = ("Item", "Supporter", "Stadium", "Tool")
 
 # Uncommon / Rare Trainers of Scarlet & Violet, Paldea Evolved, Paradox Rift, Paldean Fates, Shrouded Fable, Stellar
@@ -52,8 +52,10 @@ POOL = {
 ART = (58, 144, 675, 529)                 # x0, y0, x1, y1 of the art window; its rim blends over the outer 1-4 px
 NAME_ZONE = (40, 76, 698, 137)            # name, and the Supporter's character at the right
 PANEL = (44, 540, 690, 886)               # effect text; the rule pill starts below it
-FOOTER = (42, 928, 250, 993)              # illustrator, regulation mark, set code, number, rarity (the type's
-                                          # dashes run down x 27-40)
+# illustrator, regulation mark, set code, number, rarity (the type's dashes run down x 27-40). It stops short of the
+# rule pill's round left end, whose rim starts at x 232 (the rarity ends by 221): every print has the rim, so inside
+# the zone it would be taken for ink and painted out with silver.
+FOOTER = (42, 928, 228, 993)
 COPYRIGHT = (100, 998, 633, 1023)
 ZONES = (NAME_ZONE, PANEL, FOOTER, COPYRIGHT)
 MIN_CLEAN = 3              # prints that must show a pixel's silver for their median to stand
@@ -64,9 +66,9 @@ INK_THRESHOLD, INK_GROW = 24, 3
 RIM = 5                    # px inside the art window's edge where the rim's blend is measured
 RIM_PROBE = 6              # px inside the window: the art a rim pixel is blended with
 FILL_SMOOTH = 9            # px: clean silver either side of a hole, averaged along its row
-# px beyond a zone's left / right edge whose silver a hole's row may also be bridged from (not the footer's right:
-# the rule pill's rim is there); coloured pixels (the type's dashes) are not silver.
-FILL_REACH = {FOOTER: (12, 0), COPYRIGHT: (20, 20)}
+# px beyond a zone's left / right edge whose silver a hole's row may also be bridged from (the footer's right only
+# up to the rule pill's rim); coloured pixels (the type's dashes) are not silver.
+FILL_REACH = {FOOTER: (12, 3), COPYRIGHT: (20, 20)}
 SILVER_SAT = 0.2
 ROW_FIT_ROUNDS = 4
 

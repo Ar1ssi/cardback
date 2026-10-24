@@ -10,7 +10,7 @@ from unittest import mock
 
 import numpy as np
 
-from svrestyle import badges, cli, edit, gui, oldwindow, trainer
+from svrestyle import badges, cli, edit, gui, oldwindow, trainer, trainerframe
 
 
 def tcgdex(**over):
@@ -408,6 +408,19 @@ class Badges(unittest.TestCase):
             self.assertIn(era, trainer.ERA_ART)
             for card_id in ids:
                 self.assertEqual(trainer.era(card_id), era, (name, card_id))
+
+
+class Frame(unittest.TestCase):
+    def test_the_rule_pills_rim_is_not_taken_for_ink(self):
+        # TCG Live prints of sv01-196 and me02.5-213 Ultra Ball: on the footer's rows the pill's round left end
+        # starts at x 232, the rarity mark ends at x 221
+        rgb = np.full((trainerframe.H, trainerframe.W, 3), 225, np.float32)
+        rgb[935:990, 232:240] = 120                    # the rim's bevel
+        rgb[935:990, 240:] = (150, 210, 235)           # the pill
+        rgb[965:985, 205:222] = 20                     # a rarity mark
+        ink = trainerframe._ink(rgb)
+        self.assertTrue(ink[975, 205:222].all())
+        self.assertFalse(ink[928:993, 232:].any())
 
 
 def trainer_card(**over):
