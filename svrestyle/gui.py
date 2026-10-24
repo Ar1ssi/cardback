@@ -730,12 +730,12 @@ class Handler(BaseHTTPRequestHandler):
             if url.path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif url.path == "/api/meta":
-                self._json({"energy": list(edit.ENERGY), "styles": list(STYLES),
+                self._json({"energy": list(edit.ENERGY), "styles": list(STYLES), "ptcgSim": sim_sets_dir() is not None,
                             "terms": [term for term, _ in wording.TERMS], "suggest": wording.available(),
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
                             "weakness": list(edit.WEAKNESS_VALUES), "resistance": list(edit.RESISTANCE_VALUES),
-                            "foil": bool(tcg.TCGLIVE), "ptcgSim": sim_sets_dir() is not None})
+                            "foil": bool(tcg.TCGLIVE)})
             elif url.path == "/api/card":
                 self._json(card_summary((parse_qs(url.query).get("id") or [""])[0].strip()))
             elif url.path == "/api/projects":
