@@ -11,6 +11,10 @@ if not defined SVRESTYLE_FONTS set "SVRESTYLE_FONTS=%USERPROFILE%\svrestyle-work
 if not defined SVRESTYLE_TCGLIVE if exist "E:\TCGLive_Extract" set "SVRESTYLE_TCGLIVE=E:\TCGLive_Extract"
 rem "Send to ptcg-sim" writes custom sets into the simulator's checkout; its running server reloads them
 if not defined SVRESTYLE_PTCG_SIM if exist "%USERPROFILE%\Downloads\vibecodepokemontcg2-main\client\src" set "SVRESTYLE_PTCG_SIM=%USERPROFILE%\Downloads\vibecodepokemontcg2-main"
+rem "Publish to site" uploads a set to the hosted simulator's R2 bucket through rclone (its remote holds the keys)
+if not defined CUSTOM_SETS_R2_REMOTE (
+  where rclone >nul 2>nul && set "CUSTOM_SETS_R2_REMOTE=r2:ptcg-foil/custom-sets"
+)
 set "PYTHONPATH=%~dp0"
 
 set CLOUDFLARED=cloudflared

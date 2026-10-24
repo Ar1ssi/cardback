@@ -251,6 +251,14 @@ every render of a card in the list. Games already running keep the cards they lo
 answers, only in a browser on the machine running the editor: visitors through the Cloudflare tunnel cannot write
 into the simulator.
 
+The hosted simulator (Render) cannot see that folder, so "Publish to site" sends the set as above and then runs the
+simulator's `scripts/custom-sets/publish.mjs`, which uploads it to the site's R2 bucket with rclone (only files the
+bucket lacks go up); the site checks the bucket every 10 s and refreshes open deck builders, no deploy needed. The
+button shows when `CUSTOM_SETS_R2_REMOTE` names the bucket's rclone remote (`start-site.bat` sets
+`r2:ptcg-foil/custom-sets` when rclone is installed), Node.js is on PATH, and the simulator checkout has the script.
+Credentials stay in rclone's config. To take a set off the site: `node scripts/custom-sets/publish.mjs --unpublish
+<set id>` in the simulator.
+
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.
 

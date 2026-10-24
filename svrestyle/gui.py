@@ -11,7 +11,8 @@ API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
   GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available,
                               the wording terms the page capitalises as you type, whether /api/suggest works,
-                              whether a ptcg-sim folder is set for /api/push-set (ptcgSim)
+                              whether a ptcg-sim folder is set for /api/push-set (ptcgSim), whether
+                              /api/publish-set can upload to the site's bucket (ptcgSite)
   POST /api/suggest           {text, kind: "attack"|"ability"|"trainer", card?: {name, type, stage, hp}} ->
                               {text, notes: [str]}: the text rewritten in printed-card wording by Claude
                               (wording.suggest: ANTHROPIC_API_KEY, else the Claude Code CLI's login)
@@ -36,6 +37,11 @@ API (JSON in and out unless noted):
                               removed: [card folder]}: the same set written into the simulator's custom-sets folder
                               (SVRESTYLE_PTCG_SIM), which the running simulator reloads; only cards changed since
                               the last push are rendered (export.write_set_dir), every card with force
+  POST /api/publish-set       {items, title?, code, force?} -> /api/push-set's answer plus published: {sets:
+                              [{setId, uploaded, uploadedBytes, reused, skipped, unchanged}], deleted}: the set
+                              pushed as above, then uploaded to the site's bucket by the simulator's
+                              scripts/custom-sets/publish.mjs (rclone remote CUSTOM_SETS_R2_REMOTE); the site
+                              (Render) picks it up within ~10 s
   POST /api/zip              {items: [{id, edits?, style?, attacks?, foil?}], title?} -> application/zip (with foil
                               also the 1024x1024 front, the white plates and <card>-foil.json, see foil.files), and
                               CHANGELOG.md
@@ -65,6 +71,8 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 import warnings
@@ -102,6 +110,8 @@ EVENT_LOG = 200                       # events each project keeps for pages catc
 
 SIM_SETS = ("client", "src", "assets", "custom-sets")   # where the simulator keeps custom sets, in its checkout
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
+PUBLISH_SCRIPT = ("scripts", "custom-sets", "publish.mjs")    # the simulator's bucket uploader, in its checkout
+PUBLISH_TIMEOUT = 600                 # s: a first publish of a big set uploads ~100 MB
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _push_lock = threading.Lock()         # one write into the simulator's folder at a time
@@ -111,6 +121,10 @@ _RENDER_CACHE = 48
 
 class UserError(ValueError):
     """A problem with the request, shown to the user as is."""
+
+
+class PublishError(Exception):
+    """The upload to the site's bucket failed (rclone, the network, the bucket): the dependency, so a 502."""
 
 
 class Render(tuple):
@@ -424,6 +438,50 @@ def push_set(items, title, code, force=False):
             raise UserError(str(e)) from e
 
 
+def site_remote():
+    """The rclone remote of the site's bucket (CUSTOM_SETS_R2_REMOTE, e.g. r2:ptcg-foil/custom-sets), or None."""
+    return os.environ.get("CUSTOM_SETS_R2_REMOTE", "").strip() or None
+
+
+def sim_checkout():
+    """The simulator's checkout holding its publish script, or None (sim_sets_dir is <checkout>/client/src/...)."""
+    root = sim_sets_dir()
+    if root is None:
+        return None
+    checkout = root.parents[len(SIM_SETS) - 1]
+    return checkout if checkout.joinpath(*PUBLISH_SCRIPT).is_file() else None
+
+
+def publish_set(items, title, code, force=False):
+    """push_set, then the simulator's publish script uploads that folder to the site's bucket. The push lock is held
+    through the upload too, so no push rewrites the files while they go up."""
+    remote = site_remote()
+    if remote is None:
+        raise UserError("set CUSTOM_SETS_R2_REMOTE to the site's bucket (e.g. r2:ptcg-foil/custom-sets) to publish")
+    checkout = sim_checkout()
+    if checkout is None:
+        raise UserError("no ptcg-sim checkout with scripts/custom-sets/publish.mjs: set SVRESTYLE_PTCG_SIM to it")
+    node = shutil.which("node")
+    if node is None:
+        raise UserError("node not found on PATH: the publish script runs on Node.js")
+    pushed = push_set(items, title, code, force)
+    with _push_lock:
+        try:
+            run = subprocess.run([node, str(checkout.joinpath(*PUBLISH_SCRIPT)), pushed["setId"], "--remote", remote,
+                                  "--json"], cwd=checkout, capture_output=True, encoding="utf-8", errors="replace",
+                                 timeout=PUBLISH_TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            raise PublishError(f"publishing took over {PUBLISH_TIMEOUT // 60} minutes") from e
+    if run.returncode != 0:
+        lines = (run.stderr or run.stdout or "").strip().splitlines()
+        raise PublishError("publish failed: " + (" | ".join(lines[-5:]) or f"exit status {run.returncode}"))
+    try:
+        report = json.loads(run.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as e:
+        raise PublishError(f"the publish script gave no report: {run.stdout.strip()[-300:]!r}") from e
+    return {**pushed, "published": report}
+
+
 def zip_renders(items, title=""):
     if not isinstance(items, list) or not items:
         raise UserError("items: a non-empty list")
@@ -728,6 +786,10 @@ class Handler(BaseHTTPRequestHandler):
         checkout is known."""
         return self._from_this_machine() and sim_sets_dir() is not None
 
+    def _can_publish(self):
+        """/api/publish-set: as push-set, and the bucket remote and the simulator's publish script are known."""
+        return self._can_push() and site_remote() is not None and sim_checkout() is not None
+
     def _guard(self, fn):
         try:
             fn()
@@ -748,6 +810,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif url.path == "/api/meta":
                 self._json({"energy": list(edit.ENERGY), "styles": list(STYLES), "ptcgSim": self._can_push(),
+                            "ptcgSite": self._can_publish(),
                             "terms": [term for term, _ in wording.TERMS], "suggest": wording.available(),
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
@@ -813,6 +876,16 @@ class Handler(BaseHTTPRequestHandler):
                                HTTPStatus.FORBIDDEN)
                     return
                 self._json(push_set(body.get("items"), body.get("title", ""), body.get("code"), body.get("force")))
+            elif url.path == "/api/publish-set":
+                if not self._from_this_machine():
+                    self._json({"error": "Publish to site works only in a browser on the machine running the editor"},
+                               HTTPStatus.FORBIDDEN)
+                    return
+                try:
+                    self._json(publish_set(body.get("items"), body.get("title", ""), body.get("code"),
+                                           body.get("force")))
+                except PublishError as e:
+                    self._json({"error": str(e)}, HTTPStatus.BAD_GATEWAY)
             elif url.path == "/api/changelog":
                 self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
                            "text/markdown; charset=utf-8")

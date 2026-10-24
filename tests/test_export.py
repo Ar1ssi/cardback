@@ -246,6 +246,61 @@ class Http(unittest.TestCase):
                         with urllib.request.urlopen(meta, timeout=10) as r:
                             self.assertFalse(json.loads(r.read())["ptcgSim"])
 
+    def test_publish_set_pushes_then_runs_the_simulator_publish_script(self):
+        import tempfile
+        import urllib.request
+        from pathlib import Path
+        fake = gui.Render(png_bytes(), [], "me")
+        # stands in for the simulator's scripts/custom-sets/publish.mjs: echoes its arguments in the --json report
+        script = ("const args = process.argv.slice(2);\n"
+                  "if (process.env.FAKE_PUBLISH_FAIL) { console.error('rclone copy blobs failed: AccessDenied'); "
+                  "process.exit(1); }\n"
+                  "console.log('progress line');\n"
+                  "console.log(JSON.stringify({ sets: [{ setId: args[0], uploaded: 3, uploadedBytes: 4096, reused: 1, "
+                  "skipped: [], unchanged: false }], deleted: 0, dryRun: false, args }));\n")
+        meta = lambda: json.loads(urllib.request.urlopen(self.base + "/api/meta", timeout=10).read())["ptcgSite"]
+        items = {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"}
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gui, "read", return_value=("me", pokemon())), \
+                mock.patch.object(gui, "render", return_value=fake), \
+                mock.patch.object(gui, "changelog", return_value="# log"):
+            (Path(tmp) / "client" / "src").mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "CUSTOM_SETS_R2_REMOTE": "r2:bucket/sets"}):
+                self.assertFalse(meta(), "no publish script in the checkout")
+                status, _, body = self.call("/api/publish-set", items)
+                self.assertEqual(status, 400)
+                self.assertIn("publish.mjs", json.loads(body)["error"])
+                publish = Path(tmp, *gui.PUBLISH_SCRIPT)
+                publish.parent.mkdir(parents=True)
+                publish.write_text(script, encoding="utf-8")
+                self.assertTrue(meta())
+                status, _, body = self.call("/api/publish-set", items)
+                self.assertEqual(status, 200)
+                r = json.loads(body)
+                self.assertEqual(r["setId"], "customhbw")
+                self.assertTrue((Path(tmp) / "client/src/assets/custom-sets/customhbw/set.json").is_file())
+                self.assertEqual(r["published"]["sets"][0]["uploaded"], 3)
+                self.assertEqual(r["published"]["args"], ["customhbw", "--remote", "r2:bucket/sets", "--json"])
+                with mock.patch.dict("os.environ", {"FAKE_PUBLISH_FAIL": "1"}):
+                    status, _, body = self.call("/api/publish-set", items)
+                self.assertEqual(status, 502)
+                self.assertEqual(json.loads(body)["error"], "publish failed: rclone copy blobs failed: AccessDenied")
+                req = urllib.request.Request(self.base + "/api/publish-set", json.dumps(items).encode(),
+                                             {"Content-Type": "application/json", "Cf-Connecting-Ip": "203.0.113.9"})
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(req, timeout=10)
+                self.assertEqual(caught.exception.code, 403)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "CUSTOM_SETS_R2_REMOTE": ""}):
+                self.assertFalse(meta(), "no bucket remote")
+                status, _, body = self.call("/api/publish-set", items)
+                self.assertEqual(status, 400)
+                self.assertIn("CUSTOM_SETS_R2_REMOTE", json.loads(body)["error"])
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "CUSTOM_SETS_R2_REMOTE": "r2:bucket/sets"}), \
+                    mock.patch.object(gui.shutil, "which", return_value=None):
+                status, _, body = self.call("/api/publish-set", items)
+                self.assertEqual(status, 400)
+                self.assertIn("node not found", json.loads(body)["error"])
+
 
 
 class SimFolder(unittest.TestCase):
