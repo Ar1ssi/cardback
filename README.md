@@ -119,9 +119,17 @@ TCG Live's plates cut white lettering out (Darkness) and run the foil through da
 so a card going to or from Darkness has its name, HP, text and the row's labels cut out, or filled with the foil
 around them (`foil.lettering_cutouts`); energy symbols, the badge, the rules and the footer stay as printed.
 
-The Mega Evolution frame templates now take the weakness row's lower rule and the panel's bottom rim from the median
-of the type's prints (every card's print reaches over them, and the fills blurred them away); the rebuilt templates
-are cached as `me-v3`.
+Fit to the print: a Scarlet & Violet print sits up to a pixel off the Mega Evolution templates, so it is moved onto
+its template first (matched on the borders and the row's rules) and back after, and each Stage piece is matched where
+the print has it (a Scarlet & Violet swoosh sits a few pixels right). The background under the print is the old
+template, shaded like the print round it. Energy icons are discs fitted to the print's own rim, covered whole (a
+Colorless icon's white on a light panel too) with a geometric anti-aliased edge; the footer boxes are found on the
+print and their edges unmixed against the box's dark outline or white ring, the white kept neutral.
+
+The Mega Evolution frame templates take the weakness row's lower rule and the panel's bottom rim from the median of
+the type's prints (every card's print reaches over them, and the fills blurred them away), the Pokedex strip and its
+shadow from the prints too (each pixel from the prints with no dex text there), and fill the weakness row's value
+boxes with the row's own grain from further along it; the rebuilt templates are cached as `me-v4`.
 
 ### Trainers
 

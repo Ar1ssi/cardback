@@ -35,7 +35,7 @@ class Recolour(unittest.TestCase):
     def setUp(self):
         self.frames = {"Fire": frame_of(ORANGE, 0), "Darkness": frame_of(TEAL, 3), "Water": frame_of((90, 180, 240), 5)}
         for patch in (mock.patch.object(meframe, "template", side_effect=lambda t: self.frames[t].copy()),
-                      mock.patch.object(retype, "_footer_boxes", return_value=np.zeros((H, W), np.float32))):
+                      mock.patch.object(retype, "_footer_boxes", return_value=np.zeros((H, W), bool))):
             patch.start()
             self.addCleanup(patch.stop)
         retype._dark_panel.cache_clear()
@@ -106,7 +106,90 @@ class RedNames(Recolour):
         np.testing.assert_allclose(out[649, 310:350], self.frames["Water"][649, 310:350, :3], atol=1)
 
 
+class Shifted(Recolour):
+    """A Scarlet & Violet print sits a pixel or so off its Mega Evolution template: it is moved onto it first."""
+    def textured(self, colour, seed):
+        img = self.frames["Fire"].copy()
+        img[..., :3] = np.array(colour, np.float32) + np.random.default_rng(seed).normal(0, 6, (H, W, 1))
+        img[484:510, 90:660, :3] = SILVER
+        return img
+
+    def test_offset_found(self):
+        old = self.textured(ORANGE, 1)[..., :3]
+        for shift in ((1, 1), (-2, 0), (0, 0)):
+            self.assertEqual(retype.offset(retype._shift(old, *shift), old), shift)
+
+    def test_shifted_print_recoloured(self):
+        self.frames["Fire"], self.frames["Darkness"] = self.textured(ORANGE, 1), self.textured(TEAL, 2)
+        out = retype.recolour(retype._shift(self.printed(), 1, 1), card(), "Darkness")[..., :3]
+        new = retype._shift(self.frames["Darkness"][..., :3], 1, 1)
+        np.testing.assert_allclose(out[800:850, 300:600], new[800:850, 300:600], atol=0.5)   # the grain lines up
+        np.testing.assert_allclose(out[603, 222:281], np.tile(compose.WHITE, (59, 1)), atol=1)
+
+
+class Icons(unittest.TestCase):
+    def test_rim_found_on_the_print(self):
+        """An energy icon a pixel off the composers' place, with a figure inside edged only in part."""
+        yy, xx = np.mgrid[:H, :W]
+        img = np.full((H, W, 3), (90, 180, 240), np.float32)
+        icon = np.clip(12.6 + 0.5 - np.hypot(xx - 126.5, yy - 896.5), 0, 1)[..., None]    # anti-aliased, as printed
+        img = icon * np.array((247, 174, 8), np.float32) + (1 - icon) * img
+        img[890:902, 124:128] = 0                                     # the bolt
+        cx, cy, r = retype._on_rim(img, 127.0, 895.8, 13.1)
+        self.assertLess(abs(cx - 126.5) + abs(cy - 896.5), 0.6)
+        self.assertLess(abs(r - 12.6), 0.6)
+
+    def test_disc_is_whole_inside(self):
+        cover = retype._disc(100, 100, 10)
+        self.assertEqual(cover[100, 91], 1.0)                         # white on a white panel still counts
+        self.assertEqual(cover[100, 112], 0.0)
+        self.assertTrue(0 < cover[100, 110] < 1)                       # the anti-aliased rim
+
+
+class FooterBoxes(unittest.TestCase):
+    def test_white_box_on_a_light_frame(self):
+        """A white box differs from a light frame only by its 1 px dark outline: the box is found whole."""
+        img = np.full((H, W, 3), 225, np.float32)
+        img[960:988, 44:63] = frame.DARK_INK
+        img[961:987, 45:62] = 255
+        drawn = np.zeros((H, W), np.float32)
+        drawn[960:988, 44:63] = 1
+        with mock.patch.object(retype.tcg, "card", return_value={"set": {"id": "x"}, "regulationMark": "G"}), \
+                mock.patch.object(retype.tcg, "set_info", return_value={}), \
+                mock.patch.object(retype.mecompose, "set_code", return_value=""), \
+                mock.patch.object(retype.compose, "footer_boxes", return_value=drawn):
+            boxes = retype._footer_boxes("x", img)
+        self.assertTrue(boxes[960:988, 44:63].all())
+        self.assertFalse(boxes[950:958].any() or boxes[:, 66:].any())
+
+
 class TemplateRows(unittest.TestCase):
+    def test_row_values_take_the_rows_grain(self):
+        """A weakness-row value box no card leaves open is filled with the row's own grain, not a blur."""
+        rng = np.random.default_rng(0)
+        clean = np.full((H, W, 4), 255, np.float32)
+        clean[..., :3] = 150 + rng.normal(0, 8, (H, W, 1))
+        need = np.zeros((H, W), bool)
+        x0, y0, x1, y1 = meframe.ROW_VALUES[0]
+        need[y0 + 2:y1 - 2, x0:x1] = True
+        before = clean.copy()
+        filled = meframe._row_grain(clean, need, np.zeros((H, W), bool))
+        self.assertTrue(filled[need].all())
+        hole = clean[y0 + 2:y1 - 2, x0:x1, 0]
+        self.assertGreater(hole.std(), 6)                             # grain kept (a blur would be ~0)
+        self.assertLess(abs(hole.mean() - 150), 3)
+        self.assertFalse((clean[~need] != before[~need]).any())
+
+    def test_dex_text_is_letters_only(self):
+        """The strip's own lines run along it: only what differs along the row is the dex line."""
+        img = np.full((H, W, 3), 200, np.float32)
+        img[495:497, :] = 120                                         # a line of the strip's shading
+        img[490:500, 150:156] = 20                                    # a letter
+        text = meframe._dex_text(img)
+        self.assertTrue(text[492, 152])
+        self.assertFalse(text[495, 400])
+
+
     def test_median_of_prints(self):
         prints = {f"c{i}": np.full((H, W, 4), 100.0, np.float32) for i in range(3)}
         prints["c1"][911:914, 200:260, :3] = 0                       # one card's print over the rule

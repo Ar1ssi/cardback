@@ -8,6 +8,7 @@ stage_sprite(n)   the silver Stage 1 / Stage 2 pieces (tab, bar swoosh, evolutio
 Positions are at 733x1024, measured on the pokemontcg.io me1 scans.
 """
 import functools
+import warnings
 
 import cv2
 import numpy as np
@@ -16,7 +17,7 @@ from . import cache, inpaint, tcg
 from .imaging import dilate, disc_sprite, drop_small, fill_holes, hsv, load_rgba, save_rgba
 
 W, H = 733, 1024
-ASSET_VERSION = "3"
+ASSET_VERSION = "4"
 
 # Regular (non-ex) cards per type from Mega Evolution (me01) and Phantasmal Flames (me02). Cards of one type share
 # the same bar, panel and footer texture, so a pixel hidden by text on one card is taken from another. The first
@@ -58,6 +59,15 @@ LOWER_RULE = (911, 922)
 PRINT_HOLE = 3000                     # px: biggest hole in print that is print (a cost icon's middle is ~1100)
 SHAPE_MIN, SPECK_NEAR = 16, 6         # px: smaller standouts are grain unless this near a bigger one
 PANEL_RIM = (989, 998)
+DEX_ROWS = (484, 518)                 # the Pokedex strip and the shadow under it: template() takes them from prints
+DEX_TEXT_DIFF = 40                    # a dex letter stands out this far from its strip row
+DEX_TEXT_GROW = 2                     # px round the dex line's letters that are theirs
+DEX_END = 40                          # px in from the strip's ends where its rows are even along x
+ROW_PATCHES = 16                      # stretches of the row a hole may take its grain from
+ROW_SHADE = 12                        # px along the row over which its shading is read round a hole (sigma)
+ROW_SHADE_MIN = 0.25                  # share of open pixels under which the close shading gives way to the wide
+ROW_ICON_RIM = 1                      # px round a row icon that are the icon's (anti-aliasing; the label is close)
+ROW_ROUGH = 70                        # a row pixel this far off the row's median is print, left out of its colour
 COPYRIGHT = (120, 998, 620, 1021)
 # Where each band's fill may take its colour from (row between its lines, panel above the border, border).
 CONTEXT = {ROW_VALUES[0]: (30, 880, 703, 910), FOOTER: (30, 914, 703, 995), COPYRIGHT: (0, 998, W, 1024)}
@@ -115,7 +125,23 @@ def type_icon(rgb):
     return x0 + float(cx), y0 + float(cy), float(r)
 
 
-def _printed(rgb, basic):
+def _row_icons(card_id):
+    """The weakness row's energy icons the card prints, from its data: a white Colorless icon on Colorless's light
+    row hardly stands out from it."""
+    from .mecompose import ROW_ICONS                     # mecompose builds on this module
+    c = tcg.card(card_id)
+    discs = [ROW_ICONS[side][:3] for side, key in (("weakness", "weaknesses"), ("resistance", "resistances"))
+             if c.get(key)]
+    cx, cy, r, step = ROW_ICONS["retreat"]
+    discs += [(cx + i * step, cy, r) for i in range(int(c.get("retreat") or 0))]
+    yy, xx = np.mgrid[:H, :W]
+    mask = np.zeros((H, W), bool)
+    for cx, cy, r in discs:
+        mask |= np.hypot(xx - cx, yy - cy) < r + ROW_ICON_RIM
+    return mask
+
+
+def _printed(rgb, basic, card_id=None):
     """Mask of everything printed per card (words, numbers, energy icons, set boxes), grown a little. On a Stage
     card the whole name zone counts as printed: its bar carries the stage pieces."""
     cx, cy, r = type_icon(rgb)
@@ -134,17 +160,27 @@ def _printed(rgb, basic):
     mask = shapes | (mask & dilate(shapes, SPECK_NEAR))
     for box in ROW_VALUES:
         mask |= row_ink(rgb, box)
-    return fill_holes(dilate(mask, 3), max_area=PRINT_HOLE)     # what print encloses: counters, an icon's middle
+    mask = fill_holes(dilate(mask, 3), max_area=PRINT_HOLE)    # what print encloses: counters, an icon's middle
+    return mask | _row_icons(card_id) if card_id is not None else mask
 
 
 def row_ink(rgb, box, threshold=60):
-    """Ink in the weakness row: against each row's median colour along the band (a run of retreat icons is
-    wider than ink()'s window, which would take the icons for the background)."""
+    """Ink in the weakness row: against each row's colour along the band round it (a run of retreat icons is
+    wider than ink()'s window, which would take the icons for the background). What stands far out from the row's
+    median is left out of that colour first: Water's and Lightning's rows shade too much along the band for the
+    median alone."""
     x0, y0, x1, y1 = box
-    band = rgb[y0:y1, 40:690, :3]
-    bg = np.median(band, axis=1, keepdims=True)
+    cx0, _, cx1, _ = CONTEXT[ROW_VALUES[0]]
+    band = rgb[y0:y1, :, :3]
+    bg = np.median(band[:, 40:690], axis=1, keepdims=True)
+    known = np.zeros(band.shape[:2], np.float32)
+    known[:, cx0:cx1] = 1
+    known *= ~dilate(np.abs(band - bg).max(-1) > ROW_ROUGH, 2)
+    along = lambda a: cv2.GaussianBlur(a, (8 * ROW_SHADE + 1, 1), ROW_SHADE)
+    den = along(known)[..., None]
+    local = np.where(den > 0.05, along(band * known[..., None]) / np.maximum(den, 0.05), bg)
     mask = np.zeros((H, W), bool)
-    mask[y0:y1, x0:x1] = (np.abs(rgb[y0:y1, x0:x1, :3] - bg).max(-1) > threshold)
+    mask[y0:y1, x0:x1] = (np.abs(rgb[y0:y1, x0:x1, :3] - local[:, x0:x1]).max(-1) > threshold)
     return mask
 
 
@@ -162,16 +198,20 @@ def template(type_name):
     ids = POOL[type_name]
     base = tcg.scan(ids[0])
     clean = base.copy()
-    need = _printed(base[..., :3], basic=True)
+    need = _printed(base[..., :3], basic=True, card_id=ids[0])
     need[ART[1]:ART[3], ART[0]:ART[2]] = False          # the art window is covered by the new art anyway
     for card_id in ids[1:]:
         if not need.any():
             break
         other = tcg.scan(card_id)
         basic = tcg.card(card_id).get("stage") == "Basic"
-        take = need & ~_printed(other[..., :3], basic)
+        take = need & ~_printed(other[..., :3], basic, card_id)
         clean[take, :3] = other[take, :3]
         need &= ~take
+    # the row's labels, divider and swoosh, against each row's colour along the band (ink()'s window spans the
+    # row's rules and would take its grain for print)
+    labels = dilate(row_ink(clean[..., :3], CONTEXT[ROW_VALUES[0]]), 2)
+    need &= ~_row_grain(clean, need, labels)
     # The dex strip is a horizontal silver bar: what is still covered there takes each row's median.
     sx0, sy0, sx1, sy1 = DEX_STRIP
     for y in range(sy0, sy1):
@@ -208,8 +248,83 @@ def template(type_name):
         clean = filled
     for rows in (LOWER_RULE, PANEL_RIM):
         clean[rows[0]:rows[1], :, :3] = _median_rows(ids, rows)
+    y0, y1 = DEX_ROWS
+    clean[y0:y1, :, :3] = _dex_rows(ids)
     save_rgba(clean, out)
     return clean
+
+
+def _row_grain(clean, need, labels):
+    """Fill what no card leaves open in the weakness row's value boxes (every card prints a weakness) with the row's
+    own grain: the same rows of the nearest open stretch along the row, its shading moved to the hole's (the shading
+    of the open pixels round each, blurred along the row). A blur there showed as a smooth patch with an edge.
+    Changes clean in place. -> bool HxW: the pixels filled."""
+    cx0, cy0, cx1, cy1 = CONTEXT[ROW_VALUES[0]]
+    free = np.zeros((H, W), bool)
+    free[cy0:cy1, cx0:cx1] = True
+    free &= ~need & ~labels
+    known = free.astype(np.float32)
+
+    def shading(sigma):
+        num = cv2.GaussianBlur(clean[..., :3] * known[..., None], (0, 0), sigmaX=sigma, sigmaY=1)
+        den = cv2.GaussianBlur(known, (0, 0), sigmaX=sigma, sigmaY=1)[..., None]
+        return num / np.maximum(den, 1e-6), den
+
+    # mid-hole, too few open pixels lie near for the close shading: the wider one takes over there
+    near, weight = shading(ROW_SHADE)
+    wide, _ = shading(4 * ROW_SHADE)
+    weight = np.clip(weight / ROW_SHADE_MIN, 0, 1)
+    shade = weight * near + (1 - weight) * wide
+    filled = np.zeros((H, W), bool)
+    for x0, y0, x1, y1 in ROW_VALUES:
+        hole = np.zeros((H, W), bool)
+        hole[y0:y1, x0:x1] = need[y0:y1, x0:x1]
+        if not hole.any():
+            continue
+        ys, xs = np.nonzero(hole)
+        shifts = [d for d in range(cx0 - xs.min(), cx1 - xs.max()) if d]
+        for _ in range(ROW_PATCHES):          # what one stretch has covered comes from the next best
+            if not shifts or not len(ys):
+                break
+            dx = min(shifts, key=lambda d: (np.count_nonzero(~free[ys, xs + d]), abs(d), d))
+            ok = free[ys, xs + dx]
+            at, src = (ys[ok], xs[ok]), (ys[ok], xs[ok] + dx)
+            clean[at + (slice(0, 3),)] = clean[src + (slice(0, 3),)] + shade[at] - shade[src]
+            filled[ys[ok], xs[ok]] = True
+            ys, xs = ys[~ok], xs[~ok]
+            shifts.remove(dx)
+    return filled
+
+
+def _dex_text(rgb):
+    """The dex line's letters: what stands out from its strip row's median along the strip (ink()'s square window
+    takes the strip's own lines for print)."""
+    x0, y0, x1, y1 = DEX_STRIP
+    band = rgb[y0:y1, x0:x1]
+    mask = np.zeros((H, W), bool)
+    mask[y0:y1, x0:x1] = np.abs(band - np.median(band, axis=1, keepdims=True)).max(-1) > DEX_TEXT_DIFF
+    return mask
+
+
+def _dex_rows(ids):
+    """The Pokedex strip and its shadow (rows DEX_ROWS): each pixel the median of the type's prints that print no
+    dex text there; where every print does, the row's median along the strip. The fills smeared the strip's lower
+    shading and its shadow into the panel."""
+    y0, y1 = DEX_ROWS
+    stack, masks = [], []
+    for card_id in ids:
+        rgb = tcg.scan(card_id)[..., :3]
+        stack.append(rgb[y0:y1])
+        masks.append(dilate(_dex_text(rgb), DEX_TEXT_GROW)[y0:y1])
+    stack = np.stack(stack).astype(np.float32)
+    stack[np.stack(masks)] = np.nan
+    sx0, _, sx1, _ = DEX_STRIP
+    with warnings.catch_warnings():                        # pixels every print covers stay nan, filled next
+        warnings.simplefilter("ignore", RuntimeWarning)
+        out = np.nanmedian(stack, axis=0)
+        along = np.nanmedian(out[:, sx0 + DEX_END:sx1 - DEX_END], axis=1, keepdims=True)
+    out = np.where(np.isnan(out), np.broadcast_to(along, out.shape), out)
+    return np.nan_to_num(out)
 
 
 def _median_rows(ids, rows):

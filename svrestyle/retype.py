@@ -16,6 +16,9 @@ type's frame and set on the new one's:
 - The old frame's texture where nothing is printed is the new frame's, pixel for pixel; the panel's mottling differs
   from card to card, and the template's comes from real prints of the new type.
 - Silver parts (border, Pokedex strip, the row's rules, the Stage tab) are the same on every type and stay as printed.
+- The templates are Mega Evolution prints; a Scarlet & Violet print sits up to a pixel off them, and its Stage pieces
+  a few pixels off Mega Evolution's. The print is moved onto its template first and back after, and each Stage piece
+  is matched on the print where it lies, so no edge between the type's colour and the silver doubles.
 """
 import functools
 
@@ -23,7 +26,7 @@ import cv2
 import numpy as np
 
 from . import compose, frame, layers, mecompose, meframe, tcg
-from .imaging import dilate, fill_holes, grow, luminance
+from .imaging import dilate, drop_small, fill_holes, grow, hsv, luminance
 
 W, H = 733, 1024
 # Where the card prints on its frame: x0, y0, x1, y1 (name bar right of the tab, Pokedex strip, panel, footer above
@@ -60,13 +63,38 @@ MARK_FROM = (596, 380)       # x0, y0: a Trainer's medallion (and its figure) is
 MARK_CORE = (662, 500, 30)   # centre x, y and radius inside the medallion on every such card (sv09, sv10)
 MARK_DIFF = 40               # how far the medallion stands out from the old frame
 PIECE_REACH = 2      # px: the card's own Stage pieces may reach this far past the Mega Evolution ones
+PIECE_SHIFT = 6      # px: farthest a print's Stage piece sits from Mega Evolution's (Scarlet & Violet swooshes: 4)
+PIECE_CLIP = 60      # RGB levels: a piece pixel differing more is the card's own (portrait, "Evolves from" line)
+PIECE_GAP = 15       # px: breaks in Mega Evolution's swoosh closed over to find the print's own silver round it
+SILVER_SAT, SILVER_RAMP = 0.16, 0.14   # saturation under which a pixel is all silver (meframe's), over which none
+# The Stage pieces matched apart, x0, y0, x1, y1: the bar's swoosh (above the "Evolves from" strip it runs into),
+# and the tab, portrait ring and strip; a piece pixel belongs to the first box it lies in.
+PIECE_BOXES = [(440, 0, 600, 92), (0, 0, W, H)]
+GROUND_SHADE = 6     # px (sigma): the print's shading against its template is read this close round its print
+GROUND_OPEN = 0.25   # share of open pixels under which the shading is read wider
+GROUND_OFF, GROUND_OFF_RAMP = 24, 10   # mean RGB residual round the print past which the template is not its ground
+REGISTER_REACH = 3  # px: farthest a print sits off its type's template
+# Where only the frame prints edges on every card, x0, y0, x1, y1: the side borders under the Stage pieces, the
+# weakness row's rules (the labels are the frame's, the values sit between them).
+REGISTER_BOXES = [(0, 250, 60, 1000), (676, 110, W, 1000), (30, 866, 703, 882), (30, 906, 703, 926)]
 DISC_FIT = 0.85      # overlap (intersection over union) of a disc's shape, holes filled, with its circle
 # Energy icons are discs about as tall as wide, this wide (px), where cards print them: x0, y0, x1, y1 their centre
 # lies in. Cost icons sit at the left of the panel; row icons in the weakness row. (A letter O is round too.)
 DISC_ZONES = [((30, 46), (36, 512, 240, 870)), ((22, 32), (100, 876, 700, 914))]
 DISC_MIN = 150       # px: smallest disc shape
 TYPED = 14           # RGB distance between the two frames past which a pixel is the type's (else silver)
-BOX_SLACK = 30       # a footer-box pixel at least this far from the old frame is the box's, not its rim's ground
+BOX_REACH = 2        # px: a print's footer box may reach this far past where the composers set it
+BOX_RING = 4         # px: the band round that whose median is the colour printed round the boxes
+BOX_SPECK = 12       # px: smaller shapes off the colour round the boxes are grain
+BOX_DIFF = 90        # RGB levels off that colour a box pixel is (Water's grain stays under it)
+BOX_DARK = (38, 33, 38)   # the composers' box outline (compose._footer)
+BOX_LIGHT = 128      # a box pixel this light is its white ring or fill
+BOX_MIN_SHARE = 0.1  # least box share its colour is read back from (less is ground and noise)
+BOX_OFF = 40         # RGB distance off the ground-to-outline line past which an edge pixel is all box
+ICON_REACH = 3       # px: farthest a print's icon sits from where it is looked for
+RIM_SIDE = 0.75      # px either side of an icon's rim where its inside and outside are read
+ICON_GROW, ICON_STEP = 1.5, 0.25   # px: how far a print's icon radius may differ from the one looked for; fit step
+SOFT_EDGE = 0.6      # px (sigma): the anti-aliasing of a medallion's edge
 SILVER = [(90, 484, 660, 510), meframe.COPYRIGHT]   # the Pokedex strip and the copyright line: as printed
 WORDS = "retyped_words"   # layers kind: the words set again in the new type's ink (foil.build_modern's plates)
 
@@ -108,10 +136,9 @@ def _per_shape(labels, n, values, how=np.add):
     return out
 
 
-def _discs(rgb, ground, labels, n, size, peak):
-    """Energy icons among the shapes: (coverage HxW float, bool per shape). The rim's share is its contrast."""
-    cover, found = np.zeros((H, W), np.float32), np.zeros(n, bool)
-    contrast = np.linalg.norm(rgb - ground, axis=-1)
+def _discs(labels, n, size):
+    """Energy icons among the shapes: ([(cx, cy, r) per icon], bool per shape)."""
+    circles, found = [], np.zeros(n, bool)
     yy, xx = np.mgrid[:H, :W]
     for i in np.flatnonzero(size >= DISC_MIN):
         if i == 0:
@@ -130,23 +157,60 @@ def _discs(rgb, ground, labels, n, size, peak):
         if (filled & circle).sum() < DISC_FIT * (filled | circle).sum():
             continue
         found[i] = True
-        rim = np.clip(contrast / max(RIM_SCALE * peak[i], RIM_MIN), 0, 1)
-        cover = np.maximum(cover, np.where(r < r0 - 1, 1.0, np.where(r < r0 + 2, rim, 0)).astype(np.float32))
-    return cover, found
+        circles.append((cx, cy, r0))
+    return circles, found
 
 
-def _disc(cx, cy, r, rim):
-    """Coverage of an icon of radius r at (cx, cy): whole inside, its rim's share by contrast."""
+def _disc(cx, cy, r):
+    """Coverage of an icon whose rim runs at radius r round (cx, cy), anti-aliased over a pixel. An icon's rim is
+    a circle, so its share of a rim pixel is geometry: a share read off colours mistakes the ground's grain for it,
+    and no card shows the ground under the icon to compare with."""
     yy, xx = np.mgrid[:H, :W]
-    d = np.hypot(xx - cx, yy - cy)
-    return np.where(d < r - 1, 1.0, np.where(d < r + 2, rim, 0)).astype(np.float32)
+    return np.clip(r + 0.5 - np.hypot(xx - cx, yy - cy), 0, 1).astype(np.float32)
 
 
-def _printed_icons(rgb, card, rim):
-    """Coverage of the energy icons the card prints, found from its data: each cost type matched against its icon in
-    the panel's cost column, and the weakness row's icons where the composers set them (a white Colorless icon on
-    the Colorless panel hardly stands out)."""
-    cover = np.zeros((H, W), np.float32)
+def _on_rim(rgb, cx, cy, r, reach=ICON_REACH):
+    """(cx, cy, r) moved to where the print's icon rim runs: centre within reach px, radius within ICON_GROW, both to
+    ICON_STEP px (a Scarlet & Violet print's row icons sit a pixel or so off the Mega Evolution places, and the
+    composers' radius is not the print's to the half pixel). The rim is the circle whose inside and outside differ
+    all the way round: the median over the circle, as an icon's own figure (a bolt, a flame) is edged only in part.
+    Searched whole pixels first, then in ICON_STEP round the best."""
+    cx, cy, r = _rim_search(rgb, cx, cy, r, np.arange(-reach, reach + 1e-6, 1.0),
+                            np.arange(-ICON_GROW, ICON_GROW + 1e-6, 0.5))
+    fine = np.arange(-0.75, 0.75 + 1e-6, ICON_STEP)
+    return _rim_search(rgb, cx, cy, r, fine, fine)
+
+
+def _rim_search(rgb, cx, cy, r, shifts, grows):
+    angles = np.linspace(0, 2 * np.pi, 96, endpoint=False)
+    cos, sin = np.cos(angles), np.sin(angles)
+    ox, oy = (a[..., None] for a in np.meshgrid(shifts, shifts))
+    best, where = -1.0, (cx, cy, r)
+    for rr in r + grows:
+        ring = lambda at: _bilinear(rgb, cx + ox + at * cos, cy + oy + at * sin)
+        score = np.median(np.linalg.norm(ring(rr - RIM_SIDE) - ring(rr + RIM_SIDE), axis=-1), axis=-1)
+        iy, ix = np.unravel_index(np.argmax(score), score.shape)
+        if score[iy, ix] > best + 1e-6:
+            best, where = float(score[iy, ix]), (cx + shifts[ix], cy + shifts[iy], rr)
+    return where
+
+
+def _bilinear(img, xs, ys):
+    xs, ys = np.clip(xs, 0, W - 1.001), np.clip(ys, 0, H - 1.001)
+    x0, y0 = xs.astype(int), ys.astype(int)
+    fx, fy = xs - x0, ys - y0
+    if img.ndim == 3:
+        fx, fy = fx[..., None], fy[..., None]
+    top = img[y0, x0] * (1 - fx) + img[y0, x0 + 1] * fx
+    bottom = img[y0 + 1, x0] * (1 - fx) + img[y0 + 1, x0 + 1] * fx
+    return top * (1 - fy) + bottom * fy
+
+
+def _printed_icons(rgb, card):
+    """The energy icons the card prints, found from its data: [(cx, cy, r)] of each cost type matched against its
+    icon in the panel's cost column, and of the weakness row's icons where the composers set them (a white Colorless
+    icon on the Colorless panel hardly stands out)."""
+    circles = []
     x0, y0, x1, y1 = COST_COLUMN
     grey = lambda a: cv2.cvtColor(np.clip(a, 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
     area = grey(rgb[y0:y1, x0:x1])
@@ -159,16 +223,25 @@ def _printed_icons(rgb, card, rim):
             _, best, _, (bx, by) = cv2.minMaxLoc(score)
             if best < ICON_MATCH:
                 break
-            cover = np.maximum(cover, _disc(x0 + bx + scx - ox, y0 + by + scy - oy, r, rim))
+            circles.append((x0 + bx + scx - ox, y0 + by + scy - oy, r))
             score[max(0, by - ICON_APART):by + ICON_APART, max(0, bx - ICON_APART):bx + ICON_APART] = 0
-    for side in ("weakness", "resistance"):
-        if card.get(side):
-            cx, cy, r = mecompose.ROW_ICONS[side]
-            cover = np.maximum(cover, _disc(cx, cy, r, rim))
+    circles += [mecompose.ROW_ICONS[side] for side in ("weakness", "resistance") if card.get(side)]
     cx, cy, r, step = mecompose.ROW_ICONS["retreat"]
-    for i in range(card["retreat"]):
-        cover = np.maximum(cover, _disc(cx + i * step, cy, r, rim))
+    circles += [(cx + i * step, cy, r) for i in range(card["retreat"])]
+    return circles
+
+
+def _icons_cover(rgb, circles):
+    """Coverage of the energy icons, each fitted to the print's own rim."""
+    cover = np.zeros((H, W), np.float32)
+    for cx, cy, r in circles:
+        cover = np.maximum(cover, _disc(*_on_rim(rgb, cx, cy, r)))
     return cover
+
+
+def _soft(solid):
+    """Coverage of a solid printed shape (bool), anti-aliased over a pixel."""
+    return np.maximum(solid, cv2.GaussianBlur(solid.astype(np.float32), (0, 0), SOFT_EDGE))
 
 
 def _print_red(rgb):
@@ -230,23 +303,178 @@ def _trainer_mark(card_id, rgb, old):
     return fill_holes(np.isin(labels, hit) & (labels > 0))
 
 
-def _footer_boxes(card_id, rgb, old):
-    """Coverage of the regulation-mark and set boxes the card prints (as the composers set them), each grown a pixel
-    where the print stands out from the old frame."""
+def _edges(rgb):
+    grey = cv2.cvtColor(np.clip(rgb, 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    return np.hypot(cv2.Sobel(grey, cv2.CV_32F, 1, 0), cv2.Sobel(grey, cv2.CV_32F, 0, 1))
+
+
+def _shift(img, dx, dy):
+    """img moved dx px right and dy down; what it uncovers repeats its edge."""
+    ax, ay = abs(dx), abs(dy)
+    pad = np.pad(img, ((ay, ay), (ax, ax)) + ((0, 0),) * (img.ndim - 2), mode="edge")
+    return pad[ay - dy:ay - dy + img.shape[0], ax - dx:ax - dx + img.shape[1]]
+
+
+def offset(rgb, old):
+    """(dx, dy): whole px the print sits right of and below its type's template, from the edges only the frame
+    prints. Ties go to the smaller shift (a frame without edges across one axis does not move along it)."""
+    r = REGISTER_REACH
+    a, b = _edges(rgb), np.pad(_edges(old), r, mode="edge")
+    best, where = -1.0, (0, 0)
+    shifts = sorted(((dx, dy) for dy in range(-r, r + 1) for dx in range(-r, r + 1)),
+                    key=lambda d: abs(d[0]) + abs(d[1]))
+    for dx, dy in shifts:
+        num = den_a = den_b = 0.0
+        for x0, y0, x1, y1 in REGISTER_BOXES:
+            pa, pb = a[y0:y1, x0:x1], b[r + y0 - dy:r + y1 - dy, r + x0 - dx:r + x1 - dx]
+            num, den_a, den_b = num + (pa * pb).sum(), den_a + (pa * pa).sum(), den_b + (pb * pb).sum()
+        score = num / np.sqrt(den_a * den_b + 1e-6)
+        if score > best + 1e-9:
+            best, where = score, (dx, dy)
+    return where
+
+
+def _stage_pieces(rgb, stage_shown, old):
+    """Coverage of the card's Stage pieces: Mega Evolution's, each piece moved to where it matches the print (a
+    Scarlet & Violet card's swoosh sits a few pixels right of Mega Evolution's), and round them what stands out from
+    the old frame (Mega Evolution's swoosh misses some of its own silver where it crosses the bar's light part)."""
+    if stage_shown not in (1, 2):
+        return np.zeros((H, W), np.float32)
+    sprite = meframe.stage_sprite(stage_shown)
+    out = _matched_pieces(rgb, sprite)
+    close = np.ones((PIECE_GAP, PIECE_GAP), np.uint8)
+    near = dilate(cv2.morphologyEx((out > 0.5).astype(np.uint8), cv2.MORPH_CLOSE, close) > 0, PIECE_REACH)
+    stands_out = np.clip((np.abs(rgb - old).max(-1) - RIM_FLOOR) / RIM_MIN, 0, 1)
+    # the pieces are silver: the bar showing between the swoosh's strokes is not, unless the frame is grey itself
+    silver = np.clip((SILVER_SAT + SILVER_RAMP - hsv(rgb)[1]) / SILVER_RAMP, 0, 1)
+    silver = np.where(hsv(old)[1] < SILVER_SAT + SILVER_RAMP, 1.0, silver)
+    return np.maximum(out, np.where(near, stands_out * silver, 0)).astype(np.float32)
+
+
+def _matched_pieces(rgb, sprite):
+    """The sprite's pieces, each at the shift where its colours best match the print's."""
+    alpha = sprite[..., 3] / 255
+    out, taken = np.zeros((H, W), np.float32), np.zeros((H, W), bool)
+    for x0, y0, x1, y1 in PIECE_BOXES:
+        part = np.zeros((H, W), np.float32)
+        part[y0:y1, x0:x1] = alpha[y0:y1, x0:x1]
+        part[taken] = 0
+        taken |= part > 0
+        if not part.any():
+            continue
+        ys, xs = np.nonzero(part > 0.5)
+        r = PIECE_SHIFT
+        by0, by1 = max(ys.min() - r, 0), min(ys.max() + r + 1, H)
+        bx0, bx1 = max(xs.min() - r, 0), min(xs.max() + r + 1, W)
+        shown = rgb[by0:by1, bx0:bx1]
+        pad_part, pad_rgb = np.pad(part, r), np.pad(sprite[..., :3], ((r, r), (r, r), (0, 0)), mode="edge")
+        best, where = None, (0, 0)
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                window = np.s_[r + by0 - dy:r + by1 - dy, r + bx0 - dx:r + bx1 - dx]
+                a = pad_part[window]
+                diff = np.minimum(np.abs(pad_rgb[window] - shown).max(-1), PIECE_CLIP)
+                cost = (a * diff).sum() / max(a.sum(), 1)
+                if best is None or cost < best - 1e-6:
+                    best, where = cost, (dx, dy)
+        out = np.maximum(out, _shift(part, *where))
+    return out
+
+
+def _smooth(values, weight, sigma):
+    """values (HxWxC) blurred over the pixels of weight (HxW) only: (the blur, the weight round each pixel)."""
+    num = cv2.GaussianBlur(values * weight[..., None], (0, 0), sigma).reshape(values.shape)   # keeps a 1-channel axis
+    den = cv2.GaussianBlur(weight, (0, 0), sigma)[..., None]
+    return num / np.maximum(den, 1e-6), den
+
+
+def _ground(rgb, old, hole):
+    """The print's background where it prints (hole). Prints of a type share its frame pixel for pixel, so it is
+    the old template there, its shading moved to the print's (a lossy or resampled scan shades a little off): the
+    difference of the open pixels round the hole, smoothed. Where the print's surroundings still differ from the
+    template (the art window, a Scarlet & Violet bar's wave), the surroundings are blended in (Telea)."""
+    telea = cv2.inpaint(np.clip(rgb, 0, 255).astype(np.uint8), hole.astype(np.uint8), 3,
+                        cv2.INPAINT_TELEA).astype(np.float32)
+    open_px = (~dilate(hole, GROW)).astype(np.float32)
+    x0, y0, x1, y1 = meframe.ART
+    open_px[y0:y1, x0:x1] = 0
+    diff = rgb - old
+    near, weight = _smooth(diff, open_px, GROUND_SHADE)
+    wide, _ = _smooth(diff, open_px, 4 * GROUND_SHADE)
+    weight = np.clip(weight / GROUND_OPEN, 0, 1)
+    shift = weight * near + (1 - weight) * wide
+    off, _ = _smooth(np.abs(diff - shift).max(-1, keepdims=True), open_px, GROUND_SHADE)
+    trust = np.clip((GROUND_OFF - off[..., 0]) / GROUND_OFF_RAMP, 0, 1)
+    trust[y0:y1, x0:x1] = 0
+    trust = trust[..., None]
+    filled = trust * (old + shift) + (1 - trust) * telea
+    return np.where(hole[..., None], filled, rgb)
+
+
+def _footer_boxes(card_id, rgb):
+    """The regulation-mark and set boxes the card prints (bool HxW): near where the composers set them (a Scarlet &
+    Violet print's set box is narrower), what stands out from the colour printed round them. No card shows the
+    footer under its boxes, so the template's ground there is a guess, too far off for a box's edge."""
     c = tcg.card(card_id)
     s = tcg.set_info(c["set"]["id"])
-    boxes = compose.footer_boxes(c.get("regulationMark") or "", mecompose.set_code(c["set"]["id"], s))
-    grown = cv2.dilate(boxes, np.ones((3, 3), np.uint8))
-    off = np.clip(np.linalg.norm(rgb - old, axis=-1) / BOX_SLACK, 0, 1)
-    return np.maximum(boxes, grown * off)
+    boxes = compose.footer_boxes(c.get("regulationMark") or "", mecompose.set_code(c["set"]["id"], s)) > 0.5
+    if not boxes.any():
+        return boxes
+    near = dilate(boxes, BOX_REACH)
+    ring = dilate(boxes, BOX_REACH + BOX_RING) & ~near
+    x0, y0, x1, y1 = meframe.FOOTER
+    ring[:y0], ring[y1:], ring[:, :x0], ring[:, x1:] = False, False, False, False
+    round_it = np.median(rgb[ring], axis=0)
+    solid = near & (np.abs(rgb - round_it).max(-1) > BOX_DIFF)
+    solid = drop_small(solid, BOX_SPECK)            # grain; a box's 1 px outline stays
+    return fill_holes(solid)
+
+
+def _box_edge(rgb, boxes):
+    """The boxes' outer edge: (band bool HxW, each band pixel's share of box, the ground round it HxWx3). Every
+    box is drawn the same on every type (compose._footer): a dark outline, a white ring, a dark or white fill; the
+    outline is lost on a dark panel. So an edge pixel mixes the ground with the outline's dark or, inside the box
+    found, with white (past it, a pixel lighter than the ground read there is its grain): its share is read off
+    whichever line it lies on; a pixel on neither (the outline and the ring blurred together) is
+    box if it is in the box's shape, else ground. The ground is the colour printed round the box there."""
+    inner = cv2.erode(boxes.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    band = dilate(boxes, 1) & ~inner
+    ring = (dilate(boxes, BOX_REACH + BOX_RING) & ~dilate(boxes, BOX_REACH)).astype(np.float32)
+    ground, _ = _smooth(rgb, ring, BOX_RING)
+    lift = rgb[band] - ground[band]
+    best_share, best_off = np.ones(len(lift)), np.full(len(lift), np.inf)
+    in_box = boxes[band]
+    for colour, where in ((np.array(BOX_DARK, np.float32), True), (compose.WHITE, in_box)):
+        towards = colour - ground[band]
+        share = np.clip((lift * towards).sum(-1) / np.maximum((towards * towards).sum(-1), 1.0), 0, 1)
+        off = np.linalg.norm(lift - share[:, None] * towards, axis=-1)
+        better = (off < best_off) & where
+        best_share[better], best_off[better] = share[better], off[better]
+    out = np.zeros((H, W), np.float32)
+    out[band] = np.where(best_off <= BOX_OFF, best_share, in_box)     # off both lines: as found
+    return band, out, ground
 
 
 def recolour(rgba, card, new_type):
     """The card (RGBA float32 733x1024) on the new type's frame. card: modern.read_card's dict of it as printed
     (its type, Stage, costs and weakness row)."""
+    old, new = meframe.template(card["type"])[..., :3], meframe.template(new_type)[..., :3]
+    dx, dy = offset(rgba[..., :3], old)
+    out, typed, share = (_shift(a, dx, dy) for a in _on_template(_shift(rgba[..., :3], -dx, -dy), card, new_type,
+                                                                    old, new))
+    with layers.kind(WORDS):
+        layers.record(share * typed[..., 0])
+    result = rgba.copy()
+    result[..., :3] = typed * out + (1 - typed) * rgba[..., :3]
+    x0, y0, x1, y1 = meframe.ART
+    result[y0:y1, x0:x1] = rgba[y0:y1, x0:x1]
+    return result
+
+
+def _on_template(rgb, card, new_type, old, new):
+    """recolour on a print lying on its template: (the new print RGB, where the frame takes it (HxWx1), the words'
+    ink share)."""
     card_id, old_type, stage_shown = card["id"], card["type"], card["stage"]
-    rgb = rgba[..., :3]
-    old, new = meframe.template(old_type)[..., :3], meframe.template(new_type)[..., :3]
     ink_old, ink_new = ink(old_type), ink(new_type)
     # the frames' own print (row labels and rules, Stage tab, name-bar icon) is where both frames print it; a blemish
     # in one template's fill is not
@@ -255,16 +483,14 @@ def recolour(rgba, card, new_type):
     yy, xx = np.mgrid[:H, :W]
     frames |= np.hypot(xx - cx, yy - cy) < r + ICON_CLEAR
     own = frame_print(rgb) & ~dilate(frames, FRAME_GROW)
-    pieces = (meframe.stage_sprite(stage_shown)[..., 3] / 255 if stage_shown in (1, 2)
-              else np.zeros((H, W), np.float32))
+    pieces = _stage_pieces(rgb, stage_shown, old)
     mark = _trainer_mark(card_id, rgb, old)
     red = _print_red(rgb)
     badge = _badge(red)
     names = red & ~badge & ~dilate(mark, GROW)
     hole = (dilate(own, GROW) | dilate(pieces > 0.02, PIECE_REACH) | dilate(badge, GROW) | dilate(names, KEYLINE_REACH)
             | dilate(mark, GROW))
-    filled = cv2.inpaint(np.clip(rgb, 0, 255).astype(np.uint8), hole.astype(np.uint8), 3, cv2.INPAINT_TELEA)
-    ground = np.where(hole[..., None], filled.astype(np.float32), rgb)
+    ground = _ground(rgb, old, hole)
 
     # each pixel against the line from its background to the ink
     to_ink, lift = ink_old - ground, rgb - ground
@@ -288,7 +514,7 @@ def recolour(rgba, card, new_type):
     objects = ((alien > ALIEN_SHARE) & (off > OBJECT_SHARE) & (size >= OBJECT_MIN) & (peak >= OBJECT_PEAK)
                & (cx >= x0) & (cx < x1) & (cy >= y0) & (cy < y1))
     words = ~objects & (core >= INK_CORE)
-    discs, is_disc = _discs(rgb, ground, labels, n, size, peak)
+    circles, is_disc = _discs(labels, n, size)
     objects &= ~is_disc
     words &= ~is_disc
     objects[0] = words[0] = False
@@ -302,19 +528,45 @@ def recolour(rgba, card, new_type):
     inside = cv2.erode(badge.astype(np.uint8), np.ones((2 * BADGE_RIM + 1,) * 2, np.uint8)) > 0
     kept = np.maximum(kept, np.where(inside, 1.0, np.where(dilate(badge, GROW), contrast_rim, 0)))
     red_names, red_ink = _red_names(rgb, ground, names, dilate(names, KEYLINE_REACH))
-    discs = np.maximum(discs, _printed_icons(rgb, card, contrast_rim))
-    boxes = _footer_boxes(card_id, rgb, old)
+    icons = _icons_cover(rgb, circles + _printed_icons(rgb, card))
+    boxes = _footer_boxes(card_id, rgb)
     # Stage pieces as Mega Evolution prints them; a Scarlet & Violet card's sit a pixel or two off at their edge
     piece_rim = (dilate(pieces > 0.5, PIECE_REACH) & hole) * contrast_rim
-    mark_in = cv2.erode(mark.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-    mark_cov = np.where(mark_in, 1.0, np.where(dilate(mark, GROW), contrast_rim, 0))
-    kept = np.maximum.reduce([kept, pieces, piece_rim, discs, boxes, mark_cov])
+    # whole shapes: their insides count where they match the frame too (a Colorless icon's white on a light panel)
+    solid = np.maximum(icons, _soft(mark))
+    box_cover = np.zeros((H, W), np.float32)
+    if boxes.any():
+        band, box_share, box_ground = _box_edge(rgb, boxes)
+        box_cover = np.where(band, box_share, boxes.astype(np.float32))
+        kept = np.maximum(kept, box_cover)
+    kept = np.maximum.reduce([kept, pieces, piece_rim, solid])
     names = dilate(red_names > 0.05, KEYLINE_REACH)       # the red names and their keylines: set below
     kept[names] = 0
     share = np.where(word_px & (kept <= 0.02) & ~names, share, 0)
 
     # kept print's rim mixes it with the old ground: that share of the new ground replaces it; elsewhere the new frame
     out = np.where((kept > 0)[..., None], rgb + (1 - kept)[..., None] * (new - ground), new)
+    # an icon's, box's or medallion's rim: its share of the shape's own colour over the new frame (no card shows the
+    # ground under them, so the ground read there is a guess, and its error would show round them)
+    rim = (solid > 0) & (solid < 1) & (solid >= kept) & ~names
+    if rim.any():
+        whole = solid >= 1
+        _, nearest = cv2.distanceTransformWithLabels((~whole).astype(np.uint8), cv2.DIST_L2, 5,
+                                                     labelType=cv2.DIST_LABEL_PIXEL)
+        ys, xs = np.nonzero(whole)                      # the labels number the whole pixels in this order
+        if len(ys):
+            at = nearest[rim] - 1
+            k = solid[rim][:, None]
+            out[rim] = k * rgb[ys[at], xs[at]] + (1 - k) * new[rim]
+    # the footer boxes' white ring and fill are white on every print: a lossy scan's frame colour bleeding into
+    # them goes; their dark outline takes the frame's tint on every type, so it keeps the print's
+    at = (box_cover > 0) & ~names
+    if at.any():
+        k = box_cover[at][:, None]
+        colour = (rgb[at] - (1 - k) * box_ground[at]) / np.maximum(k, BOX_MIN_SHARE)
+        lum = luminance(colour)[:, None]
+        colour = np.where(lum >= BOX_LIGHT, np.clip(lum, 0, 255), colour)
+        out[at] = k * colour + (1 - k) * new[at]
     words_set = share[..., None] * ink_new + (1 - share[..., None]) * new
     out = np.where((share > 0)[..., None], words_set, out)
     # red Ability names over the new frame: a white keyline on a dark panel, none on a light one (as mecompose)
@@ -329,10 +581,4 @@ def recolour(rgba, card, new_type):
     for x0, y0, x1, y1 in SILVER:
         typed[y0:y1, x0:x1] = False
     typed = cv2.GaussianBlur(typed.astype(np.float32), (0, 0), 0.8)[..., None]
-    with layers.kind(WORDS):
-        layers.record(share * typed[..., 0])
-    result = rgba.copy()
-    result[..., :3] = typed * out + (1 - typed) * rgb
-    x0, y0, x1, y1 = meframe.ART
-    result[y0:y1, x0:x1] = rgba[y0:y1, x0:x1]
-    return result
+    return out, typed, share

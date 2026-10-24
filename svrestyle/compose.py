@@ -389,13 +389,22 @@ def _set_box(code):
     return code_w, en_w, max(115.5, 73 + code_w + 1.5 + en_w + 3)
 
 
+def footer_box_rects(reg_mark, set_code):
+    """[(x0, y0, x1, y1, corner radius)] of the footer's regulation-mark and set boxes, where the Pokemon cards print
+    them."""
+    rects = []
+    if reg_mark:
+        rects.append((44.5, 960.5, 62.5, 987.5, 3))
+    if set_code:
+        rects.append((67.5, 960.5, _set_box(set_code)[2], 987.5, 3.2))
+    return rects
+
+
 def footer_boxes(reg_mark, set_code):
     """Coverage of the footer's regulation-mark and set boxes, where the Pokemon cards print them."""
     out = np.zeros((H, W), np.float32)
-    if reg_mark:
-        out = np.maximum(out, ts.rounded_box(44.5, 960.5, 62.5, 987.5, 3))
-    if set_code:
-        out = np.maximum(out, ts.rounded_box(67.5, 960.5, _set_box(set_code)[2], 987.5, 3.2))
+    for rect in footer_box_rects(reg_mark, set_code):
+        out = np.maximum(out, ts.rounded_box(*rect))
     return out
 
 
