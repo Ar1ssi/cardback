@@ -12,13 +12,21 @@ The zip holds one folder, ready to drop into the simulator's client/src/assets/c
 Set code: 2-5 capital letters or digits, as a decklist prints it ("4 Tyranitar HBW 1"); set id "custom" + the code
 in lower case, card id "<set id>-<nnn>", numbered in list order. The set.json keeps, per card, the TCGdex card it
 was made from with its edits and options (`custom`), so this editor opens the export again (import_set_data).
+
+write_set_dir puts the same files straight into the simulator's custom-sets folder instead of a zip ("Send to
+ptcg-sim"): the simulator watches that folder and reloads the set while it runs. A card whose source and options
+match the copy already there keeps its record and images, so a push after one edit renders that one card.
 """
 import datetime
 import io
 import json
+import os
 import re
+import shutil
+import time
 import warnings
 import zipfile
+from pathlib import Path
 
 from PIL import Image
 
@@ -145,38 +153,143 @@ def _webp(png_bytes, size=None):
     return buf.getvalue()
 
 
-def export_zip(items, title, code, *, read, render, apply, changelog, today=None):
-    """-> zip bytes. items: [{id, edits?, style?, attacks?, foil?}] in set order (the first is card 001).
-    read / render / apply / changelog: gui.read, gui.render, edit.apply, gui.changelog (passed in: no import cycle)."""
+def card_options(item):
+    """What a card's render and record depend on besides its source card: compared to reuse an earlier export."""
+    return {"edits": item.get("edits") or {}, "style": item.get("style", "hybrid"),
+            "attacks": bool(item.get("attacks", True)), "foil": bool(item.get("foil"))}
+
+
+def build_set(items, title, code, *, read, render, apply, changelog, today=None, reuse=None):
+    """-> (set id, {path in the set folder: bytes}, {"rendered": n, "reused": n}): set.json, the cards' WebPs and
+    CHANGELOG.md. items: [{id, edits?, style?, attacks?, foil?}] in set order (the first is card 001).
+    read / render / apply / changelog: gui.read, gui.render, edit.apply, gui.changelog (passed in: no import cycle).
+    reuse(item) -> (record, high webp, low webp) | None: a card exported before with the same options, kept instead
+    of rendered and numbered for its place in this list."""
     set_id = set_id_for(code)
     if not isinstance(items, list) or not items:
         raise ValueError("items: a non-empty list")
     if len(items) > MAX_CARDS:
         raise ValueError(f"items: at most {MAX_CARDS} cards in a set")
-    records, images = [], {}
+    records, files, counts = [], {}, {"rendered": 0, "reused": 0}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for i, item in enumerate(items):
             if not isinstance(item, dict) or not isinstance(item.get("id"), str):
                 raise ValueError("items: expected objects with an id")
             local_id = f"{i + 1:03d}"
-            layout, original = read(item["id"])
-            card = apply(original, item["edits"]) if item.get("edits") else original
-            records.append(tcgdex_record(card, layout, set_id, local_id, item))
-            png = render(item["id"], item.get("edits"), item.get("style", "hybrid"), item.get("attacks", True),
-                         bool(item.get("foil")))[0]
-            images[local_id] = (_webp(png), _webp(png, LOW_SIZE))
+            kept = reuse(item) if reuse else None
+            if kept:
+                record, high, low = kept
+                records.append({**record, "id": f"{set_id}-{local_id}", "localId": local_id,
+                                "image": f"{IMAGE_ROOT}/{set_id}/{local_id}"})
+                counts["reused"] += 1
+            else:
+                layout, original = read(item["id"])
+                card = apply(original, item["edits"]) if item.get("edits") else original
+                records.append(tcgdex_record(card, layout, set_id, local_id, item))
+                png = render(item["id"], item.get("edits"), item.get("style", "hybrid"), item.get("attacks", True),
+                             bool(item.get("foil")))[0]
+                high, low = _webp(png), _webp(png, LOW_SIZE)
+                counts["rendered"] += 1
+            files[f"{local_id}/high.webp"], files[f"{local_id}/low.webp"] = high, low
     notes = sorted({str(w.message) for w in caught if "torch.jit" not in str(w.message)})
     record = set_record(set_id, code, title, records, today)
+    files["CHANGELOG.md"] = (changelog(items, title) + (
+        "\n\n## Export notes\n" + "".join(f"- {n}\n" for n in notes) if notes else "")).encode()
+    files["set.json"] = json.dumps(record, indent=1, ensure_ascii=False).encode()
+    return set_id, files, counts
+
+
+def export_zip(items, title, code, *, read, render, apply, changelog, today=None):
+    """-> zip bytes: build_set's files under one <set id>/ folder."""
+    set_id, files, _ = build_set(items, title, code, read=read, render=render, apply=apply, changelog=changelog,
+                                 today=today)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr(f"{set_id}/set.json", json.dumps(record, indent=1, ensure_ascii=False))
-        for local_id, (high, low) in images.items():
-            z.writestr(f"{set_id}/{local_id}/high.webp", high, zipfile.ZIP_STORED)
-            z.writestr(f"{set_id}/{local_id}/low.webp", low, zipfile.ZIP_STORED)
-        z.writestr(f"{set_id}/CHANGELOG.md", changelog(items, title) + (
-            "\n\n## Export notes\n" + "".join(f"- {n}\n" for n in notes) if notes else ""))
+        for name, data in files.items():
+            z.writestr(f"{set_id}/{name}", data, zipfile.ZIP_STORED if name.endswith(".webp") else zipfile.ZIP_DEFLATED)
     return buf.getvalue()
+
+
+CARD_DIR = re.compile(r"[0-9]{3}")
+
+
+def exported_cards(set_dir):
+    """{source card id: (record, high webp, low webp)} for a set this module wrote into set_dir; {} when there is
+    none or it cannot be read (the push then renders every card)."""
+    try:
+        data = json.loads((Path(set_dir) / "set.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not is_set_data(data):
+        return {}
+    out = {}
+    for rec in data["cards"]:
+        custom = rec.get("custom") if isinstance(rec, dict) else None
+        local_id = rec.get("localId") if isinstance(rec, dict) else None
+        if not isinstance(custom, dict) or not isinstance(local_id, str) or not CARD_DIR.fullmatch(local_id):
+            continue
+        try:
+            high = (Path(set_dir) / local_id / "high.webp").read_bytes()
+            low = (Path(set_dir) / local_id / "low.webp").read_bytes()
+        except OSError:
+            continue
+        out.setdefault(custom.get("source"), (rec, high, low))
+    return out
+
+
+def _write_if_changed(path, data, attempts=5):
+    """-> whether the file was written. Written whole to a temporary name, then renamed over the old one, so a
+    reader never sees half a file; Windows refuses the rename while another program holds the file, so it retries."""
+    try:
+        if path.read_bytes() == data:
+            return False
+    except OSError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, path)
+            return True
+        except PermissionError:
+            if attempt == attempts - 1:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.1 * (attempt + 1))
+    return True
+
+
+def write_set_dir(items, title, code, root, *, read, render, apply, changelog, force=False, today=None):
+    """The list as a custom set written straight into the simulator's custom-sets folder (root): <root>/<set id>/.
+    A card whose source and options (card_options) match the set already there keeps its record and images, unless
+    force. Only files whose bytes changed are written, set.json last (the simulator reloads on it); card folders
+    past the end of the list are removed; anything else in the folder (foil.json from import-foil.py) is left.
+    -> {setId, rendered, reused, written: [path], unchanged: n, removed: [card folder]}"""
+    set_dir = Path(root) / set_id_for(code)
+    before = {} if force else exported_cards(set_dir)
+
+    def reuse(item):
+        kept = before.get(item.get("id"))
+        if not kept:
+            return None
+        custom = kept[0]["custom"]
+        return kept if {k: custom.get(k) for k in ("edits", "style", "attacks", "foil")} == card_options(item) else None
+
+    set_id, files, counts = build_set(items, title, code, read=read, render=render, apply=apply,
+                                      changelog=changelog, today=today, reuse=reuse)
+    written, unchanged = [], 0
+    for name in sorted(files, key=lambda n: n == "set.json"):
+        if _write_if_changed(set_dir / name, files[name]):
+            written.append(name)
+        else:
+            unchanged += 1
+    keep = {name.split("/")[0] for name in files if "/" in name}
+    removed = sorted(d.name for d in set_dir.iterdir() if d.is_dir() and CARD_DIR.fullmatch(d.name) and d.name not in keep)
+    for name in removed:
+        shutil.rmtree(set_dir / name)
+    return {"setId": set_id, **counts, "written": written, "unchanged": unchanged, "removed": removed}
 
 
 def is_set_data(data):

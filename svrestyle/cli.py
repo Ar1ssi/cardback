@@ -128,6 +128,8 @@ def cmd_card(a):
 def cmd_gui(a):
     from . import gui
     fonts_dir(a.fonts)
+    if a.ptcg_sim:
+        os.environ["SVRESTYLE_PTCG_SIM"] = a.ptcg_sim
     gui.serve(a.port, open_browser=not a.no_browser)
 
 
@@ -152,6 +154,8 @@ def main(argv=None):
     pg.add_argument("--fonts")
     pg.add_argument("--port", type=int, default=8765)
     pg.add_argument("--no-browser", action="store_true", help="just print the address")
+    pg.add_argument("--ptcg-sim", metavar="DIR", help="the ptcg-sim checkout \"Send to ptcg-sim\" writes custom sets "
+                                                      "into (or set SVRESTYLE_PTCG_SIM)")
     pg.set_defaults(func=cmd_gui)
     for sp in (pp, pc, pg):
         sp.add_argument("--tcglive", metavar="DIR", help="take card scans from this Pokemon TCG Live extract "

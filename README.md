@@ -233,12 +233,20 @@ digits, the code a decklist prints: `4 Tyranitar HBW 1`) above the list and clic
 zip holds one folder, `custom<code>/` (`customhbw/`): `set.json` with every card in TCGdex's record shape (name, HP,
 type, stage, attacks, Abilities, weakness, resistance, retreat, Trainer text; your edits applied), each card as
 `<nnn>/high.webp` (733x1024) and `low.webp`, numbered in list order, and the CHANGELOG. Unzip it into the simulator's
-`client/src/assets/custom-sets/` and restart its server: the set shows under the deck builder's Custom pill, its cards
+`client/src/assets/custom-sets/` (the running simulator picks it up, no restart): the set shows under the deck builder's Custom pill, its cards
 import from a decklist by that code, and the rules engine reads their text like any printed card's (the simulator's
 TCGdex proxy serves the folder as TCGdex records). Each card in `set.json` also keeps the TCGdex card it was made from
 with your edits (`custom`), so "Import custom set…" opens the `set.json` again with everything restored. A Mega card's
 stage is the slot it evolves into (one above its pre-evolution, looked up on TCGdex; Stage 1 when that fails, noted in
 the CHANGELOG). Foil textures are not part of this export. `svrestyle/export.py` is the code.
+
+With the simulator on the same machine, skip the zip: set `SVRESTYLE_PTCG_SIM` to its checkout (or start the GUI with
+`--ptcg-sim DIR`; `start-site.bat` sets it when the simulator is in `Downloads\vibecodepokemontcg2-main`) and "Send to
+ptcg-sim" appears under the set code. It writes the same files straight into the simulator's
+`client/src/assets/custom-sets/<set id>/`; the simulator watches that folder, reloads the set while it runs and
+refreshes open deck builders. Only cards whose edits or options changed since the last send are rendered (Shift+click
+renders all of them), only changed files are written, and card folders past the end of the list are removed. "Keep
+ptcg-sim in sync" sends after every render of a card in the list. Games already running keep the cards they loaded.
 
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.

@@ -145,6 +145,10 @@
         <input id="setCode" type="text" maxlength="5" placeholder="Set code for ptcg-sim, 2–5 capitals (HBW)" aria-label="Set code" autocomplete="off" style="max-width: 300px">
         <button id="exportSetBtn" type="button" class="small primary" disabled title="Type a set code first">Download for ptcg-sim (.zip)</button>
       </div>
+      <div id="pushRow" class="addrow" hidden>
+        <button id="pushSetBtn" type="button" class="small" disabled title="Type a set code first">Send to ptcg-sim</button>
+        <label style="display:flex; gap:6px; align-items:center; margin:0" title="After each render of a card in the list, send the set again (only changed cards are rendered)"><input id="pushLive" type="checkbox"> Keep ptcg-sim in sync</label>
+      </div>
       <div class="addrow">
         <input id="addIds" type="text" placeholder="Add cards: TCGdex ids, e.g. sv10.5b-001, swsh5-92" aria-label="Card ids to add">
         <button id="addBtn" type="button" class="small">Add</button>
@@ -306,6 +310,8 @@ const state = {
   rendered: new Set(),    // ids rendered since the page opened (✓ in the list)
   removed: null,          // the last card taken out of the list, for Undo: {card, index, edits, options, changes}
   dragging: null,         // id of the row being dragged in the list
+  pushing: false,         // a send to ptcg-sim is on its way
+  pushAgain: false,       // another was asked for meanwhile: it goes out after
   project: null,          // name of the saved project being worked on (autosaved), or null
   autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
@@ -319,6 +325,7 @@ const state = {
   resyncAfter: false,     // the project is to be read again once the patch on its way is in
 };
 const LAST_PROJECT = "svrestyle.project";
+const PUSH_LIVE = "svrestyle.pushLive";             // "Keep ptcg-sim in sync", remembered per browser
 
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -636,6 +643,7 @@ async function renderNow() {
     showWarnings(data.warnings);
     status("");
     markRendered(id);
+    pushAfterRender(id);
   } catch (e) {
     if (seq === state.renderSeq) { status(""); showError(e.message); }
   } finally { if (seq === state.renderSeq) $("renderBtn").disabled = false; }
@@ -1194,6 +1202,40 @@ function drawExportButton(todo = state.setCards.filter((c) => !c.skip).length) {
   $("exportSetBtn").disabled = !ok;
   $("exportSetBtn").title = ok ? `Set id custom${code.toLowerCase()}: unzip into the simulator's client/src/assets/custom-sets/`
     : code && !SET_CODE.test(code) ? "Set code: 2 to 5 capital letters or digits" : "Type a set code first";
+  $("pushSetBtn").disabled = !ok || state.pushing;
+  $("pushSetBtn").title = ok ? `Write set custom${code.toLowerCase()} into the simulator's folder; the running simulator `
+    + "reloads it. Only cards changed since the last send are rendered (Shift+click renders every card)."
+    : $("exportSetBtn").title;
+}
+
+// "Send to ptcg-sim": the list written straight into the simulator's custom-sets folder (/api/push-set), which
+// the running simulator reloads. A send asked for while one runs goes out once that one ends.
+async function pushSimSet({ force = false, quiet = false } = {}) {
+  const items = state.setCards.filter((c) => !c.skip).map((c) => payload(c.id));
+  const code = $("setCode").value;
+  if (!state.meta.ptcgSim || !SET_CODE.test(code) || !items.length) return;
+  if (state.pushing) { state.pushAgain = true; return; }
+  state.pushing = true;
+  drawExportButton();
+  status(`Sending ${code} to ptcg-sim…`);
+  try {
+    const r = await (await api("/api/push-set", { items, title: $("setName").textContent, code, force })).json();
+    const rendered = r.rendered ? `${r.rendered} card${r.rendered === 1 ? "" : "s"} rendered, ` : "";
+    const removed = r.removed.length ? `, ${r.removed.length} removed` : "";
+    status(r.written.length ? `Sent ${code} to ptcg-sim: ${rendered}${r.written.length} file${r.written.length === 1 ? "" : "s"} updated${removed}.`
+      : `ptcg-sim already has ${code} as it is.`);
+    if (!quiet) setTimeout(() => { if ($("status").textContent.startsWith("Sent ")) status(""); }, 6000);
+  } catch (e) { status(""); showError(`Send to ptcg-sim: ${e.message}`); }
+  finally {
+    state.pushing = false;
+    drawExportButton();
+    if (state.pushAgain) { state.pushAgain = false; pushSimSet({ quiet: true }); }
+  }
+}
+
+function pushAfterRender(id) {
+  if (!$("pushLive").checked || !state.setCards.some((c) => c.id === id && !c.skip)) return;
+  pushSimSet({ quiet: true });
 }
 
 function markActive() {
@@ -1508,6 +1550,13 @@ async function init() {
   $("viewSel").addEventListener("change", showView);
   $("zipBtn").addEventListener("click", downloadZip);
   $("exportSetBtn").addEventListener("click", downloadSimSet);
+  $("pushRow").hidden = !state.meta.ptcgSim;
+  $("pushSetBtn").addEventListener("click", (e) => pushSimSet({ force: e.shiftKey }));
+  $("pushLive").checked = localStorage.getItem(PUSH_LIVE) === "1";
+  $("pushLive").addEventListener("change", () => {
+    localStorage.setItem(PUSH_LIVE, $("pushLive").checked ? "1" : "0");
+    if ($("pushLive").checked) pushSimSet();
+  });
   $("setCode").addEventListener("input", () => {
     const [start, end] = [$("setCode").selectionStart, $("setCode").selectionEnd];
     $("setCode").value = $("setCode").value.toUpperCase();

@@ -5,12 +5,13 @@ Stadium, Pokemon Tool), edit its name, type and text, and render it as a Scarlet
 a Scarlet & Violet or Mega Evolution Trainer keeps its art and is set again on its kind's frame); or import a custom-set export and restyle or edit every Pokemon and Trainer in it. Standard library
 only; serves on 127.0.0.1.
 
-  python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--no-browser]
+  python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--ptcg-sim DIR] [--no-browser]
 
 API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
   GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available,
-                              the wording terms the page capitalises as you type, whether /api/suggest works
+                              the wording terms the page capitalises as you type, whether /api/suggest works,
+                              whether a ptcg-sim folder is set for /api/push-set (ptcgSim)
   POST /api/suggest           {text, kind: "attack"|"ability"|"trainer", card?: {name, type, stage, hp}} ->
                               {text, notes: [str]}: the text rewritten in printed-card wording by Claude
                               (wording.suggest: ANTHROPIC_API_KEY, else the Claude Code CLI's login)
@@ -31,7 +32,11 @@ API (JSON in and out unless noted):
   POST /api/export-set        {items: [{id, edits?, style?, attacks?, foil?}], title?, code} -> application/zip:
                               the set for ptcg-sim (<set id>/set.json, <nnn>/high.webp + low.webp, CHANGELOG.md;
                               see export.py)
-  POST /api/zip               {items: [{id, edits?, style?, attacks?, foil?}], title?} -> application/zip (with foil
+  POST /api/push-set          {items, title?, code, force?} -> {setId, rendered, reused, written: [path], unchanged,
+                              removed: [card folder]}: the same set written into the simulator's custom-sets folder
+                              (SVRESTYLE_PTCG_SIM), which the running simulator reloads; only cards changed since
+                              the last push are rendered (export.write_set_dir), every card with force
+  POST /api/zip              {items: [{id, edits?, style?, attacks?, foil?}], title?} -> application/zip (with foil
                               also the 1024x1024 front, the white plates and <card>-foil.json, see foil.files), and
                               CHANGELOG.md
   POST /api/changelog         {items, title?} -> text/markdown: every card's changes from its printed card
@@ -95,7 +100,10 @@ POLL_WAIT = 20                        # s a poll waits for news before answering
 VIEWER_GONE = POLL_WAIT + 25          # s without a poll after which a page no longer counts as having it open
 EVENT_LOG = 200                       # events each project keeps for pages catching up
 
+SIM_SETS = ("client", "src", "assets", "custom-sets")   # where the simulator keeps custom sets, in its checkout
+
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
+_push_lock = threading.Lock()         # one write into the simulator's folder at a time
 _renders = OrderedDict()              # request key -> Render; the last few, for zip downloads
 _RENDER_CACHE = 48
 
@@ -382,6 +390,37 @@ def export_set(items, title, code):
         return export.export_zip(items, title, code, read=read, render=render, apply=edit.apply, changelog=changelog)
     except ValueError as e:
         raise UserError(str(e)) from e
+
+
+def sim_sets_dir():
+    """The simulator's custom-sets folder, from SVRESTYLE_PTCG_SIM: the simulator's checkout (its
+    client/src/assets/custom-sets is used, made if missing) or that folder itself; None when unset or neither."""
+    raw = os.environ.get("SVRESTYLE_PTCG_SIM", "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if (path / "client" / "src").is_dir():
+        return path.joinpath(*SIM_SETS)
+    if path.name == SIM_SETS[-1] and path.is_dir():
+        return path
+    return None
+
+
+def push_set(items, title, code, force=False):
+    """The list written into the simulator's custom-sets folder (export.write_set_dir), which the running simulator
+    reloads: only cards whose edits or options changed since the last push are rendered (all of them with force)."""
+    root = sim_sets_dir()
+    if root is None:
+        raise UserError("no ptcg-sim folder: start the GUI with SVRESTYLE_PTCG_SIM set to the simulator's folder "
+                        "(start-site.bat sets it when the simulator is in Downloads)")
+    if not isinstance(items, list) or not items:
+        raise UserError("items: a non-empty list")
+    with _push_lock:                      # two pages pushing at once would interleave their files
+        try:
+            return export.write_set_dir(items, title, code, root, read=read, render=render, apply=edit.apply,
+                                        changelog=changelog, force=bool(force))
+        except ValueError as e:
+            raise UserError(str(e)) from e
 
 
 def zip_renders(items, title=""):
@@ -696,7 +735,7 @@ class Handler(BaseHTTPRequestHandler):
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
                             "weakness": list(edit.WEAKNESS_VALUES), "resistance": list(edit.RESISTANCE_VALUES),
-                            "foil": bool(tcg.TCGLIVE)})
+                            "foil": bool(tcg.TCGLIVE), "ptcgSim": sim_sets_dir() is not None})
             elif url.path == "/api/card":
                 self._json(card_summary((parse_qs(url.query).get("id") or [""])[0].strip()))
             elif url.path == "/api/projects":
@@ -751,6 +790,8 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/export-set":
                 self._send(HTTPStatus.OK, export_set(body.get("items"), body.get("title", ""), body.get("code")),
                            "application/zip")
+            elif url.path == "/api/push-set":
+                self._json(push_set(body.get("items"), body.get("title", ""), body.get("code"), body.get("force")))
             elif url.path == "/api/changelog":
                 self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
                            "text/markdown; charset=utf-8")

@@ -210,3 +210,138 @@ class Http(unittest.TestCase):
         self.assertFalse(meta["suggest"])
         self.assertIn("Active Pokémon", meta["terms"])
         self.assertEqual(self.call("/api/suggest", {"text": "", "kind": "attack"})[0], 400)
+
+    def test_push_set_writes_into_the_simulator_folder(self):
+        import tempfile
+        import urllib.request
+        from pathlib import Path
+        fake = gui.Render(png_bytes(), [], "me")
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gui, "read", return_value=("me", pokemon())), \
+                mock.patch.object(gui, "render", return_value=fake), \
+                mock.patch.object(gui, "changelog", return_value="# log"):
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": ""}):
+                status, _, body = self.call("/api/push-set", {"items": [{"id": "swsh3-88"}], "code": "HBW"})
+                self.assertEqual(status, 400)
+                self.assertIn("SVRESTYLE_PTCG_SIM", json.loads(body)["error"])
+            (Path(tmp) / "client" / "src").mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp}):
+                with urllib.request.urlopen(self.base + "/api/meta", timeout=10) as r:
+                    self.assertTrue(json.loads(r.read())["ptcgSim"])
+                status, _, body = self.call("/api/push-set", {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"})
+                self.assertEqual(status, 200)
+                self.assertEqual({k: v for k, v in json.loads(body).items() if k != "written"},
+                                 {"setId": "customhbw", "rendered": 1, "reused": 0, "unchanged": 0, "removed": []})
+                self.assertTrue((Path(tmp) / "client/src/assets/custom-sets/customhbw/001/high.webp").is_file())
+
+
+
+class SimFolder(unittest.TestCase):
+    def test_sim_sets_dir_takes_the_checkout_or_the_folder_itself(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            sets = Path(tmp, "client", "src", "assets", "custom-sets")
+            for value, want in (("", None), (str(Path(tmp, "missing")), None), (tmp, None)):
+                with self.subTest(value=value), mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": value}):
+                    self.assertEqual(gui.sim_sets_dir(), want)
+            Path(tmp, "client", "src").mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp}):
+                self.assertEqual(gui.sim_sets_dir(), sets)     # made by the first push, not here
+            sets.mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": str(sets)}):
+                self.assertEqual(gui.sim_sets_dir(), sets)
+
+
+class Push(unittest.TestCase):
+    """write_set_dir: the set written into the simulator's folder, re-rendering only what changed."""
+    COLORS = {"swsh3-88": (200, 30, 30, 255), "base1-91": (30, 30, 200, 255), "swsh3-89": (30, 200, 30, 255)}
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.set_dir = self.root / SET_ID
+        self.renders = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def push(self, items, force=False, title="Homebrew Wave 1"):
+        reads = {"swsh3-88": ("me", pokemon()), "base1-91": ("trainer", trainer()),
+                 "swsh3-89": ("me", pokemon(id="swsh3-89", name="Larvitar", stage=0, evolves_from=""))}
+
+        def render(card_id, *rest):
+            self.renders.append(card_id)
+            return png_bytes(self.COLORS[card_id]), [], "me", None
+        return export.write_set_dir(items, title, "HBW", self.root, read=lambda i: reads[i], render=render,
+                                    apply=edit.apply, changelog=lambda items, title: f"# {title}", force=force,
+                                    today=datetime.date(2026, 10, 25))
+
+    def record(self):
+        return json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
+
+    def color_of(self, local_id):
+        """The card front's colour channel ("r", "g" or "b"): WebP is lossy, so exact pixels drift."""
+        pixel = Image.open(self.set_dir / local_id / "high.webp").convert("RGB").getpixel((360, 500))
+        return "rgb"[pixel.index(max(pixel))]
+
+    def test_first_push_writes_every_file_and_a_second_changes_nothing(self):
+        first = self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.assertEqual((first["setId"], first["rendered"], first["reused"], first["removed"]), (SET_ID, 2, 0, []))
+        self.assertEqual(first["written"][-1], "set.json")           # last: the simulator reloads on it
+        self.assertEqual(sorted(first["written"]), sorted(["001/high.webp", "001/low.webp", "002/high.webp",
+                                                           "002/low.webp", "CHANGELOG.md", "set.json"]))
+        again = self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.assertEqual((again["rendered"], again["reused"], again["written"], again["unchanged"]), (0, 2, [], 6))
+        self.assertEqual(self.renders, ["swsh3-88", "base1-91"])
+        self.assertEqual(list(self.set_dir.glob("**/.*.tmp")), [])
+
+    def test_an_edit_re_renders_that_card_only(self):
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.renders.clear()
+        r = self.push([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "base1-91"}])
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (1, 1, ["swsh3-88"]))
+        self.assertEqual(r["written"], ["set.json"])          # the mock renders the same pixels: equal WebPs stay
+        self.assertEqual(self.record()["cards"][0]["hp"], 190)
+        self.renders.clear()
+        r = self.push([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "base1-91", "style": "panel"}])
+        self.assertEqual(self.renders, ["base1-91"])
+
+    def test_reordering_moves_kept_cards_without_rendering(self):
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.renders.clear()
+        r = self.push([{"id": "base1-91"}, {"id": "swsh3-88"}])
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (0, 2, []))
+        cards = self.record()["cards"]
+        self.assertEqual([(c["id"], c["custom"]["source"], c["image"]) for c in cards], [
+            (f"{SET_ID}-001", "base1-91", f"/src/assets/custom-sets/{SET_ID}/001"),
+            (f"{SET_ID}-002", "swsh3-88", f"/src/assets/custom-sets/{SET_ID}/002")])
+        self.assertEqual((self.color_of("001"), self.color_of("002")), ("b", "r"))
+
+    def test_a_shorter_list_removes_card_folders_and_keeps_other_files(self):
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}, {"id": "swsh3-89"}])
+        (self.set_dir / "foil.json").write_text("{}")
+        r = self.push([{"id": "swsh3-89"}])
+        self.assertEqual((r["rendered"], r["removed"]), (0, ["002", "003"]))
+        self.assertEqual(sorted(p.name for p in self.set_dir.iterdir()), ["001", "CHANGELOG.md", "foil.json", "set.json"])
+        self.assertEqual(self.color_of("001"), "g")
+
+    def test_force_renders_every_card_and_a_broken_set_json_is_rebuilt(self):
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.renders.clear()
+        self.assertEqual(self.push([{"id": "swsh3-88"}, {"id": "base1-91"}], force=True)["rendered"], 2)
+        (self.set_dir / "set.json").write_text("{not json")
+        self.renders.clear()
+        r = self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.assertEqual((r["rendered"], self.renders), (2, ["swsh3-88", "base1-91"]))
+        self.assertEqual(self.record()["code"], "HBW")
+
+    def test_rejects_like_the_zip(self):
+        with self.assertRaises(ValueError):
+            self.push([])
+        with self.assertRaises(ValueError):
+            export.write_set_dir([{"id": "swsh3-88"}], "", "hbw", self.root, read=None, render=None, apply=None,
+                                 changelog=None)
+        self.assertFalse(any(self.root.iterdir()))
