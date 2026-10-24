@@ -204,9 +204,13 @@ Wording help: effect text (abilities, attacks, Trainer text) gets the TCG's fixe
 you type - "active pokemon" becomes "Active Pokémon", "knocked out" "Knocked Out", "energy card" "Energy card" - and
 the server does the same to every saved edit (`svrestyle/wording.py`; the list is the terms the ptcg-sim card corpora
 print capitalised, counted by `scripts/wording_terms.py`). Names and flavour text are left as typed. "Suggest wording"
-under each effect field asks Claude (model `claude-haiku-5-5`, through the Anthropic Messages API) for the same effect
-in printed-card wording; the suggestion shows with its notes and nothing changes until you click Use. It needs
-`ANTHROPIC_API_KEY` in the server's environment (the key never reaches the page); without it the button is disabled.
+under each effect field asks Claude (model `claude-haiku-5-5`) for the same effect in printed-card wording; the
+suggestion shows with its notes and nothing changes until you click Use. With `ANTHROPIC_API_KEY` in the server's
+environment it calls the Anthropic Messages API (the key never reaches the page). Without a key it runs the server
+machine's Claude Code CLI headless (`claude -p`, on that machine's Claude Code login): no tools, no MCP servers, and
+`--safe-mode`, so the machine's CLAUDE.md, hooks and plugins stay out; at most 2 at once and 20 a minute, since the
+tunnel makes the site public. `SVRESTYLE_CLAUDE` names the `claude` executable if it is not on `PATH`. With neither,
+the button is disabled.
 
 Working together: everyone with the same project open edits one copy. Each change goes to the server as a patch of
 only the cards and fields that changed, and the others' pages take it in about half a second (long polls, which

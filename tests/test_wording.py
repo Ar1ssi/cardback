@@ -1,6 +1,9 @@
 """Printed-wording helpers: term capitals and the Claude suggestion call (mocked, no network)."""
 import io
 import json
+import os
+import subprocess
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
@@ -63,14 +66,71 @@ def api_answer(text, notes=("x",)):
     return mock.MagicMock(__enter__=lambda s: s, __exit__=lambda *a: False, read=lambda: body.encode())
 
 
+def cli_done(result, returncode=0, is_error=False, stderr=""):
+    return subprocess.CompletedProcess([], returncode, json.dumps({"result": result, "is_error": is_error}), stderr)
+
+
 class Suggest(unittest.TestCase):
-    def test_needs_a_key(self):
-        with mock.patch.dict("os.environ", {}, clear=True):
+    def test_needs_a_key_or_the_claude_code_cli(self):
+        with mock.patch.dict("os.environ", {}, clear=True), mock.patch.object(wording.shutil, "which", return_value=None):
             self.assertFalse(wording.available())
+            self.assertIsNone(wording.backend())
             with self.assertRaises(wording.SuggestionError):
                 wording.suggest("flip a coin", "attack")
         with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}):
-            self.assertTrue(wording.available())
+            self.assertEqual(wording.backend(), "api")
+        with mock.patch.dict("os.environ", {"SVRESTYLE_CLAUDE": "/opt/claude"}, clear=True):
+            self.assertEqual(wording.backend(), "claude-code")
+
+    def test_the_cmd_shim_is_swapped_for_its_exe_or_refused(self):
+        with tempfile.TemporaryDirectory() as npm:
+            shim = os.path.join(npm, "claude.cmd")
+            with mock.patch.dict("os.environ", {"SVRESTYLE_CLAUDE": shim}, clear=True):
+                self.assertIsNone(wording.claude_cli())
+                exe = os.path.join(npm, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+                os.makedirs(os.path.dirname(exe))
+                open(exe, "wb").close()
+                self.assertEqual(wording.claude_cli(), exe)
+
+    def test_without_a_key_runs_claude_code_headless_with_no_tools(self):
+        run = mock.MagicMock(return_value=cli_done(json.dumps({"text": "draw 2 cards from your deck.", "notes": ["n"]})))
+        with mock.patch.dict("os.environ", {"SVRESTYLE_CLAUDE": "/opt/claude"}, clear=True):
+            out = wording.suggest("draw two", "trainer", {"name": "Hop"}, run=run)
+        self.assertEqual(out, {"text": "draw 2 cards from your deck.", "notes": ["n"]})
+        args, kwargs = run.call_args.args[0], run.call_args.kwargs
+        self.assertEqual(args[:2], ["/opt/claude", "-p"])
+        for flag in ("--safe-mode", "--strict-mcp-config", "--no-session-persistence"):
+            self.assertIn(flag, args)
+        self.assertEqual(args[args.index("--tools") + 1], "")
+        self.assertEqual(args[args.index("--model") + 1], wording.MODEL)
+        self.assertEqual(args[args.index("--system-prompt") + 1], wording.SYSTEM)
+        self.assertNotIn("draw two", " ".join(args))               # the user's text only goes through stdin
+        self.assertIn("draw two", kwargs["input"])
+        self.assertIn('"name": "Hop"', kwargs["input"])
+
+    def test_claude_code_failures_become_suggestion_errors(self):
+        failures = (cli_done("Not logged in", returncode=1, is_error=True),
+                    subprocess.CompletedProcess([], 1, "", "boom"),
+                    cli_done("Sure! Here you go."),
+                    subprocess.TimeoutExpired("claude", 90),
+                    FileNotFoundError("gone"))
+        with mock.patch.dict("os.environ", {"SVRESTYLE_CLAUDE": "/opt/claude"}, clear=True):
+            for failure in failures:
+                run = mock.MagicMock(side_effect=failure) if isinstance(failure, BaseException) else \
+                    mock.MagicMock(return_value=failure)
+                with self.subTest(failure=repr(failure)[:40]), self.assertRaises(wording.SuggestionError) as caught:
+                    wording.suggest("text", "attack", run=run)
+                self.assertTrue(str(caught.exception))
+
+    def test_claude_code_is_capped_per_minute(self):
+        run = mock.MagicMock(return_value=cli_done(json.dumps({"text": "x", "notes": []})))
+        with mock.patch.dict("os.environ", {"SVRESTYLE_CLAUDE": "/opt/claude"}, clear=True), \
+                mock.patch.object(wording, "_cli_starts", []):
+            for _ in range(wording.CLI_PER_MINUTE):
+                wording.suggest("text", "attack", run=run)
+            with self.assertRaises(wording.SuggestionError):
+                wording.suggest("text", "attack", run=run)
+        self.assertEqual(run.call_count, wording.CLI_PER_MINUTE)
 
     def test_calls_the_messages_api_and_fixes_terms_in_the_answer(self):
         urlopen = mock.MagicMock(return_value=api_answer("Flip a coin. If heads, your opponent's active pokémon is now Paralyzed."))

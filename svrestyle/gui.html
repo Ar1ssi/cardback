@@ -385,14 +385,15 @@ function fixTerms(input) {
   input.setSelectionRange(start, end);
 }
 
-// "Suggest wording": Claude rewrites an effect in printed-card wording (server /api/suggest, needs the server's
-// ANTHROPIC_API_KEY). The suggestion shows under the field with Use / Dismiss; nothing changes until Use.
+// "Suggest wording": Claude rewrites an effect in printed-card wording (server /api/suggest: the server's
+// ANTHROPIC_API_KEY, else its Claude Code CLI). The suggestion shows under the field with Use / Dismiss; nothing
+// changes until Use.
 function suggestTools(getText, setText, kind) {
   const button = el("button", { class: "small", type: "button" }, "Suggest wording");
   const box = el("div", { class: "suggest", hidden: true });
   const enabled = !!(state.meta && state.meta.suggest);
   button.disabled = !enabled;
-  if (!enabled) button.title = "Set ANTHROPIC_API_KEY in the server's environment to enable suggestions";
+  if (!enabled) button.title = "Install Claude Code (claude) on the server, or set its ANTHROPIC_API_KEY, to enable suggestions";
   button.addEventListener("click", async () => {
     const text = getText();
     if (!text.trim()) { showError("Type some text to rewrite first."); return; }

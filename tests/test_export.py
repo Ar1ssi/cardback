@@ -198,9 +198,10 @@ class Http(unittest.TestCase):
             self.assertIn("set code", json.loads(body)["error"])
             self.assertEqual(self.call("/api/export-set", {"items": [], "code": "HBW"})[0], 400)
 
-    def test_suggest_without_a_key_is_a_502_and_meta_says_so(self):
+    def test_suggest_without_a_key_or_cli_is_a_502_and_meta_says_so(self):
         import urllib.request
-        with mock.patch.dict("os.environ", {}, clear=True):
+        from svrestyle import wording
+        with mock.patch.dict("os.environ", {}, clear=True), mock.patch.object(wording.shutil, "which", return_value=None):
             status, _, body = self.call("/api/suggest", {"text": "flip coin", "kind": "attack"})
             self.assertEqual(status, 502)
             self.assertIn("ANTHROPIC_API_KEY", json.loads(body)["error"])

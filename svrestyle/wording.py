@@ -7,12 +7,19 @@ Two helpers:
   scripts/wording_terms.py: every term here prints capitalised in 99% or more of its uses, except "Basic", which
   older sets wrote "basic Energy" and every Scarlet & Violet / Mega Evolution card prints "Basic" (437 to 0);
   "damage counter", "attack", "heads" and "tails" print lower-case and are left alone).
-- suggest(text, kind, card): a rewrite in printed wording from Claude (model claude-haiku-5-5) through the
-  Anthropic Messages API, standard library only. Needs ANTHROPIC_API_KEY; available() says whether it is set.
+- suggest(text, kind, card): a rewrite in printed wording from Claude (model claude-haiku-5-5). With
+  ANTHROPIC_API_KEY set it calls the Anthropic Messages API (standard library only); without it, it runs the local
+  Claude Code CLI headless (`claude -p`, the machine's Claude Code login, no key needed). available() says whether
+  either works.
 """
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -195,18 +202,46 @@ Answer with JSON only: {"text": "<rewritten text>", "notes": ["<one short note p
 
 
 class SuggestionError(RuntimeError):
-    """The API could not give a suggestion (no key, network, upstream error, unusable answer)."""
+    """No suggestion could be had (no key or CLI, network, upstream error, busy, unusable answer)."""
+
+
+# The site can be public (start-site.bat's tunnel), so the CLI runs on the machine's own Claude Code login with a
+# cap: two sessions at once, CLI_PER_MINUTE starts a minute.
+CLI_TIMEOUT = 90
+CLI_PER_MINUTE = 20
+_cli_slots = threading.BoundedSemaphore(2)
+_cli_starts = []
+_cli_starts_lock = threading.Lock()
+
+
+def claude_cli():
+    """The Claude Code executable, or None. SVRESTYLE_CLAUDE names it explicitly. npm's Windows claude.cmd shim is
+    swapped for the claude.exe it wraps: a batch file would pass the arguments through cmd.exe."""
+    path = os.environ.get("SVRESTYLE_CLAUDE") or shutil.which("claude")
+    if not path:
+        return None
+    if path.lower().endswith((".cmd", ".bat")):
+        exe = os.path.join(os.path.dirname(path), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
+        return exe if os.path.isfile(exe) else None
+    return path
+
+
+def backend():
+    """"api" (ANTHROPIC_API_KEY set), "claude-code" (the CLI is installed) or None."""
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "api"
+    return "claude-code" if claude_cli() else None
 
 
 def available():
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return backend() is not None
 
 
 def _examples_block():
     return "\n\n".join(f"[{kind}] {source}\n{text}" for kind, source, text in EXAMPLES)
 
 
-def suggest(text, kind="attack", card=None, *, urlopen=urllib.request.urlopen, api_key=None):
+def suggest(text, kind="attack", card=None, *, urlopen=urllib.request.urlopen, api_key=None, run=subprocess.run):
     """-> {"text": str, "notes": [str]}. kind: attack | ability | trainer; card: {name, type, stage, hp} context."""
     if kind not in ("attack", "ability", "trainer"):
         raise ValueError("kind: attack, ability or trainer")
@@ -214,12 +249,60 @@ def suggest(text, kind="attack", card=None, *, urlopen=urllib.request.urlopen, a
         raise ValueError("text: nothing to rewrite")
     if len(text) > MAX_TEXT:
         raise ValueError(f"text: at most {MAX_TEXT} characters")
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        raise SuggestionError("ANTHROPIC_API_KEY is not set: start the GUI with the key in the environment")
     context = {k: v for k, v in (card or {}).items() if k in ("name", "type", "stage", "hp", "kind") and v}
     user = (f"Printed examples of the register:\n\n{_examples_block()}\n\n"
             f"Rewrite this {kind} text. Card: {json.dumps(context, ensure_ascii=False)}\n\n{text}")
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return _api_suggest(user, key, urlopen)
+    cli = claude_cli()
+    if not cli:
+        raise SuggestionError("no ANTHROPIC_API_KEY and no Claude Code CLI: install Claude Code (claude) and log in, "
+                              "or start the GUI with the key in the environment")
+    return parse_reply(_cli_reply(user, cli, run))
+
+
+def _take_cli_start(now=time.monotonic):
+    with _cli_starts_lock:
+        t = now()
+        _cli_starts[:] = [s for s in _cli_starts if t - s < 60]
+        if len(_cli_starts) >= CLI_PER_MINUTE:
+            raise SuggestionError(f"at most {CLI_PER_MINUTE} suggestions a minute: try again shortly")
+        _cli_starts.append(t)
+
+
+def _cli_reply(user, cli, run):
+    """The model's reply from a headless Claude Code session. The text comes from whoever opens the site, so the
+    session gets no tools and no MCP servers, and --safe-mode keeps the machine's CLAUDE.md, hooks, plugins and
+    skills out of it. The prompt goes through stdin, never the command line."""
+    _take_cli_start()
+    if not _cli_slots.acquire(timeout=CLI_TIMEOUT):
+        raise SuggestionError("suggestions are busy: try again in a moment")
+    args = [cli, "-p", "--safe-mode", "--tools", "", "--strict-mcp-config", "--model", MODEL,
+            "--no-session-persistence", "--output-format", "json", "--system-prompt", SYSTEM]
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cwd:
+            done = run(args, input=user, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=CLI_TIMEOUT, cwd=cwd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired as e:
+        raise SuggestionError(f"Claude Code took longer than {CLI_TIMEOUT} s") from e
+    except OSError as e:
+        raise SuggestionError(f"could not start Claude Code: {e}") from e
+    finally:
+        _cli_slots.release()
+    try:
+        out = json.loads(done.stdout or "")
+    except json.JSONDecodeError:
+        out = None
+    if not isinstance(out, dict):
+        detail = (done.stderr or done.stdout or "").strip()[:300]
+        raise SuggestionError(f"Claude Code failed (exit {done.returncode}): {detail or 'no output'}")
+    if done.returncode or out.get("is_error"):
+        raise SuggestionError(f"Claude Code error: {str(out.get('result') or out.get('subtype') or 'unknown')[:300]}")
+    return out.get("result") if isinstance(out.get("result"), str) else ""
+
+
+def _api_suggest(user, key, urlopen):
     body = json.dumps({"model": MODEL, "max_tokens": 600, "temperature": 0, "system": SYSTEM,
                        "messages": [{"role": "user", "content": user}]}).encode()
     req = urllib.request.Request(API_URL, body, {"Content-Type": "application/json", "x-api-key": key,
@@ -240,7 +323,11 @@ def suggest(text, kind="attack", card=None, *, urlopen=urllib.request.urlopen, a
 def parse_answer(answer):
     """The model's {"text", "notes"} out of a Messages API response."""
     parts = answer.get("content") if isinstance(answer, dict) else None
-    reply = "".join(p.get("text", "") for p in parts or [] if isinstance(p, dict) and p.get("type") == "text")
+    return parse_reply("".join(p.get("text", "") for p in parts or [] if isinstance(p, dict) and p.get("type") == "text"))
+
+
+def parse_reply(reply):
+    """{"text", "notes"} out of the model's reply text."""
     m = re.search(r"\{.*\}", reply, re.S)
     try:
         data = json.loads(m.group(0)) if m else None

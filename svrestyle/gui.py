@@ -13,7 +13,7 @@ API (JSON in and out unless noted):
                               the wording terms the page capitalises as you type, whether /api/suggest works
   POST /api/suggest           {text, kind: "attack"|"ability"|"trainer", card?: {name, type, stage, hp}} ->
                               {text, notes: [str]}: the text rewritten in printed-card wording by Claude
-                              (wording.suggest; needs ANTHROPIC_API_KEY in the server's environment)
+                              (wording.suggest: ANTHROPIC_API_KEY, else the Claude Code CLI's login)
   GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern"|"trainer", name, card: editable fields}
   POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout, changes,
                               foil?: {front: URL, base, reverse: {png: base64 white plate (card size), shader,
