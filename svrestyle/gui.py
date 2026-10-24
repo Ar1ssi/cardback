@@ -101,6 +101,7 @@ VIEWER_GONE = POLL_WAIT + 25          # s without a poll after which a page no l
 EVENT_LOG = 200                       # events each project keeps for pages catching up
 
 SIM_SETS = ("client", "src", "assets", "custom-sets")   # where the simulator keeps custom sets, in its checkout
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _push_lock = threading.Lock()         # one write into the simulator's folder at a time
@@ -711,6 +712,22 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as e:
             raise UserError(f"invalid JSON: {e}") from e
 
+    def _from_this_machine(self):
+        """Whether the request comes from a browser on this machine. The site is often shared through a Cloudflare
+        tunnel (start-site.bat), whose requests carry Cf-Connecting-Ip and the tunnel's host name; a DNS-rebinding
+        page carries its own host name; a page elsewhere posting here carries its own Origin."""
+        if self.headers.get("Cf-Connecting-Ip") or self.headers.get("Cf-Ray"):
+            return False
+        host, origin = self.headers.get("Host"), self.headers.get("Origin")
+        if not host or urlparse(f"//{host}").hostname not in LOOPBACK:
+            return False
+        return origin is None or urlparse(origin).hostname in LOOPBACK
+
+    def _can_push(self):
+        """/api/push-set writes into the simulator checkout: only for this machine's own browser, and only when the
+        checkout is known."""
+        return self._from_this_machine() and sim_sets_dir() is not None
+
     def _guard(self, fn):
         try:
             fn()
@@ -730,7 +747,7 @@ class Handler(BaseHTTPRequestHandler):
             if url.path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif url.path == "/api/meta":
-                self._json({"energy": list(edit.ENERGY), "styles": list(STYLES), "ptcgSim": sim_sets_dir() is not None,
+                self._json({"energy": list(edit.ENERGY), "styles": list(STYLES), "ptcgSim": self._can_push(),
                             "terms": [term for term, _ in wording.TERMS], "suggest": wording.available(),
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
@@ -791,6 +808,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, export_set(body.get("items"), body.get("title", ""), body.get("code")),
                            "application/zip")
             elif url.path == "/api/push-set":
+                if not self._from_this_machine():
+                    self._json({"error": "Send to ptcg-sim works only in a browser on the machine running the editor"},
+                               HTTPStatus.FORBIDDEN)
+                    return
                 self._json(push_set(body.get("items"), body.get("title", ""), body.get("code"), body.get("force")))
             elif url.path == "/api/changelog":
                 self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),

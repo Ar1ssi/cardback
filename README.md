@@ -245,8 +245,11 @@ With the simulator on the same machine, skip the zip: set `SVRESTYLE_PTCG_SIM` t
 ptcg-sim" appears under the set code. It writes the same files straight into the simulator's
 `client/src/assets/custom-sets/<set id>/`; the simulator watches that folder, reloads the set while it runs and
 refreshes open deck builders. Only cards whose edits or options changed since the last send are rendered (Shift+click
-renders all of them), only changed files are written, and card folders past the end of the list are removed. "Keep
-ptcg-sim in sync" sends after every render of a card in the list. Games already running keep the cards they loaded.
+renders all of them: do that once after updating the editor, whose new rendering a kept card would not show), only
+changed files are written, and card folders past the end of the list are removed. "Keep ptcg-sim in sync" sends after
+every render of a card in the list. Games already running keep the cards they loaded. The button shows, and the route
+answers, only in a browser on the machine running the editor: visitors through the Cloudflare tunnel cannot write
+into the simulator.
 
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.

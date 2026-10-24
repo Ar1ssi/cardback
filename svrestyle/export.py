@@ -18,6 +18,7 @@ ptcg-sim"): the simulator watches that folder and reloads the set while it runs.
 match the copy already there keeps its record and images, so a push after one edit renders that one card.
 """
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -190,6 +191,7 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
                 png = render(item["id"], item.get("edits"), item.get("style", "hybrid"), item.get("attacks", True),
                              bool(item.get("foil")))[0]
                 high, low = _webp(png), _webp(png, LOW_SIZE)
+                records[-1]["custom"]["files"] = {"high": _digest(high), "low": _digest(low)}
                 counts["rendered"] += 1
             files[f"{local_id}/high.webp"], files[f"{local_id}/low.webp"] = high, low
     notes = sorted({str(w.message) for w in caught if "torch.jit" not in str(w.message)})
@@ -214,9 +216,14 @@ def export_zip(items, title, code, *, read, render, apply, changelog, today=None
 CARD_DIR = re.compile(r"[0-9]{3}")
 
 
+def _digest(data):
+    return hashlib.sha1(data).hexdigest()[:16]
+
+
 def exported_cards(set_dir):
     """{source card id: (record, high webp, low webp)} for a set this module wrote into set_dir; {} when there is
-    none or it cannot be read (the push then renders every card)."""
+    none or it cannot be read (the push then renders every card). A card whose images are not the ones its record
+    names (custom.files: a push that stopped half way, a hand edit) is left out, so it is rendered again."""
     try:
         data = json.loads((Path(set_dir) / "set.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -229,12 +236,16 @@ def exported_cards(set_dir):
         local_id = rec.get("localId") if isinstance(rec, dict) else None
         if not isinstance(custom, dict) or not isinstance(local_id, str) or not CARD_DIR.fullmatch(local_id):
             continue
+        if not isinstance(custom.get("source"), str) or not isinstance(custom.get("files"), dict):
+            continue
         try:
             high = (Path(set_dir) / local_id / "high.webp").read_bytes()
             low = (Path(set_dir) / local_id / "low.webp").read_bytes()
         except OSError:
             continue
-        out.setdefault(custom.get("source"), (rec, high, low))
+        if custom["files"] != {"high": _digest(high), "low": _digest(low)}:
+            continue
+        out.setdefault(custom["source"], (rec, high, low))
     return out
 
 
@@ -248,7 +259,11 @@ def _write_if_changed(path, data, attempts=5):
         pass
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_bytes(data)
+    try:
+        tmp.write_bytes(data)
+    except OSError:
+        tmp.unlink(missing_ok=True)              # disk full: no half file left behind
+        raise
     for attempt in range(attempts):
         try:
             os.replace(tmp, path)

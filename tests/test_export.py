@@ -233,6 +233,18 @@ class Http(unittest.TestCase):
                 self.assertEqual({k: v for k, v in json.loads(body).items() if k != "written"},
                                  {"setId": "customhbw", "rendered": 1, "reused": 0, "unchanged": 0, "removed": []})
                 self.assertTrue((Path(tmp) / "client/src/assets/custom-sets/customhbw/001/high.webp").is_file())
+                body = json.dumps({"items": [{"id": "swsh3-88"}], "code": "HBW"}).encode()
+                for headers in ({"Origin": "https://evil.example"}, {"Cf-Connecting-Ip": "203.0.113.9"},
+                                {"Host": "abc.trycloudflare.com"}):
+                    with self.subTest(headers=headers):
+                        req = urllib.request.Request(self.base + "/api/push-set", body,
+                                                     {"Content-Type": "application/json", **headers})
+                        with self.assertRaises(urllib.error.HTTPError) as caught:
+                            urllib.request.urlopen(req, timeout=10)
+                        self.assertEqual(caught.exception.code, 403)
+                        meta = urllib.request.Request(self.base + "/api/meta", None, headers)
+                        with urllib.request.urlopen(meta, timeout=10) as r:
+                            self.assertFalse(json.loads(r.read())["ptcgSim"])
 
 
 
@@ -337,6 +349,17 @@ class Push(unittest.TestCase):
         r = self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
         self.assertEqual((r["rendered"], self.renders), (2, ["swsh3-88", "base1-91"]))
         self.assertEqual(self.record()["code"], "HBW")
+
+    def test_images_that_are_not_the_ones_the_record_names_are_rendered_again(self):
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        (self.set_dir / "001" / "high.webp").write_bytes((self.set_dir / "002" / "high.webp").read_bytes())
+        record = self.record()
+        record["cards"][1]["custom"]["source"] = ["not", "a", "card id"]          # a hand edit
+        (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
+        self.renders.clear()
+        r = self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (2, 0, ["swsh3-88", "base1-91"]))
+        self.assertEqual(self.color_of("001"), "r")
 
     def test_rejects_like_the_zip(self):
         with self.assertRaises(ValueError):

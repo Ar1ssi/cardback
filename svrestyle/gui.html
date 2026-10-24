@@ -311,7 +311,7 @@ const state = {
   removed: null,          // the last card taken out of the list, for Undo: {card, index, edits, options, changes}
   dragging: null,         // id of the row being dragged in the list
   pushing: false,         // a send to ptcg-sim is on its way
-  pushAgain: false,       // another was asked for meanwhile: it goes out after
+  pushAgain: false,       // another was asked for meanwhile (true, or "force"): it goes out after
   project: null,          // name of the saved project being worked on (autosaved), or null
   autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
@@ -1214,7 +1214,7 @@ async function pushSimSet({ force = false, quiet = false } = {}) {
   const items = state.setCards.filter((c) => !c.skip).map((c) => payload(c.id));
   const code = $("setCode").value;
   if (!state.meta.ptcgSim || !SET_CODE.test(code) || !items.length) return;
-  if (state.pushing) { state.pushAgain = true; return; }
+  if (state.pushing) { state.pushAgain = state.pushAgain === "force" || force ? "force" : true; return; }
   state.pushing = true;
   drawExportButton();
   status(`Sending ${code} to ptcg-sim…`);
@@ -1229,7 +1229,11 @@ async function pushSimSet({ force = false, quiet = false } = {}) {
   finally {
     state.pushing = false;
     drawExportButton();
-    if (state.pushAgain) { state.pushAgain = false; pushSimSet({ quiet: true }); }
+    if (state.pushAgain) {
+      const again = state.pushAgain;
+      state.pushAgain = false;
+      pushSimSet({ force: again === "force", quiet: true });
+    }
   }
 }
 
