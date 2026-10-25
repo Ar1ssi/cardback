@@ -2,6 +2,7 @@
 import datetime
 import io
 import json
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -255,9 +256,16 @@ class Http(unittest.TestCase):
         script = ("const args = process.argv.slice(2);\n"
                   "if (process.env.FAKE_PUBLISH_FAIL) { console.error('rclone copy blobs failed: AccessDenied'); "
                   "process.exit(1); }\n"
+                  "if (process.env.FAKE_PUBLISH_NOREPORT) { console.log('done, no json'); process.exit(0); }\n"
+                  # a stalled upload: a child (rclone's place) that would write the marker if it outlived the kill
+                  "if (process.env.FAKE_PUBLISH_HANG) { process.getBuiltinModule('child_process').spawn(process.execPath, ['-e', "
+                  "`setTimeout(() => require('fs').writeFileSync(${JSON.stringify(process.env.FAKE_PUBLISH_HANG)}, "
+                  "'x'), 4000)`], { stdio: 'inherit' }); setTimeout(() => {}, 60000); }\n"
+                  "else {\n"
                   "console.log('progress line');\n"
                   "console.log(JSON.stringify({ sets: [{ setId: args[0], uploaded: 3, uploadedBytes: 4096, reused: 1, "
-                  "skipped: [], unchanged: false }], deleted: 0, dryRun: false, args }));\n")
+                  "skipped: [], unchanged: false }], deleted: 0, dryRun: false, args }));\n"
+                  "}\n")
         meta = lambda: json.loads(urllib.request.urlopen(self.base + "/api/meta", timeout=10).read())["ptcgSite"]
         items = {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"}
         with tempfile.TemporaryDirectory() as tmp, \
@@ -284,7 +292,22 @@ class Http(unittest.TestCase):
                 with mock.patch.dict("os.environ", {"FAKE_PUBLISH_FAIL": "1"}):
                     status, _, body = self.call("/api/publish-set", items)
                 self.assertEqual(status, 502)
-                self.assertEqual(json.loads(body)["error"], "publish failed: rclone copy blobs failed: AccessDenied")
+                failed = json.loads(body)
+                self.assertEqual(failed["error"], "sent to ptcg-sim, but publishing failed: rclone copy blobs failed: "
+                                                  "AccessDenied")
+                self.assertEqual(failed["pushed"]["setId"], "customhbw", "the push result survives the failed upload")
+                with mock.patch.dict("os.environ", {"FAKE_PUBLISH_NOREPORT": "1"}):
+                    status, _, body = self.call("/api/publish-set", items)
+                self.assertEqual(status, 502)
+                self.assertIn("gave no report: 'done, no json'", json.loads(body)["error"])
+                marker = Path(tmp, "child-outlived-the-kill")
+                with mock.patch.dict("os.environ", {"FAKE_PUBLISH_HANG": str(marker)}), \
+                        mock.patch.object(gui, "PUBLISH_TIMEOUT", 1):
+                    status, _, body = self.call("/api/publish-set", items)
+                self.assertEqual(status, 502)
+                self.assertIn("stopped it", json.loads(body)["error"])
+                time.sleep(5)
+                self.assertFalse(marker.exists(), "the script's child process was killed with it")
                 req = urllib.request.Request(self.base + "/api/publish-set", json.dumps(items).encode(),
                                              {"Content-Type": "application/json", "Cf-Connecting-Ip": "203.0.113.9"})
                 with self.assertRaises(urllib.error.HTTPError) as caught:

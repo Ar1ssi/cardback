@@ -111,7 +111,7 @@ EVENT_LOG = 200                       # events each project keeps for pages catc
 SIM_SETS = ("client", "src", "assets", "custom-sets")   # where the simulator keeps custom sets, in its checkout
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 PUBLISH_SCRIPT = ("scripts", "custom-sets", "publish.mjs")    # the simulator's bucket uploader, in its checkout
-PUBLISH_TIMEOUT = 600                 # s: a first publish of a big set uploads ~100 MB
+PUBLISH_TIMEOUT = 20 * 60             # s: past the script's own 15-minute upload limit, so it reports first
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _push_lock = threading.Lock()         # one write into the simulator's folder at a time
@@ -124,7 +124,9 @@ class UserError(ValueError):
 
 
 class PublishError(Exception):
-    """The upload to the site's bucket failed (rclone, the network, the bucket): the dependency, so a 502."""
+    """The upload to the site's bucket failed (rclone, the network, the bucket): the dependency, so a 502. `pushed`
+    is the push into ptcg-sim that went before it, when there was one."""
+    pushed = None
 
 
 class Render(tuple):
@@ -431,11 +433,16 @@ def push_set(items, title, code, force=False):
     if not isinstance(items, list) or not items:
         raise UserError("items: a non-empty list")
     with _push_lock:                      # two pages pushing at once would interleave their files
-        try:
-            return export.write_set_dir(items, title, code, root, read=read, render=render, apply=edit.apply,
-                                        changelog=changelog, force=bool(force))
-        except ValueError as e:
-            raise UserError(str(e)) from e
+        return _write_set(items, title, code, root, force)
+
+
+def _write_set(items, title, code, root, force):
+    """export.write_set_dir into `root`; the caller holds _push_lock."""
+    try:
+        return export.write_set_dir(items, title, code, root, read=read, render=render, apply=edit.apply,
+                                    changelog=changelog, force=bool(force))
+    except ValueError as e:
+        raise UserError(str(e)) from e
 
 
 def site_remote():
@@ -452,9 +459,38 @@ def sim_checkout():
     return checkout if checkout.joinpath(*PUBLISH_SCRIPT).is_file() else None
 
 
+def _kill_tree(proc):
+    """Stops the publish script and the rclone it started: killing node alone would leave rclone uploading."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        proc.kill()
+    proc.communicate()
+
+
+def _run_publish(node, checkout, set_id, remote):
+    """The publish script's --json report; PublishError on a failure, a timeout or no report."""
+    proc = subprocess.Popen([node, str(checkout.joinpath(*PUBLISH_SCRIPT)), set_id, "--remote", remote, "--json"],
+                            cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
+                            errors="replace")
+    try:
+        out, err = proc.communicate(timeout=PUBLISH_TIMEOUT)
+    except subprocess.TimeoutExpired as e:
+        _kill_tree(proc)
+        raise PublishError(f"publishing gave no answer in {PUBLISH_TIMEOUT} s; stopped it") from e
+    if proc.returncode != 0:
+        lines = (err or out or "").strip().splitlines()
+        raise PublishError("publishing failed: " + (" | ".join(lines[-5:]) or f"exit status {proc.returncode}"))
+    try:
+        return json.loads(out.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as e:
+        raise PublishError(f"the publish script gave no report: {out.strip()[-300:]!r}") from e
+
+
 def publish_set(items, title, code, force=False):
-    """push_set, then the simulator's publish script uploads that folder to the site's bucket. The push lock is held
-    through the upload too, so no push rewrites the files while they go up."""
+    """The set written into the simulator's folder as push_set does, then uploaded to the site's bucket by the
+    simulator's publish script. The push lock is held through both, so no push rewrites the files while they go up.
+    A failed upload still carries the push's answer (PublishError.pushed): the set is in ptcg-sim either way."""
     remote = site_remote()
     if remote is None:
         raise UserError("set CUSTOM_SETS_R2_REMOTE to the site's bucket (e.g. r2:ptcg-foil/custom-sets) to publish")
@@ -464,21 +500,16 @@ def publish_set(items, title, code, force=False):
     node = shutil.which("node")
     if node is None:
         raise UserError("node not found on PATH: the publish script runs on Node.js")
-    pushed = push_set(items, title, code, force)
+    if not isinstance(items, list) or not items:
+        raise UserError("items: a non-empty list")
     with _push_lock:
+        pushed = _write_set(items, title, code, sim_sets_dir(), force)
         try:
-            run = subprocess.run([node, str(checkout.joinpath(*PUBLISH_SCRIPT)), pushed["setId"], "--remote", remote,
-                                  "--json"], cwd=checkout, capture_output=True, encoding="utf-8", errors="replace",
-                                 timeout=PUBLISH_TIMEOUT)
-        except subprocess.TimeoutExpired as e:
-            raise PublishError(f"publishing took over {PUBLISH_TIMEOUT // 60} minutes") from e
-    if run.returncode != 0:
-        lines = (run.stderr or run.stdout or "").strip().splitlines()
-        raise PublishError("publish failed: " + (" | ".join(lines[-5:]) or f"exit status {run.returncode}"))
-    try:
-        report = json.loads(run.stdout.strip().splitlines()[-1])
-    except (IndexError, json.JSONDecodeError) as e:
-        raise PublishError(f"the publish script gave no report: {run.stdout.strip()[-300:]!r}") from e
+            report = _run_publish(node, checkout, pushed["setId"], remote)
+        except PublishError as e:
+            failed = PublishError(f"sent to ptcg-sim, but {e}")
+            failed.pushed = pushed
+            raise failed from e
     return {**pushed, "published": report}
 
 
@@ -885,7 +916,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(publish_set(body.get("items"), body.get("title", ""), body.get("code"),
                                            body.get("force")))
                 except PublishError as e:
-                    self._json({"error": str(e)}, HTTPStatus.BAD_GATEWAY)
+                    self._json({"error": str(e), "pushed": e.pushed}, HTTPStatus.BAD_GATEWAY)
             elif url.path == "/api/changelog":
                 self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
                            "text/markdown; charset=utf-8")
