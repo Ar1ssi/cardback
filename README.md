@@ -259,7 +259,8 @@ With the simulator on the same machine, skip the zip: set `SVRESTYLE_PTCG_SIM` t
 ptcg-sim" appears under the set code. It writes the same files straight into the simulator's
 `client/src/assets/custom-sets/<set id>/`; the simulator watches that folder, reloads the set while it runs and
 refreshes open deck builders. Only cards whose edits or options changed since the last send are rendered (Shift+click
-renders all of them: do that once after updating the editor, whose new rendering a kept card would not show), only
+renders all of them: do that once after updating the editor, whose new rendering a kept card would not show; a set
+exported before records kept image digests has its images taken as they are, and the next send adds them), only
 changed files are written, and card folders past the end of the list are removed. "Keep ptcg-sim in sync" sends after
 every render of a card in the list. Games already running keep the cards they loaded. The button shows, and the route
 answers, only in a browser on the machine running the editor: visitors through the Cloudflare tunnel cannot write
@@ -294,7 +295,9 @@ code, works out what would change without rendering anything and lists it: the c
 since they were pushed (with what changed: HP, an attack's damage, its options), and the ones no saved project has,
 which the push removes. Cards already in the set keep their numbers (a deck names a card by its number), the new ones
 go on the end; taking cards out of the middle renumbers the ones after them, and the popup says how many. "Push to
-ptcg-sim" sends exactly the list shown; "Push and publish to site" then uploads it.
+ptcg-sim" sends exactly the list shown, rendering only the cards listed (the list is built with the test the send
+makes, so it cannot promise a card is unchanged that the send will render); Shift+click renders every card again.
+"Push and publish to site" then uploads it.
 
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.

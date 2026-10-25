@@ -570,9 +570,9 @@ class Push(unittest.TestCase):
         panel = {"id": "base1-91", "style": "panel", "foil": True}
         plan = export.plan_set([edited, panel, {"id": "sv1-1"}], self.set_dir)
         self.assertEqual(plan["added"], [{"id": "sv1-1"}])
-        self.assertEqual([(item["id"], old) for item, old in plan["changed"]], [
-            ("swsh3-88", {"edits": {}, "style": "hybrid", "attacks": True, "foil": False}),
-            ("base1-91", {"edits": {}, "style": "hybrid", "attacks": True, "foil": False})])
+        self.assertEqual([(item["id"], old, stale) for item, old, stale in plan["changed"]], [
+            ("swsh3-88", {"edits": {}, "style": "hybrid", "attacks": True, "foil": False}, False),
+            ("base1-91", {"edits": {}, "style": "hybrid", "attacks": True, "foil": False}, False)])
         self.assertEqual(plan["removed"], [("swsh3-89", "Larvitar")])
         self.assertEqual((plan["moved"], plan["unchanged"]), (0, 0), "the cards keep their places")
         moved = export.plan_set([cards[2], cards[0], cards[1]], self.set_dir)
@@ -580,6 +580,46 @@ class Push(unittest.TestCase):
         self.assertEqual(self.renders, [], "planning renders nothing")
         self.assertEqual(export.existing_title(self.set_dir), "Homebrew Wave 1")
         self.assertEqual(export.existing_title(self.set_dir / "nope"), "")
+
+    def strip_digests(self, *local_ids):
+        """The set as an export from before records kept image digests wrote it (those cards, or all)."""
+        record = self.record()
+        for card in record["cards"]:
+            if not local_ids or card["localId"] in local_ids:
+                card["custom"].pop("files")
+        (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_a_set_exported_before_records_kept_digests_has_its_images_taken_as_they_are(self):
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        self.strip_digests()
+        high, low = (self.set_dir / "001" / "high.webp").read_bytes(), (self.set_dir / "001" / "low.webp").read_bytes()
+        kept = export.exported_cards(self.set_dir)
+        self.assertEqual(sorted(kept), ["base1-91", "swsh3-88"])
+        self.assertEqual(kept["swsh3-88"][0]["custom"]["files"], {"high": export._digest(high), "low": export._digest(low)})
+        self.renders.clear()
+        r = self.push([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "base1-91"}])
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (1, 1, ["swsh3-88"]), "only the changed card")
+        self.assertTrue(all(set(c["custom"]["files"]) == {"high", "low"} for c in self.record()["cards"]),
+                        "every record keeps digests now: the next push checks them")
+        self.strip_digests()
+        (self.set_dir / "002" / "high.webp").unlink()                 # a legacy card with an image gone is rendered
+        self.renders.clear()
+        r = self.push([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "base1-91"}])
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (1, 1, ["base1-91"]))
+
+    def test_the_plan_is_what_the_push_does_with_digests_missing_wrong_or_fine(self):
+        cards = [{"id": "swsh3-88"}, {"id": "base1-91"}, {"id": "swsh3-89"}]
+        self.push(cards)
+        self.strip_digests("001")                                     # taken as it is
+        (self.set_dir / "002" / "low.webp").write_bytes(b"not the image the record names")      # a hand edit
+        plan = export.plan_set(cards, self.set_dir)
+        self.assertEqual([(item["id"], stale) for item, _, stale in plan["changed"]], [("base1-91", True)])
+        self.assertEqual((plan["unchanged"], plan["added"]), (2, []))
+        self.renders.clear()
+        r = self.push(cards)
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (1, 2, ["base1-91"]), "the plan said so")
+        again = export.plan_set(cards, self.set_dir)
+        self.assertEqual((again["changed"], again["unchanged"]), ([], 3), "and the push mended it")
 
     def test_rejects_like_the_zip(self):
         with self.assertRaises(ValueError):

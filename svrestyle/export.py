@@ -236,9 +236,11 @@ def _digest(data):
 
 
 def exported_cards(set_dir):
-    """{source card id: (record, high webp, low webp)} for a set this module wrote into set_dir; {} when there is
-    none or it cannot be read (the push then renders every card). A card whose images are not the ones its record
-    names (custom.files: a push that stopped half way, a hand edit) is left out, so it is rendered again."""
+    """{source card id: (record, high webp, low webp)} for the cards of a set this module wrote into set_dir that a
+    push can keep instead of rendering; {} when there is no such set or it cannot be read (the push then renders every
+    card). A card whose images are not the ones its record names (custom.files: a push that stopped half way, a hand
+    edit) is left out, so it is rendered again. A record with no custom.files (a set exported before records kept
+    them) has its images taken as they are, and comes back with their digests, so the next push checks them."""
     try:
         data = json.loads((Path(set_dir) / "set.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -251,14 +253,17 @@ def exported_cards(set_dir):
         local_id = rec.get("localId") if isinstance(rec, dict) else None
         if not isinstance(custom, dict) or not isinstance(local_id, str) or not CARD_DIR.fullmatch(local_id):
             continue
-        if not isinstance(custom.get("source"), str) or not isinstance(custom.get("files"), dict):
+        if not isinstance(custom.get("source"), str):
             continue
         try:
             high = (Path(set_dir) / local_id / "high.webp").read_bytes()
             low = (Path(set_dir) / local_id / "low.webp").read_bytes()
         except OSError:
             continue
-        if custom["files"] != {"high": _digest(high), "low": _digest(low)}:
+        digests = {"high": _digest(high), "low": _digest(low)}
+        if "files" not in custom:
+            rec = {**rec, "custom": {**custom, "files": digests}}
+        elif custom["files"] != digests:
             continue
         out.setdefault(custom["source"], (rec, high, low))
     return out
@@ -326,11 +331,14 @@ def dropped_cards(existing, ids):
 
 
 def plan_set(items, set_dir):
-    """What a push of `items` (in set order) would change in the set already in set_dir, from its set.json alone:
-    nothing is rendered or written. -> {existing: cards there (None: no set), added: [item], changed: [(item, the
-    options its card was pushed with)], removed: [(source, name)], moved: cards that get another number, unchanged: n}.
-    A card is changed when its options (card_options) differ from the ones its record keeps."""
+    """What a push of `items` (in set order) would change in the set already in set_dir: nothing is rendered or
+    written. -> {existing: cards there (None: no set), added: [item], changed: [(item, the options its card was pushed
+    with, whether its images are not the ones its record names)], removed: [(source, name)], moved: cards that get
+    another number, unchanged: n}. A card is unchanged when the push keeps it (exported_cards: the same test, so the
+    plan is what the push does) and its options (card_options) are the ones its record keeps; any other card the push
+    renders is changed."""
     data = _set_json(set_dir)
+    kept = exported_cards(set_dir)
     records = {}
     for place, rec in enumerate(data["cards"] if data else []):
         if _source_of(rec):
@@ -345,10 +353,12 @@ def plan_set(items, set_dir):
         plan["moved"] += was != place
         custom = rec["custom"]
         old = {k: custom.get(k) for k in ("edits", "style", "attacks", "foil")}
-        if old == card_options(item):
+        if item["id"] not in kept:
+            plan["changed"].append((item, old, True))
+        elif old == card_options(item):
             plan["unchanged"] += 1
         else:
-            plan["changed"].append((item, old))
+            plan["changed"].append((item, old, False))
     if data:
         plan["removed"] = dropped_cards(existing_cards(set_dir), [item["id"] for item in items])
     return plan

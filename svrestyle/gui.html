@@ -190,8 +190,8 @@
     <span class="hint">Every saved project, merged: a card in several projects comes from the newest one. Cards already in the set keep their numbers.</span>
     <span>
       <button id="pushAllCloseBtn" type="button">Close</button>
-      <button id="pushAllSendBtn" type="button" class="primary" disabled>Push to ptcg-sim</button>
-      <button id="pushAllPublishBtn" type="button" disabled hidden title="Push to ptcg-sim, then upload the set to the site's bucket">Push and publish to site</button>
+      <button id="pushAllSendBtn" type="button" class="primary" disabled title="Writes exactly this list into ptcg-sim. Shift+click renders every card again, not only the ones listed.">Push to ptcg-sim</button>
+      <button id="pushAllPublishBtn" type="button" disabled hidden title="Push to ptcg-sim, then upload the set to the site's bucket. Shift+click renders every card again.">Push and publish to site</button>
     </span>
   </p>
 </dialog>
@@ -1617,7 +1617,7 @@ async function openPushAll() {
   checkPushAll();
 }
 
-async function pushPlanned(kind) {
+async function pushPlanned(kind, force = false) {
   const plan = pushPlan;
   if (!plan) return;
   $("pushAllDlg").close();
@@ -1626,7 +1626,7 @@ async function pushPlanned(kind) {
   // not shown, so the server asks about it.
   const summary = [[plan.added, "new"], [plan.changed, "changed"], [plan.removed, "removed"]]
     .filter(([cards]) => cards.length).map(([cards, what]) => `${cards.length} ${what}`).join(", ");
-  const options = { allowShrink: kind === "push" && plan.removed.length > 0,
+  const options = { force, allowShrink: kind === "push" && plan.removed.length > 0,
                     set: { items: plan.items, title: plan.title, code: plan.code, summary } };
   if (kind === "publish") await publishSiteSet(options);
   else await pushSimSet(options);
@@ -2182,8 +2182,8 @@ async function init() {
   $("pushAllBtn").addEventListener("click", openPushAll);
   $("pushAllCheckBtn").addEventListener("click", checkPushAll);
   $("pushAllCode").addEventListener("keydown", (e) => { if (e.key === "Enter") checkPushAll(); });
-  $("pushAllSendBtn").addEventListener("click", () => pushPlanned("push"));
-  $("pushAllPublishBtn").addEventListener("click", () => pushPlanned("publish"));
+  $("pushAllSendBtn").addEventListener("click", (e) => pushPlanned("push", e.shiftKey));
+  $("pushAllPublishBtn").addEventListener("click", (e) => pushPlanned("publish", e.shiftKey));
   $("pushAllCloseBtn").addEventListener("click", () => $("pushAllDlg").close());
   $("pushAllDlg").addEventListener("close", () => { planTicket += 1; pushPlan = null; });
   $("pushLive").checked = localStorage.getItem(PUSH_LIVE) === "1";

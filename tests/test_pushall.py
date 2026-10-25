@@ -114,6 +114,27 @@ class PushAll(unittest.TestCase):
         self.assertEqual((again["added"], again["changed"], again["removed"], again["moved"], again["unchanged"]),
                          ([], [], [], 0, 3), "nothing left to push")
 
+    def test_the_push_renders_exactly_the_cards_the_plan_lists(self):
+        self.push([{"id": A}, {"id": B}, {"id": C}, {"id": M}])
+        record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
+        for card in record["cards"][:2]:                              # A and B: a set from before digests were kept
+            card["custom"].pop("files")
+        (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
+        (self.set_dir / "003" / "high.webp").write_bytes(b"damaged")  # C's image is not the one its record names
+        self.put("Only", "2026-10-02T10:00:00", [A, B, C, D], edits={B: {"hp": "190"}})
+        plan = gui.push_all_plan("HBW")
+        self.assertEqual(sorted(c["id"] for c in plan["added"]), [D])
+        self.assertEqual(sorted(c["id"] for c in plan["changed"]), [B, C])
+        self.assertEqual((plan["unchanged"], [c["id"] for c in plan["removed"]]), (1, [M]), "A is kept as it is")
+        self.assertIn("Its images in the set are not the ones its record names: rendered again",
+                      next(c for c in plan["changed"] if c["id"] == C)["lines"])
+        gui.render.reset_mock()
+        done = self.push(plan["items"], allow_shrink=True)
+        self.assertEqual(sorted(call.args[0] for call in gui.render.call_args_list), [B, C, D], "what the plan listed")
+        self.assertEqual((done["result"]["rendered"], done["result"]["reused"]), (3, 1))
+        after = gui.push_all_plan("HBW")
+        self.assertEqual((after["added"], after["changed"], after["removed"], after["unchanged"]), ([], [], [], 4))
+
     def test_a_first_push_has_everything_new_and_a_card_that_cannot_be_read_says_so(self):
         self.put("Only", "2026-10-02T10:00:00", [A, D, M])
 

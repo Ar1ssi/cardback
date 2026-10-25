@@ -1245,9 +1245,10 @@ def keep_numbers(items, existing):
             + [it for it in items if it["id"] not in place])
 
 
-def _push_changes(original, after, layout, old, new):
+def _push_changes(original, after, layout, old, new, stale=False):
     """What differs between a card as it was pushed (its options `old`) and as the list has it now (`new`, from
-    export.card_options): the edits' changes, then the options'."""
+    export.card_options): the edits' changes, then the options'. stale: its images on disk are not the ones the set's
+    record names, so it is rendered again whatever changed."""
     try:
         before = edit.apply(original, old["edits"]) if old.get("edits") else original
     except ValueError:                                   # edits this version no longer takes
@@ -1259,10 +1260,12 @@ def _push_changes(original, after, layout, old, new):
         lines.append("Abilities and attacks: " + ("shown" if new["attacks"] else "left off"))
     if bool(old.get("foil")) != new["foil"]:
         lines.append("Holofoil: " + ("on" if new["foil"] else "off"))
+    if stale:
+        lines.append("Its images in the set are not the ones its record names: rendered again")
     return lines or ["Set again (its options changed, the card reads the same)"]
 
 
-def _plan_card(item, old=None):
+def _plan_card(item, old=None, stale=False):
     """A card of the push plan: {id, name (as the set will name it), lines}. lines: for a new card what differs from
     the printed card (card_changes); for a changed one (old: the options it was pushed with) what differs from that
     push. A card that cannot be read is listed with the reason: the push would fail on it."""
@@ -1271,7 +1274,7 @@ def _plan_card(item, old=None):
         card = edit.apply(original, item["edits"]) if item.get("edits") else original
         opts = export.card_options(item)
         lines = (card_changes(item["id"], item.get("edits"), opts["style"], opts["attacks"])[1] if old is None
-                 else _push_changes(original, card, layout, old, opts))
+                 else _push_changes(original, card, layout, old, opts, stale))
         return {"id": item["id"], "name": export.card_name(card, layout), "lines": lines}
     except (UserError, ValueError) as e:
         return {"id": item["id"], "name": item["id"], "lines": [f"cannot be read: {e}"]}
@@ -1297,7 +1300,7 @@ def push_all_plan(code):
     return {"setId": set_id, "code": code, "title": export.existing_title(set_dir), "projects": projects,
             "repeats": repeats, "incoming": len(items), "existing": plan["existing"],
             "added": [_plan_card(it) for it in plan["added"]],
-            "changed": [_plan_card(it, old) for it, old in plan["changed"]],
+            "changed": [_plan_card(it, old, stale) for it, old, stale in plan["changed"]],
             "removed": [{"id": source, "name": name} for source, name in plan["removed"]],
             "moved": plan["moved"], "unchanged": plan["unchanged"], "items": items}
 
