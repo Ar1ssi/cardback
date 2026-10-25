@@ -12,7 +12,9 @@ API (JSON in and out unless noted):
   GET  /api/meta              energy types, limits, weakness/resistance values, whether holofoil is available,
                               the wording terms the page capitalises as you type, whether /api/suggest works,
                               whether a ptcg-sim folder is set for /api/push-set (ptcgSim), whether
-                              /api/publish-set can upload to the site's bucket (ptcgSite)
+                              /api/publish-set can upload to the site's bucket (ptcgSite), whether a publish
+                              key (SVRESTYLE_PUBLISH_TOKEN, sent as X-Svrestyle-Key) would unlock both from a
+                              browser elsewhere (publishKey)
   POST /api/suggest           {text, kind: "attack"|"ability"|"trainer", card?: {name, type, stage, hp}} ->
                               {text, notes: [str]}: the text rewritten in printed-card wording by Claude
                               (wording.suggest: ANTHROPIC_API_KEY, else the Claude Code CLI's login)
@@ -67,6 +69,7 @@ import base64
 import datetime
 import functools
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -112,6 +115,8 @@ SIM_SETS = ("client", "src", "assets", "custom-sets")   # where the simulator ke
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 PUBLISH_SCRIPT = ("scripts", "custom-sets", "publish.mjs")    # the simulator's bucket uploader, in its checkout
 PUBLISH_TIMEOUT = 20 * 60             # s: past the script's own 15-minute upload limit, so it reports first
+PUBLISH_KEY_HEADER = "X-Svrestyle-Key"  # a custom header: a page elsewhere cannot send it without a CORS preflight
+MIN_PUBLISH_KEY = 16                  # characters; a shorter SVRESTYLE_PUBLISH_TOKEN is ignored, it could be guessed
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _push_lock = threading.Lock()         # one write into the simulator's folder at a time
@@ -443,6 +448,18 @@ def _write_set(items, title, code, root, force):
                                     changelog=changelog, force=bool(force))
     except ValueError as e:
         raise UserError(str(e)) from e
+
+
+def publish_key():
+    """SVRESTYLE_PUBLISH_TOKEN: the key that lets a browser outside this machine (through the tunnel) send and
+    publish sets, or None when unset or shorter than MIN_PUBLISH_KEY."""
+    key = os.environ.get("SVRESTYLE_PUBLISH_TOKEN", "").strip()
+    if not key:
+        return None
+    if len(key) < MIN_PUBLISH_KEY:
+        warnings.warn(f"SVRESTYLE_PUBLISH_TOKEN ignored: shorter than {MIN_PUBLISH_KEY} characters", stacklevel=2)
+        return None
+    return key
 
 
 def site_remote():
@@ -812,10 +829,19 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return origin is None or urlparse(origin).hostname in LOOPBACK
 
+    def _has_publish_key(self):
+        """Whether the request carries SVRESTYLE_PUBLISH_TOKEN in PUBLISH_KEY_HEADER (compared in constant time)."""
+        key, sent = publish_key(), self.headers.get(PUBLISH_KEY_HEADER)
+        return bool(key and sent) and hmac.compare_digest(sent.strip().encode(), key.encode())
+
+    def _trusted(self):
+        """Whether the request may write outside the editor: this machine's browser, or one holding the key."""
+        return self._from_this_machine() or self._has_publish_key()
+
     def _can_push(self):
-        """/api/push-set writes into the simulator checkout: only for this machine's own browser, and only when the
-        checkout is known."""
-        return self._from_this_machine() and sim_sets_dir() is not None
+        """/api/push-set writes into the simulator checkout: only for a trusted request, and only when the checkout
+        is known."""
+        return self._trusted() and sim_sets_dir() is not None
 
     def _can_publish(self):
         """/api/publish-set: as push-set, and the bucket remote and the simulator's publish script are known."""
@@ -842,6 +868,7 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/meta":
                 self._json({"energy": list(edit.ENERGY), "styles": list(STYLES), "ptcgSim": self._can_push(),
                             "ptcgSite": self._can_publish(),
+                            "publishKey": publish_key() is not None and sim_sets_dir() is not None,
                             "terms": [term for term, _ in wording.TERMS], "suggest": wording.available(),
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
@@ -902,15 +929,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(HTTPStatus.OK, export_set(body.get("items"), body.get("title", ""), body.get("code")),
                            "application/zip")
             elif url.path == "/api/push-set":
-                if not self._from_this_machine():
-                    self._json({"error": "Send to ptcg-sim works only in a browser on the machine running the editor"},
-                               HTTPStatus.FORBIDDEN)
+                if not self._trusted():
+                    self._json({"error": "Send to ptcg-sim works only in a browser on the machine running the editor "
+                                         "or with the publish key"}, HTTPStatus.FORBIDDEN)
                     return
                 self._json(push_set(body.get("items"), body.get("title", ""), body.get("code"), body.get("force")))
             elif url.path == "/api/publish-set":
-                if not self._from_this_machine():
-                    self._json({"error": "Publish to site works only in a browser on the machine running the editor"},
-                               HTTPStatus.FORBIDDEN)
+                if not self._trusted():
+                    self._json({"error": "Publish to site works only in a browser on the machine running the editor "
+                                         "or with the publish key"}, HTTPStatus.FORBIDDEN)
                     return
                 try:
                     self._json(publish_set(body.get("items"), body.get("title", ""), body.get("code"),

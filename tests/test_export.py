@@ -4,6 +4,7 @@ import io
 import json
 import time
 import unittest
+import warnings
 import zipfile
 from unittest import mock
 
@@ -246,6 +247,47 @@ class Http(unittest.TestCase):
                         meta = urllib.request.Request(self.base + "/api/meta", None, headers)
                         with urllib.request.urlopen(meta, timeout=10) as r:
                             self.assertFalse(json.loads(r.read())["ptcgSim"])
+
+    def test_publish_key_lets_a_tunnel_browser_push(self):
+        import tempfile
+        import urllib.request
+        from pathlib import Path
+        fake = gui.Render(png_bytes(), [], "me")
+        key = "k" * gui.MIN_PUBLISH_KEY
+        body = json.dumps({"items": [{"id": "swsh3-88"}], "code": "HBW"}).encode()
+        tunnel = {"Host": "abc.trycloudflare.com", "Cf-Connecting-Ip": "203.0.113.9", "Origin": "https://abc.trycloudflare.com"}
+
+        def get_meta(headers):
+            with urllib.request.urlopen(urllib.request.Request(self.base + "/api/meta", None, headers), timeout=10) as r:
+                return json.loads(r.read())
+
+        def push(headers):
+            req = urllib.request.Request(self.base + "/api/push-set", body, {"Content-Type": "application/json", **headers})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(gui, "read", return_value=("me", pokemon())), \
+                mock.patch.object(gui, "render", return_value=fake), \
+                mock.patch.object(gui, "changelog", return_value="# log"):
+            (Path(tmp) / "client" / "src").mkdir(parents=True)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "SVRESTYLE_PUBLISH_TOKEN": key}):
+                self.assertEqual((get_meta(tunnel)["ptcgSim"], get_meta(tunnel)["publishKey"]), (False, True))
+                self.assertEqual(push(tunnel), 403)
+                self.assertEqual(push({**tunnel, gui.PUBLISH_KEY_HEADER: key[:-1] + "x"}), 403, "a wrong key")
+                self.assertTrue(get_meta({**tunnel, gui.PUBLISH_KEY_HEADER: key})["ptcgSim"])
+                self.assertEqual(push({**tunnel, gui.PUBLISH_KEY_HEADER: key}), 200)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "SVRESTYLE_PUBLISH_TOKEN": "short"}), \
+                    warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.assertFalse(get_meta(tunnel)["publishKey"], "a key shorter than MIN_PUBLISH_KEY is ignored")
+                self.assertEqual(push({**tunnel, gui.PUBLISH_KEY_HEADER: "short"}), 403)
+            with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "SVRESTYLE_PUBLISH_TOKEN": ""}):
+                self.assertFalse(get_meta(tunnel)["publishKey"])
+                self.assertEqual(push({**tunnel, gui.PUBLISH_KEY_HEADER: ""}), 403, "no key set: an empty one opens nothing")
 
     def test_publish_set_pushes_then_runs_the_simulator_publish_script(self):
         import tempfile

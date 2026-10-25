@@ -15,6 +15,13 @@ rem "Publish to site" uploads a set to the hosted simulator's R2 bucket through 
 if not defined CUSTOM_SETS_R2_REMOTE (
   where rclone >nul 2>nul && set "CUSTOM_SETS_R2_REMOTE=r2:ptcg-foil/custom-sets"
 )
+rem SVRESTYLE_PUBLISH_TOKEN, 16+ random characters set with setx, lets a browser through the tunnel send and publish
+rem once the key is typed into its Publish key field; unset, only this machine's browser can
+if defined SVRESTYLE_PUBLISH_TOKEN (
+  echo Publish key set: tunnel visitors who type it can send and publish.
+) else (
+  echo No publish key: only this machine's browser can send and publish.
+)
 set "PYTHONPATH=%~dp0"
 
 set CLOUDFLARED=cloudflared

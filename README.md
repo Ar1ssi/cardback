@@ -249,7 +249,11 @@ renders all of them: do that once after updating the editor, whose new rendering
 changed files are written, and card folders past the end of the list are removed. "Keep ptcg-sim in sync" sends after
 every render of a card in the list. Games already running keep the cards they loaded. The button shows, and the route
 answers, only in a browser on the machine running the editor: visitors through the Cloudflare tunnel cannot write
-into the simulator.
+into the simulator, unless the server has a publish key. Set `SVRESTYLE_PUBLISH_TOKEN` to a random string of 16 or
+more characters (`python -c "import secrets; print(secrets.token_urlsafe(24))"`, then `setx SVRESTYLE_PUBLISH_TOKEN
+<it>` and restart the site); a tunnel visitor then sees a "Publish key" field, and once the key is typed there the
+browser keeps it and sends it with each request (`X-Svrestyle-Key`), so Send to ptcg-sim and Publish to site work
+from that browser too. Give the key only to people you would let change the hosted site.
 
 The hosted simulator (Render) cannot see that folder, so "Publish to site" sends the set as above and then runs the
 simulator's `scripts/custom-sets/publish.mjs`, which uploads it to the site's R2 bucket with rclone (only files the

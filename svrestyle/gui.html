@@ -145,6 +145,10 @@
         <input id="setCode" type="text" maxlength="5" placeholder="Set code for ptcg-sim, 2–5 capitals (HBW)" aria-label="Set code" autocomplete="off" style="max-width: 300px">
         <button id="exportSetBtn" type="button" class="small primary" disabled title="Type a set code first">Download for ptcg-sim (.zip)</button>
       </div>
+      <div id="keyRow" class="addrow" hidden>
+        <input id="publishKey" type="password" placeholder="Publish key, to send and publish from this browser" aria-label="Publish key" autocomplete="off" style="max-width: 300px">
+        <button id="unlockBtn" type="button" class="small">Unlock</button>
+      </div>
       <div id="pushRow" class="addrow" hidden>
         <button id="pushSetBtn" type="button" class="small" disabled title="Type a set code first">Send to ptcg-sim</button>
         <label style="display:flex; gap:6px; align-items:center; margin:0" title="After each render of a card in the list, send the set again (only changed cards are rendered)"><input id="pushLive" type="checkbox"> Keep ptcg-sim in sync</label>
@@ -328,6 +332,7 @@ const state = {
 };
 const LAST_PROJECT = "svrestyle.project";
 const PUSH_LIVE = "svrestyle.pushLive";             // "Keep ptcg-sim in sync", remembered per browser
+const PUBLISH_KEY = "svrestyle.publishKey";         // the server's SVRESTYLE_PUBLISH_TOKEN, typed in a browser elsewhere
 
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
@@ -351,8 +356,10 @@ function showWarnings(list) {
 }
 
 async function api(path, body) {
-  const res = await fetch(path, body === undefined ? {} : {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const key = localStorage.getItem(PUBLISH_KEY);
+  const headers = key ? { "X-Svrestyle-Key": key } : {};
+  const res = await fetch(path, body === undefined ? { headers } : {
+    method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try { msg = (await res.json()).error || msg; } catch (_) {}
@@ -1242,6 +1249,30 @@ async function publishSiteSet({ force = false } = {}) {
   }
 }
 
+// The send/publish buttons show for this machine's browser, or once the server's publish key is typed here (a
+// browser through the tunnel); until then a server with a key shows the key field instead.
+function showPushAccess() {
+  $("pushRow").hidden = !state.meta.ptcgSim;
+  $("publishSetBtn").hidden = !state.meta.ptcgSite;
+  $("keyRow").hidden = state.meta.ptcgSim || !state.meta.publishKey;
+}
+
+async function unlockPush() {
+  const key = $("publishKey").value.trim();
+  if (!key) return;
+  localStorage.setItem(PUBLISH_KEY, key);
+  try { state.meta = await (await api("/api/meta")).json(); } catch (e) { showError(`Unlock: ${e.message}`); return; }
+  if (!state.meta.ptcgSim) {
+    localStorage.removeItem(PUBLISH_KEY);
+    showError("Unlock: that is not the publish key");
+    return;
+  }
+  $("publishKey").value = "";
+  showError("");
+  showPushAccess();
+  drawExportButton();
+}
+
 // "Send to ptcg-sim": the list written straight into the simulator's custom-sets folder (/api/push-set), which
 // the running simulator reloads. A send asked for while one runs goes out once that one ends.
 async function pushSimSet({ force = false, quiet = false } = {}) {
@@ -1588,9 +1619,10 @@ async function init() {
   $("viewSel").addEventListener("change", showView);
   $("zipBtn").addEventListener("click", downloadZip);
   $("exportSetBtn").addEventListener("click", downloadSimSet);
-  $("pushRow").hidden = !state.meta.ptcgSim;
+  showPushAccess();
+  $("unlockBtn").addEventListener("click", unlockPush);
+  $("publishKey").addEventListener("keydown", (e) => { if (e.key === "Enter") unlockPush(); });
   $("pushSetBtn").addEventListener("click", (e) => pushSimSet({ force: e.shiftKey }));
-  $("publishSetBtn").hidden = !state.meta.ptcgSite;
   $("publishSetBtn").addEventListener("click", (e) => publishSiteSet({ force: e.shiftKey }));
   $("pushLive").checked = localStorage.getItem(PUSH_LIVE) === "1";
   $("pushLive").addEventListener("change", () => {
