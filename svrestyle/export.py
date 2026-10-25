@@ -15,7 +15,9 @@ was made from with its edits and options (`custom`), so this editor opens the ex
 
 write_set_dir puts the same files straight into the simulator's custom-sets folder instead of a zip ("Send to
 ptcg-sim"): the simulator watches that folder and reloads the set while it runs. A card whose source and options
-match the copy already there keeps its record and images, so a push after one edit renders that one card.
+match the copy already there keeps its record and images, so a push after one edit renders that one card. It
+reports its progress and can be cancelled until it starts writing (a cancel leaves the folder as it was).
+existing_cards and dropped_cards tell what a push would take out of the set already there.
 """
 import datetime
 import hashlib
@@ -41,6 +43,10 @@ LOW_SIZE = (245, 342)
 STAGE_NAMES = {0: "Basic", 1: "Stage1", 2: "Stage2"}
 RARITY = {"common": "Common", "uncommon": "Uncommon", "rare": "Rare"}
 MAX_CARDS = 999
+
+
+class Cancelled(Exception):
+    """The caller asked a build to stop (its `cancelled` callback said so): nothing was written."""
 
 
 def set_id_for(code):
@@ -160,12 +166,15 @@ def card_options(item):
             "attacks": bool(item.get("attacks", True)), "foil": bool(item.get("foil"))}
 
 
-def build_set(items, title, code, *, read, render, apply, changelog, today=None, reuse=None):
+def build_set(items, title, code, *, read, render, apply, changelog, today=None, reuse=None, progress=None,
+              cancelled=None):
     """-> (set id, {path in the set folder: bytes}, {"rendered": n, "reused": n}): set.json, the cards' WebPs and
     CHANGELOG.md. items: [{id, edits?, style?, attacks?, foil?}] in set order (the first is card 001).
     read / render / apply / changelog: gui.read, gui.render, edit.apply, gui.changelog (passed in: no import cycle).
     reuse(item) -> (record, high webp, low webp) | None: a card exported before with the same options, kept instead
-    of rendered and numbered for its place in this list."""
+    of rendered and numbered for its place in this list.
+    progress("rendering", cards done, cards in all, id of the card being made) is called before each card and once
+    at the end; cancelled() -> True before a card stops the build (Cancelled)."""
     set_id = set_id_for(code)
     if not isinstance(items, list) or not items:
         raise ValueError("items: a non-empty list")
@@ -175,8 +184,12 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for i, item in enumerate(items):
+            if cancelled and cancelled():
+                raise Cancelled
             if not isinstance(item, dict) or not isinstance(item.get("id"), str):
                 raise ValueError("items: expected objects with an id")
+            if progress:
+                progress("rendering", i, len(items), item["id"])
             local_id = f"{i + 1:03d}"
             kept = reuse(item) if reuse else None
             if kept:
@@ -194,6 +207,8 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
                 records[-1]["custom"]["files"] = {"high": _digest(high), "low": _digest(low)}
                 counts["rendered"] += 1
             files[f"{local_id}/high.webp"], files[f"{local_id}/low.webp"] = high, low
+    if progress:
+        progress("rendering", len(items), len(items), "")
     notes = sorted({str(w.message) for w in caught if "torch.jit" not in str(w.message)})
     record = set_record(set_id, code, title, records, today)
     files["CHANGELOG.md"] = (changelog(items, title) + (
@@ -276,11 +291,84 @@ def _write_if_changed(path, data, attempts=5):
     return True
 
 
-def write_set_dir(items, title, code, root, *, read, render, apply, changelog, force=False, today=None):
+def _set_json(set_dir):
+    """The set.json in set_dir as a dict with a "cards" list, or None when there is none that can be read."""
+    try:
+        data = json.loads((Path(set_dir) / "set.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("cards"), list) else None
+
+
+def _source_of(rec):
+    custom = rec.get("custom") if isinstance(rec, dict) and isinstance(rec.get("custom"), dict) else {}
+    return custom.get("source") if isinstance(custom.get("source"), str) else None
+
+
+def existing_cards(set_dir):
+    """[(source card id or None, card name)] of the set.json already in set_dir, in its order; None when there is
+    none that can be read. Any custom set counts, not only one this module wrote (its cards then name no source)."""
+    data = _set_json(set_dir)
+    if data is None:
+        return None
+    return [(_source_of(rec), str(rec.get("name") or rec.get("id") or "?") if isinstance(rec, dict) else "?")
+            for rec in data["cards"]]
+
+
+def dropped_cards(existing, ids):
+    """[(source, name)] of the cards in `existing` (existing_cards) that a push of the list `ids` (the cards' source
+    ids) would not carry over. Cards are matched by the card they were made from; when some name none (a set this
+    module did not write) the two are compared by position alone: whatever lies past the end of the list goes."""
+    keep = set(ids)
+    if all(source for source, _ in existing):
+        return [(source, name) for source, name in existing if source not in keep]
+    return existing[len(ids):]
+
+
+def plan_set(items, set_dir):
+    """What a push of `items` (in set order) would change in the set already in set_dir, from its set.json alone:
+    nothing is rendered or written. -> {existing: cards there (None: no set), added: [item], changed: [(item, the
+    options its card was pushed with)], removed: [(source, name)], moved: cards that get another number, unchanged: n}.
+    A card is changed when its options (card_options) differ from the ones its record keeps."""
+    data = _set_json(set_dir)
+    records = {}
+    for place, rec in enumerate(data["cards"] if data else []):
+        if _source_of(rec):
+            records.setdefault(_source_of(rec), (place, rec))
+    plan = {"existing": len(data["cards"]) if data else None, "added": [], "changed": [], "removed": [], "moved": 0,
+            "unchanged": 0}
+    for place, item in enumerate(items):
+        if item["id"] not in records:
+            plan["added"].append(item)
+            continue
+        was, rec = records[item["id"]]
+        plan["moved"] += was != place
+        custom = rec["custom"]
+        old = {k: custom.get(k) for k in ("edits", "style", "attacks", "foil")}
+        if old == card_options(item):
+            plan["unchanged"] += 1
+        else:
+            plan["changed"].append((item, old))
+    if data:
+        plan["removed"] = dropped_cards(existing_cards(set_dir), [item["id"] for item in items])
+    return plan
+
+
+def existing_title(set_dir):
+    """The name of the set already in set_dir ("My Custom Set"), or "" when there is none."""
+    data = _set_json(set_dir)
+    return data["name"] if data and isinstance(data.get("name"), str) else ""
+
+
+def write_set_dir(items, title, code, root, *, read, render, apply, changelog, force=False, today=None, progress=None,
+                  cancelled=None):
     """The list as a custom set written straight into the simulator's custom-sets folder (root): <root>/<set id>/.
     A card whose source and options (card_options) match the set already there keeps its record and images, unless
     force. Only files whose bytes changed are written, set.json last (the simulator reloads on it); card folders
     past the end of the list are removed; anything else in the folder (foil.json from import-foil.py) is left.
+    progress / cancelled: as build_set's, and progress("writing", files done, files in all, path written) while the
+    files go out. A cancel counts until the first file is written (Cancelled: the folder is as it was); then the
+    push finishes.
     -> {setId, rendered, reused, written: [path], unchanged: n, removed: [card folder]}"""
     set_dir = Path(root) / set_id_for(code)
     before = {} if force else exported_cards(set_dir)
@@ -293,13 +381,20 @@ def write_set_dir(items, title, code, root, *, read, render, apply, changelog, f
         return kept if {k: custom.get(k) for k in ("edits", "style", "attacks", "foil")} == card_options(item) else None
 
     set_id, files, counts = build_set(items, title, code, read=read, render=render, apply=apply,
-                                      changelog=changelog, today=today, reuse=reuse)
+                                      changelog=changelog, today=today, reuse=reuse, progress=progress,
+                                      cancelled=cancelled)
+    if cancelled and cancelled():
+        raise Cancelled
     written, unchanged = [], 0
-    for name in sorted(files, key=lambda n: n == "set.json"):
+    if progress:
+        progress("writing", 0, len(files), "")
+    for done, name in enumerate(sorted(files, key=lambda n: n == "set.json"), 1):
         if _write_if_changed(set_dir / name, files[name]):
             written.append(name)
         else:
             unchanged += 1
+        if progress:
+            progress("writing", done, len(files), name)
     keep = {name.split("/")[0] for name in files if "/" in name}
     removed = sorted(d.name for d in set_dir.iterdir() if d.is_dir() and CARD_DIR.fullmatch(d.name) and d.name not in keep)
     for name in removed:

@@ -39,15 +39,34 @@ API (JSON in and out unless noted):
   POST /api/export-set        {items: [{id, edits?, style?, attacks?, foil?}], title?, code} -> application/zip:
                               the set for ptcg-sim (<set id>/set.json, <nnn>/high.webp + low.webp, CHANGELOG.md;
                               see export.py)
-  POST /api/push-set          {items, title?, code, force?} -> {setId, rendered, reused, written: [path], unchanged,
-                              removed: [card folder]}: the same set written into the simulator's custom-sets folder
-                              (SVRESTYLE_PTCG_SIM), which the running simulator reloads; only cards changed since
-                              the last push are rendered (export.write_set_dir), every card with force
-  POST /api/publish-set       {items, title?, code, force?} -> /api/push-set's answer plus published: {sets:
-                              [{setId, uploaded, uploadedBytes, reused, skipped, unchanged}], deleted}: the set
-                              pushed as above, then uploaded to the site's bucket by the simulator's
-                              scripts/custom-sets/publish.mjs (rclone remote CUSTOM_SETS_R2_REMOTE); the site
-                              (Render) picks it up within ~10 s
+  POST /api/push-set          {items, title?, code, force?, allowShrink?} -> a job (GET /api/set-job): the same set
+                              written into the simulator's custom-sets folder (SVRESTYLE_PTCG_SIM), which the
+                              running simulator reloads; only cards changed since the last push are rendered
+                              (export.write_set_dir), every card with force. A set that would lose cards is refused,
+                              409 {error, drops: {setId, code, incoming, copies, names, message}}, unless allowShrink:
+                              the page asks, then sends again with it
+  POST /api/publish-set       {items, title?, code, force?, allowShrink?} -> a job: the set pushed as above, then
+                              uploaded to the site's bucket by the simulator's scripts/custom-sets/publish.mjs
+                              (rclone remote CUSTOM_SETS_R2_REMOTE); the site (Render) picks it up within ~10 s.
+                              Fewer cards than the site's copy is refused like fewer than the simulator's
+  GET  /api/set-job?job=ID    a send or publish job: {id, kind: "push"|"publish", code, setId, state: "running"|"done"|
+                              "failed"|"cancelled", phase: "rendering"|"writing"|"uploading", done, total, current,
+                              elapsed (s), cancelling, result, error, pushed}. result (state done) is the push's
+                              answer {setId, rendered, reused, written: [path], unchanged, removed: [card folder]},
+                              plus published: {sets: [{setId, uploaded, uploadedBytes, reused, skipped, unchanged}],
+                              deleted} for a publish. pushed is that answer once the files are in the simulator's
+                              folder (a publish that then failed or was cancelled has it). Jobs run in the
+                              background (a render takes 10-20 s a card, an upload minutes, tunnels cut a request at
+                              ~100 s): the page polls. Asking to start the job a running one is doing follows it
+  POST /api/push-plan         {code} -> what pushing every saved project, merged, as that set would change in the
+                              simulator's folder, without rendering: {setId, code, title, projects, repeats, incoming,
+                              existing, added: [{id, name, lines}], changed: [{id, name, lines}], removed: [{id, name}],
+                              moved, unchanged, items}. items is the list to send to /api/push-set or /api/publish-set
+                              to push exactly this ("Push all"); cards already in the set keep their numbers
+  POST /api/set-job/cancel    {job} -> its progress (cancelling: true). Before the first file is written nothing
+                              changes; a publish stops its upload (the site keeps the copy it had); a send that is
+                              writing finishes. The three /api/set-job routes need what push-set needs: this
+                              machine's browser, or the publish key
   POST /api/zip              {items: [{id, edits?, style?, attacks?, foil?}], title?} -> application/zip (with foil
                               also the 1024x1024 front, the white plates and <card>-foil.json, see foil.files), and
                               CHANGELOG.md
@@ -147,9 +166,15 @@ PUBLISH_SCRIPT = ("scripts", "custom-sets", "publish.mjs")    # the simulator's 
 PUBLISH_TIMEOUT = 20 * 60             # s: past the script's own 15-minute upload limit, so it reports first
 PUBLISH_KEY_HEADER = "X-Svrestyle-Key"  # a custom header: a page elsewhere cannot send it without a CORS preflight
 MIN_PUBLISH_KEY = 16                  # characters; a shorter SVRESTYLE_PUBLISH_TOKEN is ignored, it could be guessed
+SET_JOB_KEEP = 8                      # finished sends and publishes kept for a page that asks late
+CANCEL_POLL = 0.5                     # s between looks at a cancel while the publish script runs
+SITE_CHECK_TIMEOUT = 20               # s the bucket's index may take to read before a publish is checked without it
+CARD_FILE = re.compile(r"(\d{3})/high\.webp")    # a card of a published set, among the files of the bucket's index
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _push_lock = threading.Lock()         # one write into the simulator's folder at a time
+_set_jobs = OrderedDict()             # job id -> a send or publish in the background: the last SET_JOB_KEEP
+_set_jobs_lock = threading.Lock()
 _renders = OrderedDict()              # request key -> Render; the last few, for zip downloads
 _RENDER_CACHE = 48
 
@@ -159,9 +184,15 @@ class UserError(ValueError):
 
 
 class PublishError(Exception):
-    """The upload to the site's bucket failed (rclone, the network, the bucket): the dependency, so a 502. `pushed`
-    is the push into ptcg-sim that went before it, when there was one."""
-    pushed = None
+    """The upload to the site's bucket failed (rclone, the network, the bucket), or timed out."""
+
+
+class DropsCards(Exception):
+    """A send or publish would take cards out of a set that is already there: `info` says which copies and how many
+    (drops_for). The page asks the user, and asks the server again with allowShrink; a 409."""
+    def __init__(self, info):
+        super().__init__(info["message"])
+        self.info = info
 
 
 class Render(tuple):
@@ -474,24 +505,20 @@ def sim_sets_dir():
     return None
 
 
-def push_set(items, title, code, force=False):
-    """The list written into the simulator's custom-sets folder (export.write_set_dir), which the running simulator
-    reloads: only cards whose edits or options changed since the last push are rendered (all of them with force)."""
+def _sim_root():
+    """The simulator's custom-sets folder; a UserError saying how to set it when it is not known."""
     root = sim_sets_dir()
     if root is None:
         raise UserError("no ptcg-sim folder: start the GUI with SVRESTYLE_PTCG_SIM set to the simulator's folder "
                         "(start-site.bat sets it when the simulator is in Downloads)")
-    if not isinstance(items, list) or not items:
-        raise UserError("items: a non-empty list")
-    with _push_lock:                      # two pages pushing at once would interleave their files
-        return _write_set(items, title, code, root, force)
+    return root
 
 
-def _write_set(items, title, code, root, force):
+def _write_set(items, title, code, root, force, progress=None, cancelled=None):
     """export.write_set_dir into `root`; the caller holds _push_lock."""
     try:
         return export.write_set_dir(items, title, code, root, read=read, render=render, apply=edit.apply,
-                                    changelog=changelog, force=bool(force))
+                                    changelog=changelog, force=bool(force), progress=progress, cancelled=cancelled)
     except ValueError as e:
         raise UserError(str(e)) from e
 
@@ -531,16 +558,25 @@ def _kill_tree(proc):
     proc.communicate()
 
 
-def _run_publish(node, checkout, set_id, remote):
-    """The publish script's --json report; PublishError on a failure, a timeout or no report."""
+def _run_publish(node, checkout, set_id, remote, cancelled=None):
+    """The publish script's --json report; PublishError on a failure, a timeout or no report. cancelled() -> True
+    stops the script and the rclone under it (export.Cancelled): the bucket's index is replaced only when the upload
+    is over, so the site keeps the copy it had."""
     proc = subprocess.Popen([node, str(checkout.joinpath(*PUBLISH_SCRIPT)), set_id, "--remote", remote, "--json"],
                             cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
                             errors="replace")
-    try:
-        out, err = proc.communicate(timeout=PUBLISH_TIMEOUT)
-    except subprocess.TimeoutExpired as e:
-        _kill_tree(proc)
-        raise PublishError(f"publishing gave no answer in {PUBLISH_TIMEOUT} s; stopped it") from e
+    deadline = time.monotonic() + PUBLISH_TIMEOUT
+    while True:
+        try:
+            out, err = proc.communicate(timeout=CANCEL_POLL)
+            break
+        except subprocess.TimeoutExpired:
+            if cancelled and cancelled():
+                _kill_tree(proc)
+                raise export.Cancelled from None
+            if time.monotonic() > deadline:
+                _kill_tree(proc)
+                raise PublishError(f"publishing gave no answer in {PUBLISH_TIMEOUT} s; stopped it") from None
     if proc.returncode != 0:
         lines = (err or out or "").strip().splitlines()
         raise PublishError("publishing failed: " + (" | ".join(lines[-5:]) or f"exit status {proc.returncode}"))
@@ -550,30 +586,183 @@ def _run_publish(node, checkout, set_id, remote):
         raise PublishError(f"the publish script gave no report: {out.strip()[-300:]!r}") from e
 
 
-def publish_set(items, title, code, force=False):
-    """The set written into the simulator's folder as push_set does, then uploaded to the site's bucket by the
-    simulator's publish script. The push lock is held through both, so no push rewrites the files while they go up.
-    A failed upload still carries the push's answer (PublishError.pushed): the set is in ptcg-sim either way."""
-    remote = site_remote()
-    if remote is None:
-        raise UserError("set CUSTOM_SETS_R2_REMOTE to the site's bucket (e.g. r2:ptcg-foil/custom-sets) to publish")
-    checkout = sim_checkout()
-    if checkout is None:
-        raise UserError("no ptcg-sim checkout with scripts/custom-sets/publish.mjs: set SVRESTYLE_PTCG_SIM to it")
-    node = shutil.which("node")
-    if node is None:
-        raise UserError("node not found on PATH: the publish script runs on Node.js")
+# ---------------------------------------------------------------- send and publish, in the background
+def site_card_count(remote, set_id):
+    """How many cards the site's copy of `set_id` has (the card folders among the files of the bucket's index.json),
+    or None: it is not published, or the bucket could not be read in SITE_CHECK_TIMEOUT s (a publish then reports a
+    bucket out of reach by itself)."""
+    rclone = shutil.which("rclone")
+    if rclone is None:
+        return None
+    try:
+        done = subprocess.run([rclone, "cat", f"{remote}/index.json"], capture_output=True, encoding="utf-8",
+                              errors="replace", timeout=SITE_CHECK_TIMEOUT)
+        index = json.loads(done.stdout) if done.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    sets = index.get("sets") if isinstance(index, dict) else None
+    entry = sets.get(set_id) if isinstance(sets, dict) else None
+    files = entry.get("files") if isinstance(entry, dict) else None
+    if not isinstance(files, dict):
+        return None
+    return len({m.group(1) for name in files if (m := CARD_FILE.fullmatch(name))})
+
+
+def _list_of(names, shown=5):
+    return ", ".join(names[:shown]) + (f" and {len(names) - shown} more" if len(names) > shown else "")
+
+
+def drops_for(kind, items, code, set_id):
+    """What sending (kind "push") or publishing (kind "publish") this list would take out of the copies of the set
+    that are already there, or None when it takes nothing out. The simulator's copy is compared card by card (the
+    cards it was made from, export.dropped_cards); the site's, for a publish, by size: the folders past the end of
+    the list go. -> {setId, code, incoming, copies: [{where, cards, dropped}], names: [first few], message}"""
+    ids = [it["id"] for it in items]
+    existing = export.existing_cards(sim_sets_dir() / set_id)
+    names = [name for _, name in export.dropped_cards(existing, ids)] if existing is not None else []
+    site = site_card_count(site_remote(), set_id) if kind == "publish" else None
+    site_drops = site - len(ids) if site is not None and site > len(ids) else 0
+    if not names and not site_drops:
+        return None
+    copies, lines = [], []
+    if names:
+        copies.append({"where": "ptcg-sim", "cards": len(existing), "dropped": len(names)})
+        lines.append(f"{code} has {len(existing)} cards in ptcg-sim; this list has {len(ids)}: "
+                     f"{len(names)} would be removed ({_list_of(names)}).")
+    if site_drops:
+        copies.append({"where": "the site", "cards": site, "dropped": site_drops})
+        lines.append(f"The site has {site} cards of {code}" + ("" if names else f"; this list has {len(ids)}")
+                     + f": {site_drops} would be removed" + (" there too." if names else "."))
+    return {"setId": set_id, "code": code, "incoming": len(ids), "copies": copies, "names": names[:5],
+            "message": " ".join(lines)}
+
+
+def _running_set_job():
+    return next((j for j in _set_jobs.values() if j["state"] == "running"), None)
+
+
+def _set_job_view(job):
+    end = job.get("ended") or time.time()
+    return {"id": job["id"], "kind": job["kind"], "code": job["code"], "setId": job["setId"], "state": job["state"],
+            "phase": job["phase"], "done": job["done"], "total": job["total"], "current": job["current"],
+            "elapsed": int(end - job["started"]), "cancelling": job["cancel"], "result": job["result"],
+            "error": job["error"], "pushed": job["pushed"]}
+
+
+def start_set_job(kind, items, title, code, force=False, allow_shrink=False):
+    """Send (kind "push": export.write_set_dir into the simulator's folder, which the running simulator reloads) or
+    publish (kind "publish": that, then the simulator's publish script uploads the set to the site's bucket) in the
+    background: a first render takes 10-20 s a card, an upload minutes, and tunnels cut a request at ~100 s, so the
+    page polls set_job_progress. Only cards changed since the last send are rendered (all of them with force). A
+    set that would lose cards is refused (DropsCards) unless allow_shrink. A job already running for the same set and
+    kind is joined, not started again; another set's is a UserError: one write into the folder at a time. -> its
+    progress"""
+    root = _sim_root() if kind == "push" else sim_sets_dir()
+    remote = checkout = node = None
+    if kind == "publish":
+        remote = site_remote()
+        if remote is None:
+            raise UserError("set CUSTOM_SETS_R2_REMOTE to the site's bucket (e.g. r2:ptcg-foil/custom-sets) to publish")
+        checkout = sim_checkout()
+        if checkout is None:
+            raise UserError("no ptcg-sim checkout with scripts/custom-sets/publish.mjs: set SVRESTYLE_PTCG_SIM to it")
+        node = shutil.which("node")
+        if node is None:
+            raise UserError("node not found on PATH: the publish script runs on Node.js")
     if not isinstance(items, list) or not items:
         raise UserError("items: a non-empty list")
-    with _push_lock:
-        pushed = _write_set(items, title, code, sim_sets_dir(), force)
-        try:
-            report = _run_publish(node, checkout, pushed["setId"], remote)
-        except PublishError as e:
-            failed = PublishError(f"sent to ptcg-sim, but {e}")
-            failed.pushed = pushed
-            raise failed from e
-    return {**pushed, "published": report}
+    if len(items) > export.MAX_CARDS:
+        raise UserError(f"items: at most {export.MAX_CARDS} cards in a set")
+    if not all(isinstance(it, dict) and isinstance(it.get("id"), str) for it in items):
+        raise UserError("items: expected objects with an id")
+    try:
+        set_id = export.set_id_for(code)
+    except ValueError as e:
+        raise UserError(str(e)) from e
+    with _set_jobs_lock:
+        running = _running_set_job()
+        if running:
+            return _joined_or_refused(running, kind, set_id)
+    if not allow_shrink:
+        info = drops_for(kind, items, code, set_id)
+        if info:
+            raise DropsCards(info)
+    with _set_jobs_lock:
+        running = _running_set_job()
+        if running:                                  # another page started one while the check ran
+            return _joined_or_refused(running, kind, set_id)
+        job = {"id": secrets.token_hex(8), "kind": kind, "code": code, "setId": set_id, "state": "running",
+               "phase": "rendering", "done": 0, "total": len(items), "current": "", "started": time.time(),
+               "ended": None, "cancel": False, "result": None, "error": None, "pushed": None}
+        _set_jobs[job["id"]] = job
+        while len(_set_jobs) > SET_JOB_KEEP:
+            _set_jobs.popitem(last=False)
+        threading.Thread(target=_run_set_job, args=(job, items, title, code, force, (root, checkout, node, remote)),
+                         daemon=True).start()
+        return _set_job_view(job)
+
+
+def _joined_or_refused(running, kind, set_id):
+    if (running["kind"], running["setId"]) == (kind, set_id):
+        return _set_job_view(running)
+    raise UserError(f"a {'publish' if running['kind'] == 'publish' else 'send'} of {running['code']} is still "
+                    "running: wait for it, or cancel it")
+
+
+def _run_set_job(job, items, title, code, force, plan):
+    """The job's thread: the push, then for a publish the upload, with the push lock held through both so no other
+    write changes the files while they go up. The job always ends in state done, failed or cancelled."""
+    root, checkout, node, remote = plan
+
+    def cancelled():
+        return job["cancel"]
+
+    def progress(phase, done, total, current):
+        job.update(phase=phase, done=done, total=total, current=current)
+    try:
+        with _push_lock:
+            pushed = _write_set(items, title, code, root, force, progress, cancelled)
+            job["pushed"] = pushed
+            if job["kind"] == "publish":
+                if cancelled():
+                    raise export.Cancelled
+                job.update(phase="uploading", done=0, total=0, current="")
+                report = _run_publish(node, checkout, pushed["setId"], remote, cancelled)
+                job["result"] = {**pushed, "published": report}
+            else:
+                job["result"] = pushed
+        job["state"] = "done"
+    except export.Cancelled:
+        job["state"] = "cancelled"
+    except PublishError as e:
+        job["error"], job["state"] = f"sent to ptcg-sim, but {e}", "failed"
+    except UserError as e:
+        job["error"], job["state"] = str(e), "failed"
+    except (Exception, SystemExit) as e:                                    # noqa: BLE001 - the page shows it
+        job["error"], job["state"] = f"{type(e).__name__}: {e}", "failed"
+    finally:
+        job["ended"] = time.time()
+
+
+def set_job_progress(job_id):
+    with _set_jobs_lock:
+        job = _set_jobs.get(job_id)
+    if not job:
+        raise LookupError("no such send or publish (the server restarted since?): start it again")
+    return _set_job_view(job)
+
+
+def cancel_set_job(job_id):
+    """Stop a send or publish. Before the first file is written nothing changes; a publish stops its upload (the site
+    keeps the copy it had); a send already writing finishes. Cancelling a job that is over changes nothing. -> its
+    progress"""
+    with _set_jobs_lock:
+        job = _set_jobs.get(job_id)
+        if not job:
+            raise LookupError("no such send or publish (the server restarted since?)")
+        if job["state"] == "running":
+            job["cancel"] = True
+    return _set_job_view(job)
 
 
 def zip_renders(items, title=""):
@@ -1043,6 +1232,76 @@ def merged_file(job_id):
     return job["file"]
 
 
+# ---------------------------------------------------------------- push all: what it would change
+def keep_numbers(items, existing):
+    """`items` in the order of the set already there (export.existing_cards): a card that is in it keeps its number,
+    the others follow in the order they came. The merge of the projects lists the newest project first, so its own
+    order would renumber the set whenever another project is saved."""
+    place = {}
+    for i, (source, _) in enumerate(existing or []):
+        if source:
+            place.setdefault(source, i)
+    return (sorted((it for it in items if it["id"] in place), key=lambda it: place[it["id"]])
+            + [it for it in items if it["id"] not in place])
+
+
+def _push_changes(original, after, layout, old, new):
+    """What differs between a card as it was pushed (its options `old`) and as the list has it now (`new`, from
+    export.card_options): the edits' changes, then the options'."""
+    try:
+        before = edit.apply(original, old["edits"]) if old.get("edits") else original
+    except ValueError:                                   # edits this version no longer takes
+        before = original
+    lines = edit.changes(before, after)
+    if layout == "ex" and (old.get("style") or "hybrid") != new["style"]:
+        lines.append(f"Style: {old.get('style') or 'hybrid'} → {new['style']}")
+    if bool(old.get("attacks", True)) != new["attacks"]:
+        lines.append("Abilities and attacks: " + ("shown" if new["attacks"] else "left off"))
+    if bool(old.get("foil")) != new["foil"]:
+        lines.append("Holofoil: " + ("on" if new["foil"] else "off"))
+    return lines or ["Set again (its options changed, the card reads the same)"]
+
+
+def _plan_card(item, old=None):
+    """A card of the push plan: {id, name (as the set will name it), lines}. lines: for a new card what differs from
+    the printed card (card_changes); for a changed one (old: the options it was pushed with) what differs from that
+    push. A card that cannot be read is listed with the reason: the push would fail on it."""
+    try:
+        layout, original = read(item["id"])
+        card = edit.apply(original, item["edits"]) if item.get("edits") else original
+        opts = export.card_options(item)
+        lines = (card_changes(item["id"], item.get("edits"), opts["style"], opts["attacks"])[1] if old is None
+                 else _push_changes(original, card, layout, old, opts))
+        return {"id": item["id"], "name": export.card_name(card, layout), "lines": lines}
+    except (UserError, ValueError) as e:
+        return {"id": item["id"], "name": item["id"], "lines": [f"cannot be read: {e}"]}
+
+
+def push_all_plan(code):
+    """What pushing every saved project, merged (merged_items; the cards already in the set keep their numbers), as
+    the set `code` would change in the simulator's folder, worked out from its set.json without rendering anything.
+    -> {setId, code, title (the set's name now), projects, repeats, incoming, existing (cards there, None: no set yet),
+    added / changed: [{id, name, lines}], removed: [{id, name}], moved (cards that get another number), unchanged,
+    items (what to send to /api/push-set or /api/publish-set to push exactly this)}"""
+    root = _sim_root()
+    try:
+        set_id = export.set_id_for(code)
+    except ValueError as e:
+        raise UserError(str(e)) from e
+    items, projects, repeats = merged_items()
+    if not items:
+        raise UserError("no saved project has a card to push")
+    set_dir = root / set_id
+    items = keep_numbers(items, export.existing_cards(set_dir))
+    plan = export.plan_set(items, set_dir)
+    return {"setId": set_id, "code": code, "title": export.existing_title(set_dir), "projects": projects,
+            "repeats": repeats, "incoming": len(items), "existing": plan["existing"],
+            "added": [_plan_card(it) for it in plan["added"]],
+            "changed": [_plan_card(it, old) for it, old in plan["changed"]],
+            "removed": [{"id": source, "name": name} for source, name in plan["removed"]],
+            "moved": plan["moved"], "unchanged": plan["unchanged"], "items": items}
+
+
 class Room:
     def __init__(self):
         self.seq = 0
@@ -1190,6 +1449,14 @@ class Handler(BaseHTTPRequestHandler):
         """Whether the request may write outside the editor: this machine's browser, or one holding the key."""
         return self._from_this_machine() or self._has_publish_key()
 
+    def _refused(self, what):
+        """Answers 403 and returns True unless the request may write outside the editor (_trusted)."""
+        if self._trusted():
+            return False
+        self._json({"error": f"{what} works only in a browser on the machine running the editor or with the publish "
+                             "key"}, HTTPStatus.FORBIDDEN)
+        return True
+
     def _can_push(self):
         """/api/push-set writes into the simulator checkout: only for a trusted request, and only when the checkout
         is known."""
@@ -1233,6 +1500,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/projects":
                 name = (parse_qs(url.query).get("name") or [None])[0]
                 self._json(load_project(name) if name is not None else list_projects())
+            elif url.path == "/api/set-job":
+                if not self._refused("Following a send or publish"):
+                    self._json(set_job_progress((parse_qs(url.query).get("job") or [""])[0]))
             elif url.path == "/api/projects/merged":
                 self._json(merged_progress((parse_qs(url.query).get("job") or [""])[0]))
             elif url.path == "/api/projects/merged/file":
@@ -1292,22 +1562,21 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/export-set":
                 self._send(HTTPStatus.OK, export_set(body.get("items"), body.get("title", ""), body.get("code")),
                            "application/zip")
-            elif url.path == "/api/push-set":
-                if not self._trusted():
-                    self._json({"error": "Send to ptcg-sim works only in a browser on the machine running the editor "
-                                         "or with the publish key"}, HTTPStatus.FORBIDDEN)
-                    return
-                self._json(push_set(body.get("items"), body.get("title", ""), body.get("code"), body.get("force")))
-            elif url.path == "/api/publish-set":
-                if not self._trusted():
-                    self._json({"error": "Publish to site works only in a browser on the machine running the editor "
-                                         "or with the publish key"}, HTTPStatus.FORBIDDEN)
+            elif url.path in ("/api/push-set", "/api/publish-set"):
+                kind = "publish" if url.path == "/api/publish-set" else "push"
+                if self._refused("Publish to site" if kind == "publish" else "Send to ptcg-sim"):
                     return
                 try:
-                    self._json(publish_set(body.get("items"), body.get("title", ""), body.get("code"),
-                                           body.get("force")))
-                except PublishError as e:
-                    self._json({"error": str(e), "pushed": e.pushed}, HTTPStatus.BAD_GATEWAY)
+                    self._json(start_set_job(kind, body.get("items"), body.get("title", ""), body.get("code"),
+                                             body.get("force"), body.get("allowShrink") is True))
+                except DropsCards as e:
+                    self._json({"error": str(e), "drops": e.info}, HTTPStatus.CONFLICT)
+            elif url.path == "/api/set-job/cancel":
+                if not self._refused("Cancelling a send or publish"):
+                    self._json(cancel_set_job(body.get("job")))
+            elif url.path == "/api/push-plan":
+                if not self._refused("Push all"):
+                    self._json(push_all_plan(body.get("code")))
             elif url.path == "/api/changelog":
                 self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
                            "text/markdown; charset=utf-8")

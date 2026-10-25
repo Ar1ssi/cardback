@@ -277,6 +277,25 @@ button shows when `CUSTOM_SETS_R2_REMOTE` names the bucket's rclone remote (`sta
 Credentials stay in rclone's config. To take a set off the site: `node scripts/custom-sets/publish.mjs --unpublish
 <set id>` in the simulator.
 
+Send and Publish run as jobs on the server that the page follows (a first render takes 10-20 s a card, an upload minutes,
+and a tunnel cuts any one request at about 100 s): the status line shows the card being made, then the files going out,
+then the upload, and Cancel stops the job. Nothing changes if you cancel before the first file is written; cancelling a
+publish stops the upload and the site keeps the copy it had (ptcg-sim already has the new one). A page reloaded
+meanwhile gets the job back by clicking the same button again.
+
+A send or publish that would take cards out of a set that is already there is refused until you say so: "HB has 299
+cards in ptcg-sim; this list has 88: 211 would be removed (Pinsir ex, ...)". Cards are matched by the card they were
+made from; a publish also compares the site's copy by size. "Keep ptcg-sim in sync" never asks: it stops and says why,
+and the Send button does the replacing. The set often holds more than the open project (it is every project merged),
+which is how a project sent alone would wipe it.
+
+"Push all" (top right) pushes every saved project, merged like "All projects (.zip)", as one set. It asks for the set
+code, works out what would change without rendering anything and lists it: the cards that are new, the ones changed
+since they were pushed (with what changed: HP, an attack's damage, its options), and the ones no saved project has,
+which the push removes. Cards already in the set keep their numbers (a deck names a card by its number), the new ones
+go on the end; taking cards out of the middle renumbers the ones after them, and the popup says how many. "Push to
+ptcg-sim" sends exactly the list shown; "Push and publish to site" then uploads it.
+
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.
 

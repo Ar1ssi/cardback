@@ -106,6 +106,13 @@
   .dlg-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 10px 0 0; }
   dialog.wide { width: min(940px, calc(100vw - 32px)); }
   dialog.wide[open] { display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
+  .planlist { flex: 1 1 auto; min-height: 120px; overflow: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .planlist .msg { margin: 6px; }
+  .planlist .none { color: var(--muted); font-size: 12px; padding: 8px; }
+  .plan > summary { cursor: pointer; padding: 6px 8px; font-weight: 600; background: var(--chip); position: sticky; top: 0; }
+  .plan.gone > summary { background: var(--err-bg); color: var(--err-ink); }
+  .pcard { padding: 4px 8px 6px 18px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .pline { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .filterbox { margin: 8px 0 0; }
   .filterbox summary { cursor: pointer; font-size: 12px; color: var(--muted); }
   .filters { display: grid; gap: 4px; margin-top: 6px; max-height: 30vh; overflow: auto; }
@@ -168,7 +175,26 @@
   <span id="status" class="status" role="status"></span>
   <span id="saved" class="status"></span>
   <span id="viewers" class="status" hidden></span>
+  <button id="pushAllBtn" type="button" class="primary" hidden title="Push every saved project, merged into one set, to ptcg-sim: shows what would change first">Push all</button>
 </header>
+
+<dialog id="pushAllDlg" class="wide" aria-labelledby="pushAllTitle">
+  <h2 id="pushAllTitle">Push all projects to ptcg-sim</h2>
+  <div class="addrow">
+    <input id="pushAllCode" type="text" maxlength="5" placeholder="Set code, 2–5 capitals (HB)" aria-label="Set code to push to" autocomplete="off" style="max-width: 240px">
+    <button id="pushAllCheckBtn" type="button" class="small">Check again</button>
+  </div>
+  <p id="pushAllSummary" class="status" role="status"></p>
+  <div id="pushAllList" class="planlist"></div>
+  <p class="dlg-foot">
+    <span class="hint">Every saved project, merged: a card in several projects comes from the newest one. Cards already in the set keep their numbers.</span>
+    <span>
+      <button id="pushAllCloseBtn" type="button">Close</button>
+      <button id="pushAllSendBtn" type="button" class="primary" disabled>Push to ptcg-sim</button>
+      <button id="pushAllPublishBtn" type="button" disabled hidden title="Push to ptcg-sim, then upload the set to the site's bucket">Push and publish to site</button>
+    </span>
+  </p>
+</dialog>
 
 <dialog id="historyDlg" aria-labelledby="historyTitle">
   <h2 id="historyTitle">Versions</h2>
@@ -216,6 +242,7 @@
         <button id="pushSetBtn" type="button" class="small" disabled title="Type a set code first">Send to ptcg-sim</button>
         <label style="display:flex; gap:6px; align-items:center; margin:0" title="After each render of a card in the list, send the set again (only changed cards are rendered)"><input id="pushLive" type="checkbox"> Keep ptcg-sim in sync</label>
         <button id="publishSetBtn" type="button" class="small" disabled hidden title="Type a set code first">Publish to site</button>
+        <button id="cancelSetBtn" type="button" class="small" hidden title="Stop the send or publish that is running: nothing changes before the files are written; a publish stops uploading and the site keeps its copy">Cancel</button>
       </div>
       <div class="addrow">
         <input id="addIds" type="text" placeholder="Add cards: TCGdex ids, e.g. sv10.5b-001, swsh5-92" aria-label="Card ids to add">
@@ -425,9 +452,9 @@ async function api(path, body) {
   const res = await fetch(path, body === undefined ? { headers } : {
     method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`;
-    try { msg = (await res.json()).error || msg; } catch (_) {}
-    throw new Error(msg);
+    let msg = `${res.status} ${res.statusText}`, data = null;
+    try { data = await res.json(); msg = data.error || msg; } catch (_) {}
+    throw Object.assign(new Error(msg), { status: res.status, data });
   }
   return res;
 }
@@ -1332,17 +1359,20 @@ const SET_CODE = /^[A-Z0-9]{2,5}$/;
 function drawExportButton(todo = state.setCards.filter((c) => !c.skip).length) {
   const code = $("setCode").value;
   const ok = SET_CODE.test(code) && todo > 0;
+  const busy = state.pushing || state.publishing;
   $("exportSetBtn").disabled = !ok;
   $("exportSetBtn").title = ok ? `Set id custom${code.toLowerCase()}: unzip into the simulator's client/src/assets/custom-sets/`
     : code && !SET_CODE.test(code) ? "Set code: 2 to 5 capital letters or digits" : "Type a set code first";
-  $("pushSetBtn").disabled = !ok || state.pushing || state.publishing;
+  $("pushSetBtn").disabled = !ok || busy;
   $("pushSetBtn").title = ok ? `Write set custom${code.toLowerCase()} into the simulator's folder; the running simulator `
     + "reloads it. Only cards changed since the last send are rendered (Shift+click renders every card)."
     : $("exportSetBtn").title;
-  $("publishSetBtn").disabled = !ok || state.pushing || state.publishing;
+  $("publishSetBtn").disabled = !ok || busy;
   $("publishSetBtn").title = ok ? `Send set custom${code.toLowerCase()} to ptcg-sim, then upload it to the site's bucket; `
     + "the site shows it within about 10 s (Shift+click renders every card)."
     : $("exportSetBtn").title;
+  $("pushAllBtn").disabled = busy;
+  $("cancelSetBtn").hidden = !setJob;
 }
 
 function formatBytes(bytes) {
@@ -1350,34 +1380,111 @@ function formatBytes(bytes) {
   return bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// "Publish to site": the set sent to ptcg-sim as above, then uploaded to the site's bucket by the simulator's
-// publish script (/api/publish-set); the site polls the bucket and picks it up within about 10 s.
-async function publishSiteSet({ force = false } = {}) {
-  const items = state.setCards.filter((c) => !c.skip).map((c) => payload(c.id));
-  const code = $("setCode").value;
+// "Send to ptcg-sim" and "Publish to site" run on the server as jobs (/api/push-set and /api/publish-set start one):
+// a first render takes 10-20 s a card and an upload minutes, and tunnels cut a request at ~100 s, so this page polls
+// the job (/api/set-job) and shows how far it is. Cancel stops it. Starting the job that is running follows it.
+let setJob = null;                                           // the job this page follows: {id, kind}, or null
+const currentSet = () => ({ items: state.setCards.filter((c) => !c.skip).map((c) => payload(c.id)),
+                            title: $("setName").textContent, code: $("setCode").value });
+const elapsed = (seconds) => (seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`);
+
+function setJobText(job) {
+  const what = job.kind === "publish" ? `Publishing ${job.code}` : `Sending ${job.code} to ptcg-sim`;
+  const stopping = job.cancelling ? " (cancelling…)" : "";
+  if (job.phase === "uploading") return `${what}: uploading to the site's bucket, ${elapsed(job.elapsed)}…${stopping}`;
+  if (job.phase === "writing") return `${what}: writing files ${job.done}/${job.total}…${stopping}`;
+  return `${what}: ${job.done}/${job.total} cards${job.current ? `, now ${job.current}` : ""}…${stopping}`;
+}
+
+// Starts a send or publish and follows it to its end -> the finished job (state "done" or "cancelled"). Throws when
+// the server refuses it, the job fails, or contact is lost; the error has .data.drops when the set would lose cards.
+async function followSetJob(kind, body) {
+  let job = await (await api(kind === "publish" ? "/api/publish-set" : "/api/push-set", body)).json();
+  setJob = { id: job.id, kind };
+  $("cancelSetBtn").disabled = false;
+  drawExportButton();
+  try {
+    let lost = 0;
+    while (job.state === "running") {
+      status(setJobText(job));
+      await sleep(1200);
+      try { job = await (await api(`/api/set-job?job=${job.id}`)).json(); lost = 0; }
+      catch (e) {
+        if (e.status === 404 || ++lost > 5) {
+          throw e.status === 404 ? e : new Error(`lost contact with the editor (${e.message}); it may still be running: `
+            + `${kind === "publish" ? "Publish to site" : "Send to ptcg-sim"} again to follow it`);
+        }
+      }
+    }
+  } finally { setJob = null; }
+  if (job.state === "failed") throw new Error(job.error || "it failed");
+  return job;
+}
+
+async function cancelSetJob() {
+  const job = setJob;
+  if (!job) return;
+  $("cancelSetBtn").disabled = true;
+  state.pushAgain = false;                                   // a send queued behind this one is cancelled with it
+  try { await api("/api/set-job/cancel", { job: job.id }); }
+  catch (e) { $("cancelSetBtn").disabled = false; showError(`Cancel: ${e.message}`); }
+}
+
+// The server refused a send because the set would lose cards (409, e.data.drops): ask first. A send nobody clicked
+// (Keep ptcg-sim in sync) never asks: it stops and says why, and the button does the replacing.
+function dropsConfirmed(e, verb, quiet) {
+  if (quiet) { status(`Not sent: ${e.message} Click ${verb} to replace it.`); return false; }
+  if (confirm(`${e.message}\n\n${verb} anyway?`)) return true;
+  status("Nothing was sent.");
+  return false;
+}
+
+function runQueuedPush() {
+  if (!state.pushAgain) return;
+  const again = state.pushAgain;
+  state.pushAgain = false;
+  pushSimSet({ force: again === "force", quiet: true });
+}
+
+// "Publish to site": the set sent to ptcg-sim as below, then uploaded to the site's bucket by the simulator's
+// publish script; the site polls the bucket and picks it up within about 10 s.
+async function publishSiteSet({ force = false, allowShrink = false, set = null } = {}) {
+  const { items, title, code } = set || currentSet();
   if (!state.meta.ptcgSite || !SET_CODE.test(code) || !items.length || state.pushing || state.publishing) return;
   state.publishing = true;
   drawExportButton();
-  status(`Publishing ${code} to the site…`);
+  let again = false;
   try {
-    const r = await (await api("/api/publish-set", { items, title: $("setName").textContent, code, force })).json();
-    const set = r.published.sets[0];
-    status(set.unchanged && !set.uploaded ? `The site already has ${code} as it is.`
-      : `Published ${code}: ${set.uploaded} file${set.uploaded === 1 ? "" : "s"} uploaded (${formatBytes(set.uploadedBytes)}); `
-        + "the site picks it up within 10 s.");
-    setTimeout(() => { if ($("status").textContent.startsWith("Published ")) status(""); }, 8000);
-  } catch (e) { status(""); showError(`Publish to site: ${e.message}`); }
-  finally {
+    const job = await followSetJob("publish", { items, title, code, force, allowShrink });
+    if (job.state === "cancelled") {
+      status(job.pushed ? `Publish cancelled: ptcg-sim has the new ${code}; the site keeps its old copy.`
+        : "Publish cancelled: nothing was changed.");
+    } else {
+      const site = job.result.published.sets[0];
+      status(site.unchanged && !site.uploaded ? `The site already has ${code} as it is.`
+        : `Published ${code}${set && set.summary ? ` (${set.summary})` : ""}: ${site.uploaded} file${site.uploaded === 1 ? "" : "s"} uploaded (${formatBytes(site.uploadedBytes)}); `
+          + "the site picks it up within 10 s.");
+      setTimeout(() => { if ($("status").textContent.startsWith("Published ")) status(""); }, 8000);
+    }
+  } catch (e) {
+    status("");
+    if (e.data && e.data.drops) again = dropsConfirmed(e, "Publish to site", false);
+    else showError(`Publish to site: ${e.message}`);
+  } finally {
     state.publishing = false;
     drawExportButton();
+    runQueuedPush();
   }
+  if (again) publishSiteSet({ force, allowShrink: true, set });
 }
 
 // The send/publish buttons show for this machine's browser, or once the server's publish key is typed here (a
 // browser through the tunnel); until then a server with a key shows the key field instead.
 function showPushAccess() {
   $("pushRow").hidden = !state.meta.ptcgSim;
+  $("pushAllBtn").hidden = !state.meta.ptcgSim;
   $("publishSetBtn").hidden = !state.meta.ptcgSite;
+  $("pushAllPublishBtn").hidden = !state.meta.ptcgSite;
   $("keyRow").hidden = state.meta.ptcgSim || !state.meta.publishKey;
 }
 
@@ -1397,38 +1504,132 @@ async function unlockPush() {
   drawExportButton();
 }
 
-// "Send to ptcg-sim": the list written straight into the simulator's custom-sets folder (/api/push-set), which
-// the running simulator reloads. A send asked for while one runs goes out once that one ends.
-async function pushSimSet({ force = false, quiet = false } = {}) {
-  const items = state.setCards.filter((c) => !c.skip).map((c) => payload(c.id));
-  const code = $("setCode").value;
+// "Send to ptcg-sim": the list written straight into the simulator's custom-sets folder, which the running simulator
+// reloads. A send asked for while one runs goes out once that one ends. `set` is another list to send than the
+// page's ({items, title, code}: Push all).
+async function pushSimSet({ force = false, quiet = false, allowShrink = false, set = null } = {}) {
+  const { items, title, code } = set || currentSet();
   if (!state.meta.ptcgSim || !SET_CODE.test(code) || !items.length) return;
-  if (state.pushing) { state.pushAgain = state.pushAgain === "force" || force ? "force" : true; return; }
+  if (state.pushing || state.publishing) { state.pushAgain = state.pushAgain === "force" || force ? "force" : true; return; }
   state.pushing = true;
   drawExportButton();
-  status(`Sending ${code} to ptcg-sim…`);
+  let again = false;
   try {
-    const r = await (await api("/api/push-set", { items, title: $("setName").textContent, code, force })).json();
-    const rendered = r.rendered ? `${r.rendered} card${r.rendered === 1 ? "" : "s"} rendered, ` : "";
-    const removed = r.removed.length ? `, ${r.removed.length} removed` : "";
-    status(r.written.length ? `Sent ${code} to ptcg-sim: ${rendered}${r.written.length} file${r.written.length === 1 ? "" : "s"} updated${removed}.`
-      : `ptcg-sim already has ${code} as it is.`);
-    if (!quiet) setTimeout(() => { if ($("status").textContent.startsWith("Sent ")) status(""); }, 6000);
-  } catch (e) { status(""); showError(`Send to ptcg-sim: ${e.message}`); }
-  finally {
+    const job = await followSetJob("push", { items, title, code, force, allowShrink });
+    if (job.state === "cancelled") {
+      status("Send cancelled: ptcg-sim was not changed.");
+    } else {
+      const r = job.result;
+      const rendered = r.rendered ? `${r.rendered} card${r.rendered === 1 ? "" : "s"} rendered, ` : "";
+      const removed = r.removed.length ? `, ${r.removed.length} removed` : "";
+      status(r.written.length ? `Sent ${code}${set && set.summary ? ` (${set.summary})` : ""} to ptcg-sim: ${rendered}${r.written.length} file${r.written.length === 1 ? "" : "s"} updated${removed}.`
+        : `ptcg-sim already has ${code} as it is.`);
+      if (!quiet) setTimeout(() => { if ($("status").textContent.startsWith("Sent ")) status(""); }, 6000);
+    }
+  } catch (e) {
+    status("");
+    if (e.data && e.data.drops) { state.pushAgain = false; again = dropsConfirmed(e, "Send to ptcg-sim", quiet); }
+    else showError(`Send to ptcg-sim: ${e.message}`);
+  } finally {
     state.pushing = false;
     drawExportButton();
-    if (state.pushAgain) {
-      const again = state.pushAgain;
-      state.pushAgain = false;
-      pushSimSet({ force: again === "force", quiet: true });
-    }
+    runQueuedPush();
   }
+  if (again) pushSimSet({ force, allowShrink: true, set });
 }
 
 function pushAfterRender(id) {
   if (!$("pushLive").checked || !state.setCards.some((c) => c.id === id && !c.skip)) return;
   pushSimSet({ quiet: true });
+}
+
+// ---------------------------------------------------------------- push all
+// "Push all": every saved project merged into one set (the list "All projects (.zip)" downloads), compared with the
+// set in ptcg-sim without rendering anything (/api/push-plan) and shown before a thing is sent: the cards that are
+// new, the ones changed since they were pushed (and what changed), and the ones no saved project has, which the push
+// removes. Push sends exactly the list the plan came with.
+const PUSH_ALL_CODE = "svrestyle.pushAllCode";                // the set code last pushed to
+let pushPlan = null;                                         // the plan on show, or null
+let planTicket = 0;                                          // a newer check makes an older answer stale
+
+function planGroup(title, cards, kind) {
+  if (!cards.length) return [];
+  return [el("details", { class: `plan ${kind}`, open: cards.length <= 80 },
+    el("summary", {}, `${title} (${cards.length})`),
+    ...cards.map((c) => el("div", { class: "pcard" },
+      el("div", {}, c.name, " ", el("span", { class: "badge" }, c.id)),
+      ...(c.lines && c.lines.length ? c.lines : kind === "new" ? ["No edits: as printed"] : []).map((l) => el("div", { class: "pline" }, l)))))];
+}
+
+function drawPushPlan(error = "") {
+  const plan = pushPlan;
+  $("pushAllList").replaceChildren(...(error ? [el("div", { class: "msg err" }, error)] : []));
+  const [send, publish] = [$("pushAllSendBtn"), $("pushAllPublishBtn")];
+  send.disabled = publish.disabled = true;
+  if (!plan) return;
+  const code = plan.code;
+  const changes = plan.added.length + plan.changed.length + plan.removed.length;
+  $("pushAllSummary").textContent = `${cardCount(plan.incoming)} from ${plan.projects} project${plan.projects === 1 ? "" : "s"}`
+    + (plan.repeats ? ` (${plan.repeats} repeat${plan.repeats === 1 ? "" : "s"} left out)` : "")
+    + `. ptcg-sim ${plan.existing === null ? `has no set ${code} yet` : `has ${cardCount(plan.existing)} of ${code}`}: `
+    + `${plan.added.length} new, ${plan.changed.length} changed, ${plan.removed.length} removed, ${plan.unchanged} unchanged.`;
+  const notes = [];
+  if (plan.removed.length) notes.push(el("div", { class: "msg err" }, `${cardCount(plan.removed.length)} of ${code} in ptcg-sim `
+    + "are in no saved project. Pushing removes them from the set."));
+  if (plan.moved) notes.push(el("div", { class: "msg warn" }, `${cardCount(plan.moved)} get another number in the set: a deck that `
+    + "names them by number would find other cards."));
+  $("pushAllList").replaceChildren(...notes, ...planGroup("New", plan.added, "new"), ...planGroup("Changed", plan.changed, "changed"),
+    ...planGroup("Removed", plan.removed, "gone"),
+    ...(changes ? [] : [el("div", { class: "none" }, plan.existing === null ? "Nothing to push." : `ptcg-sim already has all ${cardCount(plan.incoming)} as they are.`)]));
+  send.disabled = changes === 0;
+  send.textContent = plan.removed.length ? `Push and remove ${plan.removed.length}` : "Push to ptcg-sim";
+  publish.disabled = false;                                  // the site may be behind ptcg-sim
+  publish.textContent = plan.removed.length ? `Push, remove ${plan.removed.length} and publish` : "Push and publish to site";
+}
+
+async function checkPushAll() {
+  const code = $("pushAllCode").value.trim().toUpperCase();
+  $("pushAllCode").value = code;
+  const ticket = ++planTicket;
+  pushPlan = null;
+  drawPushPlan();
+  if (!SET_CODE.test(code)) { $("pushAllSummary").textContent = "Type the set code to push to: 2 to 5 capital letters or digits."; return; }
+  $("pushAllSummary").textContent = "Working out what would change…";
+  try {
+    const plan = await (await api("/api/push-plan", { code })).json();
+    if (ticket !== planTicket) return;
+    pushPlan = plan;
+    drawPushPlan();
+  } catch (e) {
+    if (ticket !== planTicket) return;
+    $("pushAllSummary").textContent = "";
+    drawPushPlan(e.message);
+  }
+}
+
+async function openPushAll() {
+  if (!state.meta.ptcgSim || state.pushing || state.publishing) return;
+  showError("");
+  $("pushAllCode").value = $("setCode").value || localStorage.getItem(PUSH_ALL_CODE) || "";
+  $("pushAllSummary").textContent = "Saving what this page changed…";
+  $("pushAllDlg").showModal();
+  try { await flushChanges(); } catch (e) { $("pushAllSummary").textContent = ""; drawPushPlan(`Could not save the open project: ${e.message}`); return; }
+  checkPushAll();
+}
+
+async function pushPlanned(kind) {
+  const plan = pushPlan;
+  if (!plan) return;
+  $("pushAllDlg").close();
+  localStorage.setItem(PUSH_ALL_CODE, plan.code);
+  // The popup showed what a push removes from ptcg-sim, so that is answered; what a publish removes from the site is
+  // not shown, so the server asks about it.
+  const summary = [[plan.added, "new"], [plan.changed, "changed"], [plan.removed, "removed"]]
+    .filter(([cards]) => cards.length).map(([cards, what]) => `${cards.length} ${what}`).join(", ");
+  const options = { allowShrink: kind === "push" && plan.removed.length > 0,
+                    set: { items: plan.items, title: plan.title, code: plan.code, summary } };
+  if (kind === "publish") await publishSiteSet(options);
+  else await pushSimSet(options);
 }
 
 function markActive() {
@@ -1977,6 +2178,14 @@ async function init() {
   $("publishKey").addEventListener("keydown", (e) => { if (e.key === "Enter") unlockPush(); });
   $("pushSetBtn").addEventListener("click", (e) => pushSimSet({ force: e.shiftKey }));
   $("publishSetBtn").addEventListener("click", (e) => publishSiteSet({ force: e.shiftKey }));
+  $("cancelSetBtn").addEventListener("click", cancelSetJob);
+  $("pushAllBtn").addEventListener("click", openPushAll);
+  $("pushAllCheckBtn").addEventListener("click", checkPushAll);
+  $("pushAllCode").addEventListener("keydown", (e) => { if (e.key === "Enter") checkPushAll(); });
+  $("pushAllSendBtn").addEventListener("click", () => pushPlanned("push"));
+  $("pushAllPublishBtn").addEventListener("click", () => pushPlanned("publish"));
+  $("pushAllCloseBtn").addEventListener("click", () => $("pushAllDlg").close());
+  $("pushAllDlg").addEventListener("close", () => { planTicket += 1; pushPlan = null; });
   $("pushLive").checked = localStorage.getItem(PUSH_LIVE) === "1";
   $("pushLive").addEventListener("change", () => {
     localStorage.setItem(PUSH_LIVE, $("pushLive").checked ? "1" : "0");

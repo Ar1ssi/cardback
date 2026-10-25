@@ -175,15 +175,36 @@ class Http(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def call(self, path, body):
+    def call(self, path, body, headers=None):
         import urllib.error
         import urllib.request
-        req = urllib.request.Request(self.base + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
+        req = urllib.request.Request(self.base + path, json.dumps(body).encode(),
+                                     {"Content-Type": "application/json", **(headers or {})})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, r.headers.get("Content-Type"), r.read()
         except urllib.error.HTTPError as e:
             return e.code, e.headers.get("Content-Type"), e.read()
+
+    def get(self, path, headers=None):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(urllib.request.Request(self.base + path, None, headers or {}), timeout=10) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def job(self, path, body, headers=None, seconds=20):
+        """Starts a send or publish over HTTP and follows it to its end -> (the start's status, the job's last
+        progress); a start the server refuses has no job: (status, its answer)."""
+        status, _, raw = self.call(path, body, headers)
+        job = json.loads(raw)
+        end = time.time() + seconds
+        while status == 200 and job["state"] == "running" and time.time() < end:
+            time.sleep(0.02)
+            job = json.loads(self.get(f"/api/set-job?job={job['id']}", headers)[1])
+        return status, job
 
     def test_export_set(self):
         fake = gui.Render(png_bytes(), [], "me")
@@ -230,10 +251,11 @@ class Http(unittest.TestCase):
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp}):
                 with urllib.request.urlopen(self.base + "/api/meta", timeout=10) as r:
                     self.assertTrue(json.loads(r.read())["ptcgSim"])
-                status, _, body = self.call("/api/push-set", {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"})
-                self.assertEqual(status, 200)
-                self.assertEqual({k: v for k, v in json.loads(body).items() if k != "written"},
+                status, job = self.job("/api/push-set", {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"})
+                self.assertEqual((status, job["state"], job["kind"], job["setId"]), (200, "done", "push", "customhbw"))
+                self.assertEqual({k: v for k, v in job["result"].items() if k != "written"},
                                  {"setId": "customhbw", "rendered": 1, "reused": 0, "unchanged": 0, "removed": []})
+                self.assertEqual(job["pushed"], job["result"], "the files are in the folder")
                 self.assertTrue((Path(tmp) / "client/src/assets/custom-sets/customhbw/001/high.webp").is_file())
                 body = json.dumps({"items": [{"id": "swsh3-88"}], "code": "HBW"}).encode()
                 for headers in ({"Origin": "https://evil.example"}, {"Cf-Connecting-Ip": "203.0.113.9"},
@@ -262,12 +284,7 @@ class Http(unittest.TestCase):
                 return json.loads(r.read())
 
         def push(headers):
-            req = urllib.request.Request(self.base + "/api/push-set", body, {"Content-Type": "application/json", **headers})
-            try:
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    return r.status
-            except urllib.error.HTTPError as e:
-                return e.code
+            return self.job("/api/push-set", json.loads(body), headers)[0]
 
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(gui, "read", return_value=("me", pokemon())), \
@@ -279,7 +296,13 @@ class Http(unittest.TestCase):
                 self.assertEqual(push(tunnel), 403)
                 self.assertEqual(push({**tunnel, gui.PUBLISH_KEY_HEADER: key[:-1] + "x"}), 403, "a wrong key")
                 self.assertTrue(get_meta({**tunnel, gui.PUBLISH_KEY_HEADER: key})["ptcgSim"])
-                self.assertEqual(push({**tunnel, gui.PUBLISH_KEY_HEADER: key}), 200)
+                keyed = {**tunnel, gui.PUBLISH_KEY_HEADER: key}
+                status, job = self.job("/api/push-set", json.loads(body), keyed)
+                self.assertEqual((status, job["state"]), (200, "done"))
+                url = f"/api/set-job?job={job['id']}"
+                self.assertEqual(self.get(url, tunnel)[0], 403, "following a job needs the key too")
+                self.assertEqual(self.call("/api/set-job/cancel", {"job": job["id"]}, tunnel)[0], 403)
+                self.assertEqual(self.get(url, keyed)[0], 200)
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "SVRESTYLE_PUBLISH_TOKEN": "short"}), \
                     warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -324,30 +347,28 @@ class Http(unittest.TestCase):
                 publish.parent.mkdir(parents=True)
                 publish.write_text(script, encoding="utf-8")
                 self.assertTrue(meta())
-                status, _, body = self.call("/api/publish-set", items)
-                self.assertEqual(status, 200)
-                r = json.loads(body)
+                status, job = self.job("/api/publish-set", items)
+                self.assertEqual((status, job["state"], job["kind"]), (200, "done", "publish"))
+                r = job["result"]
                 self.assertEqual(r["setId"], "customhbw")
                 self.assertTrue((Path(tmp) / "client/src/assets/custom-sets/customhbw/set.json").is_file())
                 self.assertEqual(r["published"]["sets"][0]["uploaded"], 3)
                 self.assertEqual(r["published"]["args"], ["customhbw", "--remote", "r2:bucket/sets", "--json"])
                 with mock.patch.dict("os.environ", {"FAKE_PUBLISH_FAIL": "1"}):
-                    status, _, body = self.call("/api/publish-set", items)
-                self.assertEqual(status, 502)
-                failed = json.loads(body)
+                    status, failed = self.job("/api/publish-set", items)
+                self.assertEqual((status, failed["state"]), (200, "failed"))
                 self.assertEqual(failed["error"], "sent to ptcg-sim, but publishing failed: rclone copy blobs failed: "
                                                   "AccessDenied")
                 self.assertEqual(failed["pushed"]["setId"], "customhbw", "the push result survives the failed upload")
                 with mock.patch.dict("os.environ", {"FAKE_PUBLISH_NOREPORT": "1"}):
-                    status, _, body = self.call("/api/publish-set", items)
-                self.assertEqual(status, 502)
-                self.assertIn("gave no report: 'done, no json'", json.loads(body)["error"])
+                    status, failed = self.job("/api/publish-set", items)
+                self.assertEqual(failed["state"], "failed")
+                self.assertIn("gave no report: 'done, no json'", failed["error"])
                 marker = Path(tmp, "child-outlived-the-kill")
-                with mock.patch.dict("os.environ", {"FAKE_PUBLISH_HANG": str(marker)}), \
-                        mock.patch.object(gui, "PUBLISH_TIMEOUT", 1):
-                    status, _, body = self.call("/api/publish-set", items)
-                self.assertEqual(status, 502)
-                self.assertIn("stopped it", json.loads(body)["error"])
+                with mock.patch.dict("os.environ", {"FAKE_PUBLISH_HANG": str(marker)}),                         mock.patch.object(gui, "PUBLISH_TIMEOUT", 1):
+                    status, failed = self.job("/api/publish-set", items)
+                self.assertEqual(failed["state"], "failed")
+                self.assertIn("stopped it", failed["error"])
                 time.sleep(5)
                 self.assertFalse(marker.exists(), "the script's child process was killed with it")
                 req = urllib.request.Request(self.base + "/api/publish-set", json.dumps(items).encode(),
@@ -400,7 +421,7 @@ class Push(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def push(self, items, force=False, title="Homebrew Wave 1"):
+    def push(self, items, force=False, title="Homebrew Wave 1", **extra):
         reads = {"swsh3-88": ("me", pokemon()), "base1-91": ("trainer", trainer()),
                  "swsh3-89": ("me", pokemon(id="swsh3-89", name="Larvitar", stage=0, evolves_from=""))}
 
@@ -409,7 +430,7 @@ class Push(unittest.TestCase):
             return png_bytes(self.COLORS[card_id]), [], "me", None
         return export.write_set_dir(items, title, "HBW", self.root, read=lambda i: reads[i], render=render,
                                     apply=edit.apply, changelog=lambda items, title: f"# {title}", force=force,
-                                    today=datetime.date(2026, 10, 25))
+                                    today=datetime.date(2026, 10, 25), **extra)
 
     def record(self):
         return json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
@@ -480,6 +501,85 @@ class Push(unittest.TestCase):
         r = self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
         self.assertEqual((r["rendered"], r["reused"], self.renders), (2, 0, ["swsh3-88", "base1-91"]))
         self.assertEqual(self.color_of("001"), "r")
+
+    def snapshot(self):
+        return {str(p.relative_to(self.set_dir)): p.read_bytes() for p in self.set_dir.rglob("*") if p.is_file()}
+
+    def test_progress_reports_each_card_then_each_file(self):
+        calls = []
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}], progress=lambda *a: calls.append(a))
+        self.assertEqual([c for c in calls if c[0] == "rendering"],
+                         [("rendering", 0, 2, "swsh3-88"), ("rendering", 1, 2, "base1-91"), ("rendering", 2, 2, "")])
+        writing = [c for c in calls if c[0] == "writing"]
+        self.assertEqual((writing[0], len(writing)), (("writing", 0, 6, ""), 7))          # 4 WebPs, CHANGELOG.md, set.json
+        self.assertEqual((writing[-1][1:3], writing[-1][3]), ((6, 6), "set.json"))
+        self.assertEqual(calls.index(writing[0]), 3, "all the cards come before any file")
+
+    def test_a_cancel_before_the_first_file_leaves_the_folder_as_it_was(self):
+        with self.assertRaises(export.Cancelled):
+            self.push([{"id": "swsh3-88"}], cancelled=lambda: True)
+        self.assertFalse(self.set_dir.exists())
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
+        before = self.snapshot()
+        self.renders.clear()
+        with self.assertRaises(export.Cancelled):                     # asked for while the first card renders
+            self.push([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "base1-91", "style": "panel"}],
+                      cancelled=lambda: bool(self.renders))
+        self.assertEqual((self.renders, self.snapshot()), (["swsh3-88"], before))
+        calls = []
+        with self.assertRaises(export.Cancelled):                     # asked for once every card is made, before a file
+            self.push([{"id": "swsh3-88", "edits": {"hp": "190"}}],
+                       cancelled=lambda: calls.append(1) or len(calls) > 1)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_what_a_list_would_drop_from_the_set_already_there(self):
+        self.assertIsNone(export.existing_cards(self.set_dir), "no set yet")
+        self.push([{"id": "swsh3-88"}, {"id": "base1-91"}, {"id": "swsh3-89"}])
+        existing = export.existing_cards(self.set_dir)
+        self.assertEqual(existing, [("swsh3-88", "Tyranitar"), ("base1-91", "Bill"), ("swsh3-89", "Larvitar")])
+        ids = ["swsh3-88", "base1-91", "swsh3-89"]
+        self.assertEqual(export.dropped_cards(existing, ids), [])
+        self.assertEqual(export.dropped_cards(existing, [ids[2], ids[0], ids[1], "sv1-1"]), [], "reordered and grown")
+        self.assertEqual(export.dropped_cards(existing, ids[:1]), [("base1-91", "Bill"), ("swsh3-89", "Larvitar")])
+        self.assertEqual(export.dropped_cards(existing, ["swsh3-88", "sv1-1", "sv1-2"]),
+                         [("base1-91", "Bill"), ("swsh3-89", "Larvitar")],
+                         "swapped cards are dropped though the count holds")
+        record = self.record()                                         # a set this editor did not write: no sources
+        for card in record["cards"]:
+            card.pop("custom")
+        (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
+        existing = export.existing_cards(self.set_dir)
+        self.assertEqual([source for source, _ in existing], [None, None, None])
+        self.assertEqual(export.dropped_cards(existing, ["a", "b"]), [(None, "Larvitar")], "by position: the end of the set")
+        self.assertEqual(export.dropped_cards(existing, ["a", "b", "c", "d"]), [])
+        for broken in ("{not json", '{"cards": "none"}', "[]"):
+            (self.set_dir / "set.json").write_text(broken, encoding="utf-8")
+            self.assertIsNone(export.existing_cards(self.set_dir), broken)
+
+    def test_a_plan_says_what_a_push_would_change_without_rendering(self):
+        cards = [{"id": "swsh3-88"}, {"id": "base1-91"}, {"id": "swsh3-89"}]
+        plan = export.plan_set(cards, self.set_dir)
+        self.assertEqual((plan["existing"], plan["added"], plan["changed"], plan["removed"], plan["moved"], plan["unchanged"]),
+                         (None, cards, [], [], 0, 0), "no set yet: every card is new")
+        self.push(cards)
+        self.renders.clear()
+        same = export.plan_set(cards, self.set_dir)
+        self.assertEqual((same["existing"], same["added"], same["changed"], same["removed"], same["moved"], same["unchanged"]),
+                         (3, [], [], [], 0, 3))
+        edited = {"id": "swsh3-88", "edits": {"hp": "190"}}
+        panel = {"id": "base1-91", "style": "panel", "foil": True}
+        plan = export.plan_set([edited, panel, {"id": "sv1-1"}], self.set_dir)
+        self.assertEqual(plan["added"], [{"id": "sv1-1"}])
+        self.assertEqual([(item["id"], old) for item, old in plan["changed"]], [
+            ("swsh3-88", {"edits": {}, "style": "hybrid", "attacks": True, "foil": False}),
+            ("base1-91", {"edits": {}, "style": "hybrid", "attacks": True, "foil": False})])
+        self.assertEqual(plan["removed"], [("swsh3-89", "Larvitar")])
+        self.assertEqual((plan["moved"], plan["unchanged"]), (0, 0), "the cards keep their places")
+        moved = export.plan_set([cards[2], cards[0], cards[1]], self.set_dir)
+        self.assertEqual((moved["moved"], moved["unchanged"], moved["removed"]), (3, 3, []), "a reorder renumbers them")
+        self.assertEqual(self.renders, [], "planning renders nothing")
+        self.assertEqual(export.existing_title(self.set_dir), "Homebrew Wave 1")
+        self.assertEqual(export.existing_title(self.set_dir / "nope"), "")
 
     def test_rejects_like_the_zip(self):
         with self.assertRaises(ValueError):
