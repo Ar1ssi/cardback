@@ -252,7 +252,10 @@ import from a decklist by that code, and the rules engine reads their text like 
 TCGdex proxy serves the folder as TCGdex records). Each card in `set.json` also keeps the TCGdex card it was made from
 with your edits (`custom`), so "Import custom set…" opens the `set.json` again with everything restored. A Mega card's
 stage is the slot it evolves into (one above its pre-evolution, looked up on TCGdex; Stage 1 when that fails, noted in
-the CHANGELOG). Foil textures are not part of this export. `svrestyle/export.py` is the code.
+the CHANGELOG). A card with Holofoil on (needs `--tcglive`) also brings its TCG Live foil: `foil.json` and
+`foil/<nnn>-front.webp` with the white plates, the files the simulator's `import-foil.py` makes, so the simulator's
+holofoil shows your edits (its foil layer draws the card from that front texture, not from `high.webp`).
+`svrestyle/export.py` is the code.
 
 With the simulator on the same machine, skip the zip: set `SVRESTYLE_PTCG_SIM` to its checkout (or start the GUI with
 `--ptcg-sim DIR`; `start-site.bat` sets it when the simulator is in `Downloads\vibecodepokemontcg2-main`) and "Send to
@@ -260,8 +263,10 @@ ptcg-sim" appears under the set code. It writes the same files straight into the
 `client/src/assets/custom-sets/<set id>/`; the simulator watches that folder, reloads the set while it runs and
 refreshes open deck builders. Only cards whose edits or options changed since the last send are rendered (Shift+click
 renders all of them: do that once after updating the editor, whose new rendering a kept card would not show; a set
-exported before records kept image digests has its images taken as they are, and the next send adds them), only
-changed files are written, and card folders past the end of the list are removed. "Keep ptcg-sim in sync" sends after
+exported before records kept image digests has its images taken as they are, and the next send adds them; a card's
+holofoil is kept only when it is the one the record names, so a foil put in the set another way, with `import-foil.py`,
+is made again by the first send that meets it, about 4 s a card), only changed files are written, card folders past the
+end of the list are removed, and so are the `foil.json` rows and `foil/` textures no card uses any more. "Keep ptcg-sim in sync" sends after
 every render of a card in the list. Games already running keep the cards they loaded. The button shows, and the route
 answers, only in a browser on the machine running the editor: visitors through the Cloudflare tunnel cannot write
 into the simulator, unless the server has a publish key. Set `SVRESTYLE_PUBLISH_TOKEN` to a random string of 16 or

@@ -39,6 +39,14 @@ def entry(card_id):
     return {"id": card_id, "name": NAMES[card_id], "layout": "me"}
 
 
+def holo(card_id):
+    """The fourth part of gui.render for a card with holofoil: (foil.json record, {file name: PNG}, plates, token)."""
+    record = {"id": card_id, "tcglive": card_id.replace("-", "_"), "front": f"{card_id}-me-front.png",
+              "base": {"shader": "TPCi/Cards3D/HoloFoil/SunPillar", "material": "MAT_Cards3D_SunPillar",
+                       "wp": f"{card_id}-me-wp.png", "cc": None, "etch": None, "cf": None}, "reverse": None}
+    return record, {record["front"]: png(card_id), record["base"]["wp"]: png(card_id)}, {}, "token"
+
+
 class PushAll(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -134,6 +142,28 @@ class PushAll(unittest.TestCase):
         self.assertEqual((done["result"]["rendered"], done["result"]["reused"]), (3, 1))
         after = gui.push_all_plan("HBW")
         self.assertEqual((after["added"], after["changed"], after["removed"], after["unchanged"]), ([], [], [], 4))
+
+    def test_a_foil_the_set_has_from_outside_a_push_is_listed_and_made_again(self):
+        def render(card_id, edits=None, style="hybrid", attacks=True, foil=False):
+            return gui.Render(png(card_id), [], "me", holo(card_id) if foil else None)
+        with mock.patch.object(gui.tcg, "TCGLIVE", "extract"), mock.patch.object(gui, "render", side_effect=render):
+            gui.save_project("Foil", {"cards": [entry(A), entry(B)], "edits": {}, "options": {}, "foil": True})
+            first = gui.push_all_plan("HBW")
+            self.assertEqual([c["id"] for c in first["added"]], [A, B])
+            self.push(first["items"])
+            self.assertTrue((self.set_dir / "foil" / "001-front.webp").is_file())
+            record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
+            record["cards"][0]["custom"]["files"].pop("foil")          # as import-foil.py left the first card
+            (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
+            plan = gui.push_all_plan("HBW")
+            self.assertEqual(plan["changed"], [{"id": A, "name": "Tyranitar", "lines": [
+                "Its holofoil in the set is not known to match the card: made again"]}])
+            self.assertEqual(plan["unchanged"], 1)
+            gui.render.reset_mock()
+            self.push(plan["items"])
+            self.assertEqual([call.args[0] for call in gui.render.call_args_list], [A], "what the plan listed")
+            again = gui.push_all_plan("HBW")
+            self.assertEqual((again["changed"], again["unchanged"]), ([], 2))
 
     def test_a_first_push_has_everything_new_and_a_card_that_cannot_be_read_says_so(self):
         self.put("Only", "2026-10-02T10:00:00", [A, D, M])

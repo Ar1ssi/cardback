@@ -1247,8 +1247,9 @@ def keep_numbers(items, existing):
 
 def _push_changes(original, after, layout, old, new, stale=False):
     """What differs between a card as it was pushed (its options `old`) and as the list has it now (`new`, from
-    export.card_options): the edits' changes, then the options'. stale: its images on disk are not the ones the set's
-    record names, so it is rendered again whatever changed."""
+    export.card_options): the edits' changes, then the options'. stale: True when its images on disk are not the ones
+    the set's record names, "foil" when its holofoil there is not known to match it (made outside a push, or its files
+    differ from the record): rendered again whatever changed."""
     try:
         before = edit.apply(original, old["edits"]) if old.get("edits") else original
     except ValueError:                                   # edits this version no longer takes
@@ -1260,7 +1261,9 @@ def _push_changes(original, after, layout, old, new, stale=False):
         lines.append("Abilities and attacks: " + ("shown" if new["attacks"] else "left off"))
     if bool(old.get("foil")) != new["foil"]:
         lines.append("Holofoil: " + ("on" if new["foil"] else "off"))
-    if stale:
+    if stale == "foil":
+        lines.append("Its holofoil in the set is not known to match the card: made again")
+    elif stale:
         lines.append("Its images in the set are not the ones its record names: rendered again")
     return lines or ["Set again (its options changed, the card reads the same)"]
 

@@ -8,6 +8,8 @@ The zip holds one folder, ready to drop into the simulator's client/src/assets/c
     <set id>/<nnn>/high.webp     the rendered card, 733x1024
     <set id>/<nnn>/low.webp      the same at 245x342 (the simulator's grid tiles)
     <set id>/CHANGELOG.md        every card's changes from its printed card
+    <set id>/foil.json           the TCG Live holofoil of the cards that wear it (the simulator's foil.json, one row
+    <set id>/foil/<nnn>-<kind>.webp   per card) and its textures: made with each render, so the foil shows the edits
 
 Set code: 2-5 capital letters or digits, as a decklist prints it ("4 Tyranitar HBW 1"); set id "custom" + the code
 in lower case, card id "<set id>-<nnn>", numbered in list order. The set.json keeps, per card, the TCGdex card it
@@ -15,8 +17,10 @@ was made from with its edits and options (`custom`), so this editor opens the ex
 
 write_set_dir puts the same files straight into the simulator's custom-sets folder instead of a zip ("Send to
 ptcg-sim"): the simulator watches that folder and reloads the set while it runs. A card whose source and options
-match the copy already there keeps its record and images, so a push after one edit renders that one card. It
-reports its progress and can be cancelled until it starts writing (a cancel leaves the folder as it was).
+match the copy already there keeps its record, images and holofoil, so a push after one edit renders that one card.
+A card flagged for holofoil is kept only when its foil is the one its record names (custom.files.foil), so a foil
+made outside a push (import-foil.py) is made again by the first push that meets it. It reports its progress and can
+be cancelled until it starts writing (a cancel leaves the folder as it was).
 existing_cards and dropped_cards tell what a push would take out of the set already there.
 """
 import datetime
@@ -40,6 +44,9 @@ VERSION = 1
 SET_CODE = re.compile(r"[A-Z0-9]{2,5}")
 IMAGE_ROOT = "/src/assets/custom-sets"
 LOW_SIZE = (245, 342)
+FOIL_KINDS = ("front", "etch", "wp", "cf")
+FOIL_FILE = re.compile(r"[0-9]{3}-[a-z]+\.webp")
+NO_FOIL = "none"                  # custom.files.foil of a card whose render had no holofoil to make: kept as it is
 STAGE_NAMES = {0: "Basic", 1: "Stage1", 2: "Stage2"}
 RARITY = {"common": "Common", "uncommon": "Uncommon", "rare": "Rare"}
 MAX_CARDS = 999
@@ -171,8 +178,9 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
     """-> (set id, {path in the set folder: bytes}, {"rendered": n, "reused": n}): set.json, the cards' WebPs and
     CHANGELOG.md. items: [{id, edits?, style?, attacks?, foil?}] in set order (the first is card 001).
     read / render / apply / changelog: gui.read, gui.render, edit.apply, gui.changelog (passed in: no import cycle).
-    reuse(item) -> (record, high webp, low webp) | None: a card exported before with the same options, kept instead
-    of rendered and numbered for its place in this list.
+    reuse(item) -> (record, high webp, low webp, foil) | None: a card exported before with the same options, kept
+    instead of rendered and numbered for its place in this list (foil: foil_from_holo's shape, None without holofoil).
+    A card flagged for holofoil also gets its foil textures under foil/ and a row in foil.json.
     progress("rendering", cards done, cards in all, id of the card being made) is called before each card and once
     at the end; cancelled() -> True before a card stops the build (Cancelled)."""
     set_id = set_id_for(code)
@@ -180,7 +188,7 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
         raise ValueError("items: a non-empty list")
     if len(items) > MAX_CARDS:
         raise ValueError(f"items: at most {MAX_CARDS} cards in a set")
-    records, files, counts = [], {}, {"rendered": 0, "reused": 0}
+    records, files, counts, foil_rows = [], {}, {"rendered": 0, "reused": 0}, {}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for i, item in enumerate(items):
@@ -193,7 +201,7 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
             local_id = f"{i + 1:03d}"
             kept = reuse(item) if reuse else None
             if kept:
-                record, high, low = kept
+                record, high, low, foil = kept
                 records.append({**record, "id": f"{set_id}-{local_id}", "localId": local_id,
                                 "image": f"{IMAGE_ROOT}/{set_id}/{local_id}"})
                 counts["reused"] += 1
@@ -201,18 +209,30 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
                 layout, original = read(item["id"])
                 card = apply(original, item["edits"]) if item.get("edits") else original
                 records.append(tcgdex_record(card, layout, set_id, local_id, item))
-                png = render(item["id"], item.get("edits"), item.get("style", "hybrid"), item.get("attacks", True),
-                             bool(item.get("foil")))[0]
-                high, low = _webp(png), _webp(png, LOW_SIZE)
-                records[-1]["custom"]["files"] = {"high": _digest(high), "low": _digest(low)}
+                made = render(item["id"], item.get("edits"), item.get("style", "hybrid"), item.get("attacks", True),
+                              bool(item.get("foil")))
+                high, low = _webp(made[0]), _webp(made[0], LOW_SIZE)
+                digests, foil = {"high": _digest(high), "low": _digest(low)}, None
+                if item.get("foil"):
+                    foil = foil_from_holo(made[3] if len(made) > 3 else None)
+                    digests["foil"] = foil_digest(foil) if foil else NO_FOIL
+                    if not foil:
+                        warnings.warn(f"{records[-1]['name']}: no holofoil could be made; the card is set without it")
+                records[-1]["custom"]["files"] = digests
                 counts["rendered"] += 1
             files[f"{local_id}/high.webp"], files[f"{local_id}/low.webp"] = high, low
+            if foil:
+                foil_rows[local_id] = foil_row(foil, local_id)
+                for kind, data in foil["textures"].items():
+                    files[f"foil/{local_id}-{kind}.webp"] = data
     if progress:
         progress("rendering", len(items), len(items), "")
     notes = sorted({str(w.message) for w in caught if "torch.jit" not in str(w.message)})
     record = set_record(set_id, code, title, records, today)
     files["CHANGELOG.md"] = (changelog(items, title) + (
         "\n\n## Export notes\n" + "".join(f"- {n}\n" for n in notes) if notes else "")).encode()
+    if foil_rows:
+        files["foil.json"] = (json.dumps({"v": 1, "cards": foil_rows}, indent=1) + "\n").encode()
     files["set.json"] = json.dumps(record, indent=1, ensure_ascii=False).encode()
     return set_id, files, counts
 
@@ -235,25 +255,113 @@ def _digest(data):
     return hashlib.sha1(data).hexdigest()[:16]
 
 
-def exported_cards(set_dir):
-    """{source card id: (record, high webp, low webp)} for the cards of a set this module wrote into set_dir that a
-    push can keep instead of rendering; {} when there is no such set or it cannot be read (the push then renders every
-    card). A card whose images are not the ones its record names (custom.files: a push that stopped half way, a hand
-    edit) is left out, so it is rendered again. A record with no custom.files (a set exported before records kept
-    them) has its images taken as they are, and comes back with their digests, so the next push checks them."""
+def _foil_webp(png, kind):
+    img = Image.open(io.BytesIO(png))
+    img.load()
+    buf = io.BytesIO()
+    if kind == "front":
+        img.convert("RGB").save(buf, "WEBP", quality=80, method=4)       # lossy is invisible at 1024 px
+    else:
+        img.save(buf, "WEBP", quality=92, method=4)                      # the plates are soft shader inputs
+    return buf.getvalue()
+
+
+def foil_from_holo(holo):
+    """What a set keeps of a render's holofoil. holo: gui.Render's fourth part, (foil.json record, {file name: PNG
+    bytes}, ...) or None. -> {tcgl, shader, material, cc, textures: {kind: WebP bytes}}: the base printing when TCG
+    Live foils the card, else its reverse holo's (the choice import-foil.py makes). None when there is no foil, or
+    the record names a texture the render did not write."""
+    if not holo:
+        return None
+    record, written = holo[0], holo[1]
+    chosen = next((record[key] for key in ("base", "reverse") if isinstance(record.get(key), dict)), None)
+    if not chosen or not chosen.get("shader") or not chosen.get("material"):
+        return None
+    names = {"front": record.get("front"), **{kind: chosen.get(kind) for kind in FOIL_KINDS if kind != "front"}}
+    textures = {}
+    for kind in FOIL_KINDS:
+        if not names.get(kind):
+            continue
+        if names[kind] not in written:
+            return None
+        textures[kind] = _foil_webp(written[names[kind]], kind)
+    if "front" not in textures:
+        return None
+    return {"tcgl": record.get("tcglive") or "", "shader": chosen["shader"], "material": chosen["material"],
+            "cc": chosen.get("cc") or None, "textures": textures}
+
+
+def foil_digest(foil):
+    """Names a card's foil in custom.files.foil: its shader, material, pattern and every texture's bytes."""
+    return _digest(json.dumps([foil["tcgl"], foil["shader"], foil["material"], foil["cc"],
+                               sorted((kind, _digest(data)) for kind, data in foil["textures"].items())]).encode())
+
+
+def foil_row(foil, local_id):
+    """The card's row in foil.json: the simulator's shape, its textures named <nnn>-<kind>.webp."""
+    row = {"tcgl": foil["tcgl"], "shader": foil["shader"], "material": foil["material"]}
+    for kind in FOIL_KINDS:
+        if kind in foil["textures"]:
+            row[kind] = f"{local_id}-{kind}.webp"
+    if foil["cc"]:
+        row["cc"] = foil["cc"]
+    return row
+
+
+def _read_foil(set_dir, local_id, rows):
+    """The foil kept for card `local_id` of set_dir (foil_from_holo's shape), or None when its row is missing or
+    incomplete, or a texture it names is gone."""
+    row = rows.get(local_id)
+    if not isinstance(row, dict) or not row.get("shader") or not row.get("material"):
+        return None
+    textures = {}
+    for kind in FOIL_KINDS:
+        if not row.get(kind):
+            continue
+        try:
+            textures[kind] = (Path(set_dir) / "foil" / f"{local_id}-{kind}.webp").read_bytes()
+        except OSError:
+            return None
+    if "front" not in textures:
+        return None
+    return {"tcgl": row.get("tcgl") or "", "shader": row["shader"], "material": row["material"],
+            "cc": row.get("cc") or None, "textures": textures}
+
+
+def _foil_rows(set_dir):
+    try:
+        data = json.loads((Path(set_dir) / "foil.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    rows = data.get("cards") if isinstance(data, dict) else None
+    return rows if isinstance(rows, dict) else {}
+
+
+def exported_cards(set_dir, left_out=None):
+    """{source card id: (record, high webp, low webp, foil)} for the cards of a set this module wrote into set_dir
+    that a push can keep instead of rendering; {} when there is no such set or it cannot be read (the push then
+    renders every card). foil is the card's holofoil as foil_from_holo shapes it, None for a card without.
+    A card whose images are not the ones its record names (custom.files: a push that stopped half way, a hand edit)
+    is left out, so it is rendered again. So is a card flagged for holofoil whose foil is not the one its record names
+    (custom.files.foil): a foil made outside a push (import-foil.py) is not known to match the card's edits. A record
+    with no custom.files (a set exported before records kept them) has its images taken as they are, and comes back
+    with their digests, so the next push checks them. left_out, a dict, is filled with {source id: "images" | "foil"}
+    for the cards left out."""
     try:
         data = json.loads((Path(set_dir) / "set.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not is_set_data(data):
         return {}
+    rows = _foil_rows(set_dir)
     out = {}
     for rec in data["cards"]:
         custom = rec.get("custom") if isinstance(rec, dict) else None
         local_id = rec.get("localId") if isinstance(rec, dict) else None
         if not isinstance(custom, dict) or not isinstance(local_id, str) or not CARD_DIR.fullmatch(local_id):
             continue
-        if not isinstance(custom.get("source"), str):
+        source = custom.get("source")
+        if not isinstance(source, str):
             continue
         try:
             high = (Path(set_dir) / local_id / "high.webp").read_bytes()
@@ -261,11 +369,25 @@ def exported_cards(set_dir):
         except OSError:
             continue
         digests = {"high": _digest(high), "low": _digest(low)}
-        if "files" not in custom:
+        files = custom.get("files")
+        if not isinstance(files, dict):
+            files = digests
             rec = {**rec, "custom": {**custom, "files": digests}}
-        elif custom["files"] != digests:
+        elif {k: files.get(k) for k in digests} != digests:
+            if left_out is not None:
+                left_out.setdefault(source, "images")
             continue
-        out.setdefault(custom["source"], (rec, high, low))
+        foil = None
+        if custom.get("foil") and files.get("foil") != NO_FOIL:
+            foil = _read_foil(set_dir, local_id, rows)
+            if not foil or files.get("foil") != foil_digest(foil):
+                if left_out is not None:
+                    left_out.setdefault(source, "foil")
+                continue
+        out.setdefault(source, (rec, high, low, foil))
+    for source in out:                                  # a source listed twice: its kept copy counts
+        if left_out is not None:
+            left_out.pop(source, None)
     return out
 
 
@@ -336,9 +458,11 @@ def plan_set(items, set_dir):
     with, whether its images are not the ones its record names)], removed: [(source, name)], moved: cards that get
     another number, unchanged: n}. A card is unchanged when the push keeps it (exported_cards: the same test, so the
     plan is what the push does) and its options (card_options) are the ones its record keeps; any other card the push
-    renders is changed."""
+    renders is changed. The third part of a changed card is False when its options changed, True when its images in
+    the set are not the ones its record names, "foil" when its holofoil is not known to match it."""
     data = _set_json(set_dir)
-    kept = exported_cards(set_dir)
+    left_out = {}
+    kept = exported_cards(set_dir, left_out)
     records = {}
     for place, rec in enumerate(data["cards"] if data else []):
         if _source_of(rec):
@@ -354,7 +478,7 @@ def plan_set(items, set_dir):
         custom = rec["custom"]
         old = {k: custom.get(k) for k in ("edits", "style", "attacks", "foil")}
         if item["id"] not in kept:
-            plan["changed"].append((item, old, True))
+            plan["changed"].append((item, old, "foil" if left_out.get(item["id"]) == "foil" else True))
         elif old == card_options(item):
             plan["unchanged"] += 1
         else:
@@ -373,9 +497,11 @@ def existing_title(set_dir):
 def write_set_dir(items, title, code, root, *, read, render, apply, changelog, force=False, today=None, progress=None,
                   cancelled=None):
     """The list as a custom set written straight into the simulator's custom-sets folder (root): <root>/<set id>/.
-    A card whose source and options (card_options) match the set already there keeps its record and images, unless
-    force. Only files whose bytes changed are written, set.json last (the simulator reloads on it); card folders
-    past the end of the list are removed; anything else in the folder (foil.json from import-foil.py) is left.
+    A card whose source and options (card_options) match the set already there keeps its record, images and
+    holofoil, unless force. Only files whose bytes changed are written, set.json last (the simulator reloads on it);
+    card folders past the end of the list are removed, and so are foil.json and the foil/ textures no card of the
+    list uses any more (the foil rows follow the cards: a row left for a number would put its foil on another card).
+    Anything else in the folder is left.
     progress / cancelled: as build_set's, and progress("writing", files done, files in all, path written) while the
     files go out. A cancel counts until the first file is written (Cancelled: the folder is as it was); then the
     push finishes.
@@ -409,7 +535,23 @@ def write_set_dir(items, title, code, root, *, read, render, apply, changelog, f
     removed = sorted(d.name for d in set_dir.iterdir() if d.is_dir() and CARD_DIR.fullmatch(d.name) and d.name not in keep)
     for name in removed:
         shutil.rmtree(set_dir / name)
+    _prune_foil(set_dir, files)
     return {"setId": set_id, **counts, "written": written, "unchanged": unchanged, "removed": removed}
+
+
+def _prune_foil(set_dir, files):
+    """Removes what a push's foil left behind: foil/ textures no row names, and foil.json when no card has foil."""
+    if "foil.json" not in files:
+        (set_dir / "foil.json").unlink(missing_ok=True)
+    foil_dir = set_dir / "foil"
+    if not foil_dir.is_dir():
+        return
+    named = {name[len("foil/"):] for name in files if name.startswith("foil/")}
+    for path in foil_dir.iterdir():
+        if path.is_file() and FOIL_FILE.fullmatch(path.name) and path.name not in named:
+            path.unlink()
+    if not any(foil_dir.iterdir()):
+        foil_dir.rmdir()
 
 
 def is_set_data(data):

@@ -41,6 +41,18 @@ def png_bytes(color=(200, 30, 30, 255)):
     return buf.getvalue()
 
 
+def holo_for(card_id, color=(10, 20, 30, 255), reverse_only=False):
+    """What gui.render returns as its fourth part for a card with holofoil: (foil.json record, {file name: PNG}, plates,
+    token), shaped as foil.files writes it."""
+    stem = f"{card_id}-me"
+    printing = {"shader": "TPCi/Cards3D/HoloFoil/SunPillar", "material": "MAT_Cards3D_SunPillar", "wp": f"{stem}-wp.png",
+                "cc": "TEX_SouthernCross", "etch": None, "cf": None}
+    record = {"id": card_id, "tcglive": card_id.replace("-", "_"), "front": f"{stem}-front.png",
+              "base": None if reverse_only else printing, "reverse": printing if reverse_only else None}
+    written = {record["front"]: png_bytes(color), printing["wp"]: png_bytes(color), f"{stem}-foil.json": b"{}"}
+    return record, written, {}, "token"
+
+
 class Records(unittest.TestCase):
     def test_pokemon_record_is_tcgdex_shaped(self):
         rec = export.tcgdex_record(pokemon(), "me", SET_ID, "001", {"id": "swsh3-88", "edits": {"hp": "180"}})
@@ -135,6 +147,16 @@ class Zip(unittest.TestCase):
             self.export([{"id": "swsh3-88"}], "hbw")
         with self.assertRaises(ValueError):
             self.export(["swsh3-88"])
+
+    def test_a_foil_card_brings_its_textures_and_a_foil_json(self):
+        reads = {"swsh3-88": ("me", pokemon())}
+        data = export.export_zip([{"id": "swsh3-88", "foil": True}], "Homebrew Wave 1", "HBW", read=lambda i: reads[i],
+                                 render=lambda *a: (png_bytes(), [], "me", holo_for("swsh3-88")), apply=edit.apply,
+                                 changelog=lambda items, title: f"# {title}", today=datetime.date(2026, 10, 23))
+        z = zipfile.ZipFile(io.BytesIO(data))
+        self.assertEqual(sorted(n for n in z.namelist() if "foil" in n),
+                         ["customhbw/foil.json", "customhbw/foil/001-front.webp", "customhbw/foil/001-wp.webp"])
+        self.assertEqual(json.loads(z.read("customhbw/foil.json"))["cards"]["001"]["front"], "001-front.webp")
 
     def test_round_trip_import(self):
         data = self.export([{"id": "swsh3-88", "edits": {"hp": "190"}, "style": "panel", "attacks": False, "foil": True},
@@ -417,6 +439,7 @@ class Push(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.set_dir = self.root / SET_ID
         self.renders = []
+        self.makes_foil = True                     # False: a render with foil asked for comes back without any
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -425,9 +448,10 @@ class Push(unittest.TestCase):
         reads = {"swsh3-88": ("me", pokemon()), "base1-91": ("trainer", trainer()),
                  "swsh3-89": ("me", pokemon(id="swsh3-89", name="Larvitar", stage=0, evolves_from=""))}
 
-        def render(card_id, *rest):
+        def render(card_id, edits=None, style="hybrid", attacks=True, foil=False):
             self.renders.append(card_id)
-            return png_bytes(self.COLORS[card_id]), [], "me", None
+            holo = holo_for(card_id, self.COLORS[card_id]) if foil and self.makes_foil else None
+            return png_bytes(self.COLORS[card_id]), [], "me", holo
         return export.write_set_dir(items, title, "HBW", self.root, read=lambda i: reads[i], render=render,
                                     apply=edit.apply, changelog=lambda items, title: f"# {title}", force=force,
                                     today=datetime.date(2026, 10, 25), **extra)
@@ -475,11 +499,119 @@ class Push(unittest.TestCase):
 
     def test_a_shorter_list_removes_card_folders_and_keeps_other_files(self):
         self.push([{"id": "swsh3-88"}, {"id": "base1-91"}, {"id": "swsh3-89"}])
-        (self.set_dir / "foil.json").write_text("{}")
+        (self.set_dir / "ENGINE-CHECK.md").write_text("# not ours")
         r = self.push([{"id": "swsh3-89"}])
         self.assertEqual((r["rendered"], r["removed"]), (0, ["002", "003"]))
-        self.assertEqual(sorted(p.name for p in self.set_dir.iterdir()), ["001", "CHANGELOG.md", "foil.json", "set.json"])
+        self.assertEqual(sorted(p.name for p in self.set_dir.iterdir()), ["001", "CHANGELOG.md", "ENGINE-CHECK.md", "set.json"])
         self.assertEqual(self.color_of("001"), "g")
+
+    def foil_json(self):
+        return json.loads((self.set_dir / "foil.json").read_text(encoding="utf-8"))
+
+    def foil_files(self):
+        return sorted(p.name for p in (self.set_dir / "foil").iterdir()) if (self.set_dir / "foil").is_dir() else []
+
+    def foil_color(self, local_id):
+        pixel = Image.open(self.set_dir / "foil" / f"{local_id}-front.webp").convert("RGB").getpixel((360, 500))
+        return "rgb"[pixel.index(max(pixel))]
+
+    def test_a_foil_card_gets_its_textures_and_a_row_and_a_second_push_changes_nothing(self):
+        items = [{"id": "swsh3-88", "foil": True}, {"id": "base1-91"}]
+        first = self.push(items)
+        self.assertEqual(sorted(first["written"]), sorted([
+            "001/high.webp", "001/low.webp", "002/high.webp", "002/low.webp", "CHANGELOG.md", "set.json", "foil.json",
+            "foil/001-front.webp", "foil/001-wp.webp"]))
+        self.assertEqual(first["written"][-1], "set.json", "still last: the simulator reloads on it")
+        self.assertEqual(self.foil_json(), {"v": 1, "cards": {"001": {
+            "tcgl": "swsh3_88", "shader": "TPCi/Cards3D/HoloFoil/SunPillar", "material": "MAT_Cards3D_SunPillar",
+            "front": "001-front.webp", "wp": "001-wp.webp", "cc": "TEX_SouthernCross"}}})
+        cards = self.record()["cards"]
+        self.assertEqual((set(cards[0]["custom"]["files"]), set(cards[1]["custom"]["files"])), ({"high", "low", "foil"}, {"high", "low"}))
+        with Image.open(self.set_dir / "foil" / "001-front.webp") as front:
+            self.assertEqual(front.size, (733, 1024))
+        self.assertEqual(self.foil_color("001"), "r")
+        self.renders.clear()
+        again = self.push(items)
+        self.assertEqual((again["rendered"], again["reused"], again["written"], again["unchanged"]), (0, 2, [], 9))
+        self.assertEqual(self.renders, [])
+
+    def test_an_edit_makes_the_foil_again_and_a_reorder_moves_it_with_its_card(self):
+        a, b, c = {"id": "swsh3-88", "foil": True}, {"id": "base1-91"}, {"id": "swsh3-89", "foil": True}
+        self.push([a, b, c])
+        self.assertEqual((sorted(self.foil_json()["cards"]), self.foil_files()),
+                         (["001", "003"], ["001-front.webp", "001-wp.webp", "003-front.webp", "003-wp.webp"]))
+        self.renders.clear()
+        r = self.push([c, a, b])
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (0, 3, []), "a reorder renders nothing")
+        self.assertEqual((sorted(self.foil_json()["cards"]), self.foil_files()),
+                         (["001", "002"], ["001-front.webp", "001-wp.webp", "002-front.webp", "002-wp.webp"]))
+        self.assertEqual((self.foil_color("001"), self.foil_color("002")), ("g", "r"), "each foil went with its card")
+        self.assertEqual(self.foil_json()["cards"]["002"]["front"], "002-front.webp")
+        edited = {**a, "edits": {"hp": "190"}}
+        self.renders.clear()
+        r = self.push([c, edited, b])
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (1, 2, ["swsh3-88"]))
+        kept = export.exported_cards(self.set_dir)
+        self.assertEqual({k: v[3] is not None for k, v in kept.items()}, {"swsh3-88": True, "swsh3-89": True, "base1-91": False})
+
+    def test_foil_that_is_not_the_one_its_record_names_is_made_again(self):
+        items = [{"id": "swsh3-88", "foil": True}, {"id": "swsh3-89", "foil": True}]
+        self.push(items)
+        (self.set_dir / "foil" / "001-front.webp").write_bytes((self.set_dir / "foil" / "002-front.webp").read_bytes())
+        (self.set_dir / "foil" / "002-wp.webp").unlink()
+        plan = export.plan_set(items, self.set_dir)
+        self.assertEqual(sorted((item["id"], stale) for item, _, stale in plan["changed"]),
+                         [("swsh3-88", "foil"), ("swsh3-89", "foil")])
+        self.assertEqual(plan["unchanged"], 0)
+        self.renders.clear()
+        r = self.push(items)
+        self.assertEqual((r["rendered"], sorted(self.renders)), (2, ["swsh3-88", "swsh3-89"]), "the plan said so")
+        self.assertEqual((self.foil_color("001"), self.foil_color("002")), ("r", "g"))
+        self.assertEqual(export.plan_set(items, self.set_dir)["unchanged"], 2, "and the push mended it")
+        rows = self.foil_json()                                        # a row gone from foil.json: the same
+        del rows["cards"]["001"]
+        (self.set_dir / "foil.json").write_text(json.dumps(rows), encoding="utf-8")
+        self.assertEqual([(i["id"], s) for i, _, s in export.plan_set(items, self.set_dir)["changed"]], [("swsh3-88", "foil")])
+
+    def test_a_foil_made_outside_a_push_is_made_again_by_the_first_one(self):
+        items = [{"id": "swsh3-88", "foil": True}, {"id": "base1-91"}]
+        self.push(items)
+        record = self.record()                                         # as import-foil.py left a set: rows, no digest
+        record["cards"][0]["custom"]["files"].pop("foil")
+        (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
+        plan = export.plan_set(items, self.set_dir)
+        self.assertEqual(([(i["id"], s) for i, _, s in plan["changed"]], plan["unchanged"]), ([("swsh3-88", "foil")], 1))
+        self.renders.clear()
+        r = self.push(items)
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (1, 1, ["swsh3-88"]))
+        self.assertIn("foil", self.record()["cards"][0]["custom"]["files"])
+        self.assertEqual(export.plan_set(items, self.set_dir)["unchanged"], 2)
+
+    def test_a_card_that_has_no_foil_to_make_is_set_without_and_not_made_again_every_push(self):
+        self.makes_foil = False
+        items = [{"id": "swsh3-88", "foil": True}, {"id": "base1-91"}]
+        self.push(items)
+        self.assertFalse((self.set_dir / "foil.json").exists() or (self.set_dir / "foil").exists())
+        files = self.record()["cards"][0]["custom"]["files"]
+        self.assertEqual((files["foil"], self.record()["cards"][0]["custom"]["foil"]), (export.NO_FOIL, True))
+        self.assertIn("no holofoil could be made", (self.set_dir / "CHANGELOG.md").read_text(encoding="utf-8"))
+        self.renders.clear()
+        r = self.push(items)
+        self.assertEqual((r["rendered"], r["reused"], self.renders), (0, 2, []))
+        self.assertEqual(export.plan_set(items, self.set_dir)["unchanged"], 2)
+
+    def test_foil_follows_its_cards_out_of_the_set(self):
+        a, c = {"id": "swsh3-88", "foil": True}, {"id": "swsh3-89", "foil": True}
+        self.push([a, c])
+        self.assertEqual(sorted(self.foil_json()["cards"]), ["001", "002"])
+        self.push([c])
+        self.assertEqual((sorted(self.foil_json()["cards"]), self.foil_files(), self.foil_color("001")),
+                         (["001"], ["001-front.webp", "001-wp.webp"], "g"), "the dropped card's row and textures went")
+        (self.set_dir / "foil" / "notes.txt").write_text("not a texture")
+        self.push([{"id": "swsh3-89"}])                                # foil turned off: nothing is left of it
+        self.assertFalse((self.set_dir / "foil.json").exists())
+        self.assertEqual(self.foil_files(), ["notes.txt"], "only the textures a push made are removed")
+        self.assertFalse(self.record()["cards"][0]["custom"]["foil"])
 
     def test_force_renders_every_card_and_a_broken_set_json_is_rebuilt(self):
         self.push([{"id": "swsh3-88"}, {"id": "base1-91"}])
