@@ -169,7 +169,9 @@ serves the port) and shares it through a Cloudflare quick tunnel (needs `cloudfl
 `https://….trycloudflare.com` address prints in its window and is written to `SVRESTYLE_CACHE\tunnel.log`; it
 changes every time the tunnel starts.
 
-Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. For each
+Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. "Search cards…" finds cards on TCGdex by name and filters (card type, Pokemon type, stage, rule box, Trainer type,
+regulation mark, rarity, set, HP range) and adds the ones you pick to the list, no ids needed; it offers Pokemon and
+Trainer cards the editor takes (no Energy, TCG Pocket or promo sets whose ids it cannot read). For each
 card you can change the name (and regional prefix), HP, type (regular Pokemon), stage, "Evolves from" and portrait, illustrator and flavour
 text, add, remove and
 reorder abilities and attacks, pick each attack's energy cost from the type icons, set its damage (a number with an
@@ -206,7 +208,19 @@ order is the order Render all, the zip and the change log use. The page saves it
 card's edits and options, the card open and the holofoil switch - and opens it again on its own next time. Work
 with no name yet is saved as "<set> <date time>" (or "Untitled <date time>"); type a name and Save to rename it. New starts an empty project (the open one is saved first and stays in the list);
 it saves itself with its first change, or under the name typed and Save. Saved projects (`SVRESTYLE_CACHE/projects/*.json`) can be opened
-or deleted from the same bar, from any browser that reaches the server.
+or deleted from the same bar, from any browser that reaches the server. History lists the project's earlier versions
+and the deleted projects, each with Restore. A version is kept every 10 minutes while you work, when work starts again
+after a break, and before each Save over a project or Restore, so a Restore can be undone the same way; the newest 100
+of each project stay (`projects/.history/<project>/`). Delete moves a project to `projects/.trash/` (the newest 100
+stay); restoring one puts it back under its name, or "<name> (restored)" if another project has that name now.
+All projects (.zip) merges every saved project into one list (a card in several projects comes from the most
+recently saved one, edits included; Energy is left out) and downloads it as the usual zip of renders. The server builds
+it in the background and the page shows the progress (a first render takes 10-20 s a card; tunnels cut a long request),
+so the 60-card limit of the other downloads does not apply; a card that cannot be rendered is listed in
+`NOT-INCLUDED.txt` and the rest still come. While the page follows the build the button reads Cancel: the build stops
+after the card it is rendering and nothing is downloaded. Reloading the page and clicking again joins a build still
+running. Finished zips
+wait in `SVRESTYLE_CACHE/exports/` (the last 3).
 
 Wording help: effect text (abilities, attacks, Trainer text) gets the TCG's fixed terms in their printed capitals as
 you type - "active pokemon" becomes "Active Pokémon", "knocked out" "Knocked Out", "energy card" "Energy card" - and

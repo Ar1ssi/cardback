@@ -95,6 +95,38 @@
   .foil-info { font-size: 12px; color: var(--muted); margin-top: 6px; }
   .project { display: flex; gap: 6px; align-items: center; margin-left: auto; }
   .project select { width: auto; max-width: 220px; }
+  dialog { width: min(560px, calc(100vw - 32px)); padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25); }
+  dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+  dialog h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 6px; }
+  dialog h2:first-child { margin-top: 0; }
+  .versions { max-height: 34vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+  .versions .vrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 4px 4px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .versions .vrow:last-child { border-bottom: 0; }
+  .versions .none { color: var(--muted); font-size: 12px; padding: 6px 8px; }
+  .dlg-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 10px 0 0; }
+  dialog.wide { width: min(940px, calc(100vw - 32px)); }
+  dialog.wide[open] { display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
+  .filterbox { margin: 8px 0 0; }
+  .filterbox summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  .filters { display: grid; gap: 4px; margin-top: 6px; max-height: 30vh; overflow: auto; }
+  .fgroup { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .fgroup > .flabel { flex: 0 0 112px; font-size: 12px; color: var(--muted); }
+  .fgroup select, .fgroup input[type=number] { width: auto; max-width: 260px; padding: 3px 6px; }
+  .fgroup input[type=number] { width: 80px; }
+  .chip { padding: 2px 9px; font-size: 12px; border-radius: 12px; }
+  .chip[aria-pressed=true], .tile[aria-pressed=true] { border-color: var(--accent); }
+  .chip[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); }
+  .chip.icon { padding: 2px; border-radius: 50%; }
+  .chip.icon img { width: 22px; height: 22px; display: block; }
+  .results { flex: 1 1 auto; min-height: 120px; overflow: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 6px;
+             padding: 6px; display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 6px; align-content: start; }
+  .results .none { grid-column: 1 / -1; color: var(--muted); font-size: 12px; padding: 2px; }
+  .tile { display: flex; flex-direction: column; gap: 2px; padding: 4px; text-align: left; font-size: 11px; line-height: 1.25; }
+  .tile[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--accent); }
+  .tile:disabled { opacity: .55; }
+  .tile .art { width: 100%; aspect-ratio: 600 / 825; border-radius: 5px; background: var(--bg); object-fit: cover; display: grid; place-items: center; color: var(--muted); }
+  .tile .nm { font-weight: 600; overflow-wrap: anywhere; }
+  .tile .sub { color: var(--muted); }
   .viewbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; max-width: max(var(--card-w), 300px); margin: 0 auto 8px; }
   .viewbar label { display: flex; gap: 6px; align-items: center; margin: 0; }
   .viewbar select { width: auto; }
@@ -130,11 +162,42 @@
     <input id="projectName" type="text" placeholder="Project name" aria-label="Project name" style="max-width: 170px">
     <button id="saveProjectBtn" type="button">Save</button>
     <button id="deleteProjectBtn" type="button" title="Delete the saved project">Delete</button>
+    <button id="historyBtn" type="button" title="Earlier versions of the project, and deleted projects">History</button>
+    <button id="allProjectsBtn" type="button" title="Every saved project merged into one list (a card in several projects: the newest project's copy), as one zip of renders">All projects (.zip)</button>
   </span>
   <span id="status" class="status" role="status"></span>
   <span id="saved" class="status"></span>
   <span id="viewers" class="status" hidden></span>
 </header>
+
+<dialog id="historyDlg" aria-labelledby="historyTitle">
+  <h2 id="historyTitle">Versions</h2>
+  <div id="versionList" class="versions"></div>
+  <p class="hint">A version is kept every 10 minutes while you work, when you come back after a break, and before
+    each Save over the project or Restore, so a Restore can be undone from here too.</p>
+  <h2>Deleted projects</h2>
+  <div id="trashList" class="versions"></div>
+  <p class="dlg-foot"><span id="historyStatus" class="status" role="status"></span>
+    <button id="historyCloseBtn" type="button">Close</button></p>
+</dialog>
+
+<dialog id="searchDlg" class="wide" aria-labelledby="searchTitle">
+  <h2 id="searchTitle">Search cards on TCGdex</h2>
+  <input id="searchName" type="text" placeholder="Card name, e.g. pikachu (leave empty to search by filters only)" aria-label="Card name" autocomplete="off">
+  <details id="filterBox" class="filterbox" open>
+    <summary>Filters <span id="filterCount"></span></summary>
+    <div id="filters" class="filters"></div>
+    <button id="clearFiltersBtn" type="button" class="small" hidden>Clear filters</button>
+  </details>
+  <p id="searchStatus" class="status" role="status"></p>
+  <div id="searchResults" class="results"></div>
+  <p class="dlg-foot">
+    <span><button id="searchMoreBtn" type="button" class="small" hidden>Show more</button>
+      <button id="searchAllBtn" type="button" class="small" hidden>Select all shown</button></span>
+    <span><button id="searchCloseBtn" type="button">Close</button>
+      <button id="searchAddBtn" type="button" class="primary" disabled>Add to the list</button></span>
+  </p>
+</dialog>
 
 <main>
   <div>
@@ -157,6 +220,7 @@
       <div class="addrow">
         <input id="addIds" type="text" placeholder="Add cards: TCGdex ids, e.g. sv10.5b-001, swsh5-92" aria-label="Card ids to add">
         <button id="addBtn" type="button" class="small">Add</button>
+        <button id="searchBtn" type="button" class="small" title="Find cards on TCGdex by name and filters, no ids needed">Search cards…</button>
       </div>
       <div id="findRow" class="addrow" hidden>
         <input id="findCards" type="text" placeholder="Find in the list: name or id" aria-label="Find cards in the list"
@@ -1000,13 +1064,73 @@ function leaveProject(note) {
 }
 
 async function deleteProject(name) {
-  if (!name || !confirm(`Delete the saved project “${name}”? The cards on the page stay.`)) return;
+  if (!name || !confirm(`Delete the saved project “${name}”? The cards on the page stay, and History can bring it back.`)) return;
   try {
     await api("/api/projects/delete", { name, client: CLIENT });
     if (state.project === name) leaveProject();
     if (localStorage.getItem(LAST_PROJECT) === name) localStorage.removeItem(LAST_PROJECT);
     refreshProjects();
   } catch (e) { showError(e.message); }
+}
+
+// ---------------------------------------------------------------- history
+// The server keeps versions of each project (/api/projects/history) and the projects deleted (/api/projects/trash).
+// Restoring either sends this page's unsent changes first, then opens the project as restored.
+const when = (iso) => iso.replace("T", " ").slice(0, 16);
+const cardCount = (n) => `${n} card${n === 1 ? "" : "s"}`;
+
+async function showHistory() {
+  const name = $("projectSel").value || state.project;
+  $("historyStatus").textContent = "";
+  try {
+    const [history, { trash }] = await Promise.all([
+      name ? api(`/api/projects/history?name=${encodeURIComponent(name)}`).then((r) => r.json()) : { versions: [] },
+      api("/api/projects/trash").then((r) => r.json())]);
+    $("historyTitle").textContent = name ? `Versions of “${name}”` : "Versions";
+    const row = (text, title, restore) => el("div", { class: "vrow" }, el("span", { title }, text),
+      el("button", { type: "button", class: "small", onclick: restore }, "Restore"));
+    const none = (text) => [el("div", { class: "none" }, text)];
+    $("versionList").replaceChildren(...(history.versions.length
+      ? history.versions.map((v) => row(`${when(v.saved)} · ${cardCount(v.cards)}`, `save ${v.rev}`,
+          () => restoreVersion(name, v)))
+      : none(name ? "No earlier versions yet." : "Open or pick a saved project to see its versions.")));
+    $("trashList").replaceChildren(...(trash.length
+      ? trash.map((t) => row(`${t.name} · ${cardCount(t.cards)} · deleted ${when(t.deleted)}`,
+          `last saved ${when(t.saved)}`, () => restoreDeleted(t)))
+      : none("No deleted projects.")));
+    if (!$("historyDlg").open) $("historyDlg").showModal();
+  } catch (e) { showError(`Could not read the history: ${e.message}`); }
+}
+
+// Send what the page changed and has not sent yet, now. An empty page with no project has nothing to keep.
+async function flushChanges() {
+  clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+  while (state.sending) await sleep(50);
+  if (state.project || state.setCards.length) await pushChanges();
+}
+
+async function restoreVersion(name, v) {
+  $("historyStatus").textContent = "Restoring…";
+  try {
+    await flushChanges();
+    await api("/api/projects/restore", { name, version: v.id, client: CLIENT });
+    $("historyDlg").close();
+    await openProject(name);
+    $("saved").textContent = `Restored “${name}” as it was ${when(v.saved)}`;
+    refreshProjects(name);
+  } catch (e) { $("historyStatus").textContent = `Could not restore: ${e.message}`; }
+}
+
+async function restoreDeleted(t) {
+  $("historyStatus").textContent = "Restoring…";
+  try {
+    await flushChanges();
+    const out = await (await api("/api/projects/undelete", { id: t.id })).json();
+    $("historyDlg").close();
+    await openProject(out.name);
+    refreshProjects(out.name);
+  } catch (e) { $("historyStatus").textContent = `Could not restore: ${e.message}`; }
 }
 
 // ---------------------------------------------------------------- working together
@@ -1522,6 +1646,227 @@ function save(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+// "All projects (.zip)": every saved project merged into one list, the zip of renders the list's own Download gives.
+// The server builds it in the background (a first render takes 10-20 s a card; tunnels cut a long request), so this
+// polls; clicking the button again while it builds joins the same build. While this page follows a build the button
+// is Cancel: the build stops after the card it is rendering.
+let mergeJob = null;                                         // the build this page follows, or null
+
+async function downloadAllProjects() {
+  const button = $("allProjectsBtn");
+  if (mergeJob) {                                            // Cancel
+    button.disabled = true;
+    try { await api("/api/projects/merged/cancel", { job: mergeJob }); }
+    catch (e) { button.disabled = false; showError(e.message); }
+    return;
+  }
+  const idle = button.textContent;
+  button.textContent = "Cancel";
+  button.title = "Stop building the zip (after the card being rendered)";
+  showError("");
+  try {
+    await flushChanges();                                    // what this page changed and has not sent is in its project
+    let job = await (await api("/api/projects/merged", {})).json();
+    mergeJob = job.id;
+    const what = `${cardCount(job.total)} from ${job.projects} project${job.projects === 1 ? "" : "s"}`
+      + (job.repeats ? `, ${job.repeats} repeat${job.repeats === 1 ? "" : "s"} left out` : "");
+    while (job.state === "running") {
+      status(`All projects (${what}): ${job.cancelling ? "cancelling after this card, " : ""}rendering ${job.done}/${job.total}`
+        + `${job.current ? `, ${job.current}` : ""}…`);
+      await sleep(1500);
+      job = await (await api(`/api/projects/merged?job=${job.id}`)).json();
+    }
+    if (job.state === "cancelled") { status("All projects: cancelled, nothing downloaded."); return; }
+    if (job.state !== "done") throw new Error(job.error || "the download failed");
+    const a = el("a", { href: `/api/projects/merged/file?job=${job.id}`, download: "all-projects.zip" });
+    document.body.append(a); a.click(); a.remove();
+    status(`All projects downloaded (${what}).`);
+    if (job.failed.length) showError(`Not in the zip (${job.failed.length}):\n${job.failed.map((f) => `${f.id}: ${f.why}`).join("\n")}`);
+  } catch (e) { status(""); showError(e.message); }
+  finally {
+    mergeJob = null;
+    button.textContent = idle;
+    button.title = "Every saved project merged into one list (a card in several projects: the newest project's copy), as one zip of renders";
+    button.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------- search
+// "Search cards…": a TCGdex search by name and filters (server /api/find), so cards go in without knowing their ids.
+// Tiles are picked across searches; Add sends the picked ids through addCards. Energy is not offered (no layout).
+const SEARCH_PAGE = 48;
+const SEARCH_GROUPS = [
+  { key: "category", label: "Card type", options: [["Pokemon", "Pokémon"], ["Trainer", "Trainer"]] },
+  { key: "types", label: "Pokémon type" },                                   // the energy icons (state.meta.energy)
+  { key: "stage", label: "Stage", options: [["Basic", "Basic"], ["Stage1", "Stage 1"], ["Stage2", "Stage 2"],
+    ["Baby", "Baby"], ["BREAK", "BREAK"], ["LEVEL-UP", "LV.X"], ["MEGA", "Mega"], ["VMAX", "VMAX"], ["VSTAR", "VSTAR"],
+    ["V-UNION", "V-UNION"], ["RESTORED", "Restored"]] },
+  { key: "suffix", label: "Rule box", options: [["ex", "ex"], ["EX", "EX"], ["GX", "GX"], ["V", "V"]] },
+  { key: "trainerType", label: "Trainer type", options: ["Item", "Tool", "Supporter", "Stadium", "Technical Machine",
+    "Rocket's Secret Machine"].map((t) => [t, t]) },
+  { key: "regulationMark", label: "Regulation mark", options: [..."DEFGHIJ"].map((m) => [m, m]) },
+  { key: "rarity", label: "Rarity" },                                        // the server's list (/api/find/options)
+];
+const search = {
+  options: null,          // /api/find/options: {sets, rarities}, read when the search first opens
+  picks: Object.fromEntries(SEARCH_GROUPS.map((g) => [g.key, new Set()])),
+  set: "", hpMin: "", hpMax: "",
+  shown: [],              // the cards found so far (pages of SEARCH_PAGE)
+  total: 0,               // how many the search found
+  picked: new Set(),      // ids picked to add
+  seq: 0,                 // turn of the search; a late answer of an older one is dropped
+  timer: null,
+};
+
+function searchFilters() {
+  const filters = {};
+  for (const [key, picks] of Object.entries(search.picks)) if (picks.size) filters[key] = [...picks];
+  if (search.set) filters.set = [search.set];
+  for (const key of ["hpMin", "hpMax"]) if (search[key] !== "" && Number.isFinite(+search[key])) filters[key] = Math.round(+search[key]);
+  return filters;
+}
+
+function drawFilters() {
+  const group = (label, ...kids) => el("div", { class: "fgroup" }, el("span", { class: "flabel" }, label), ...kids);
+  const chips = SEARCH_GROUPS.map((g) => {
+    const options = g.key === "types" ? state.meta.energy.map((t) => [t, t])
+      : g.key === "rarity" ? search.options.rarities.map((r) => [r, r]) : g.options;
+    return group(g.label, ...options.map(([value, text]) => {
+      const chip = el("button", { type: "button", class: g.key === "types" ? "chip icon" : "chip", title: text,
+        "aria-pressed": String(search.picks[g.key].has(value)) }, g.key === "types" ? icon(value) : text);
+      chip.addEventListener("click", () => {
+        const picks = search.picks[g.key];
+        if (!picks.delete(value)) picks.add(value);
+        chip.setAttribute("aria-pressed", String(picks.has(value)));
+        filtersChanged();
+      });
+      return chip;
+    }));
+  });
+  const sets = el("select", { "aria-label": "Set" }, el("option", { value: "" }, "Any set"),
+    ...search.options.sets.map((s) => el("option", { value: s.id }, s.name)));
+  sets.value = search.set;
+  sets.addEventListener("change", () => { search.set = sets.value; filtersChanged(); });
+  const hp = (key, placeholder) => {
+    const input = el("input", { type: "number", min: 0, max: 1000, step: 10, placeholder, "aria-label": `HP ${placeholder}`, value: search[key] });
+    input.addEventListener("input", () => { search[key] = input.value; filtersChanged(); });
+    return input;
+  };
+  $("filters").replaceChildren(chips[0], group("Set", sets), group("HP", hp("hpMin", "min"), "to", hp("hpMax", "max")),
+    ...chips.slice(1));
+  filtersChanged(false);
+}
+
+function filtersChanged(run = true) {
+  const n = Object.values(search.picks).reduce((sum, picks) => sum + picks.size, 0) + (search.set ? 1 : 0)
+    + (search.hpMin !== "" || search.hpMax !== "" ? 1 : 0);
+  $("filterCount").textContent = n ? `(${n})` : "";
+  $("clearFiltersBtn").hidden = !n;
+  if (run) scheduleSearch(200);
+}
+
+function clearFilters() {
+  for (const picks of Object.values(search.picks)) picks.clear();
+  Object.assign(search, { set: "", hpMin: "", hpMax: "" });
+  drawFilters();
+  scheduleSearch(0);
+}
+
+function scheduleSearch(delay = 300) {
+  clearTimeout(search.timer);
+  search.timer = setTimeout(() => runSearch(false), delay);
+}
+
+// more: the next page of the same search, added to what shows
+async function runSearch(more) {
+  clearTimeout(search.timer);
+  const seq = ++search.seq;
+  const name = $("searchName").value.trim();
+  const filters = searchFilters();
+  let note = "";
+  if (!name && !Object.keys(filters).length) {
+    search.shown = [];
+    search.total = 0;
+    note = "Type a name or pick a filter.";
+  } else {
+    $("searchStatus").textContent = "Searching…";
+    try {
+      const out = await (await api("/api/find", { name, filters, offset: more ? search.shown.length : 0, limit: SEARCH_PAGE })).json();
+      if (seq !== search.seq) return;
+      search.shown = more ? search.shown.concat(out.cards) : out.cards;
+      search.total = out.total;
+      note = !out.total ? "No card matches."
+        : `${cardCount(out.total)}${out.total > search.shown.length ? `, ${search.shown.length} shown` : ""}`;
+    } catch (e) {
+      if (seq !== search.seq) return;
+      search.shown = [];
+      search.total = 0;
+      note = e.message;
+    }
+  }
+  $("searchStatus").textContent = note;
+  drawResults();
+}
+
+function drawResults() {
+  const inList = new Set(state.setCards.map((c) => c.id));
+  const noArt = () => el("div", { class: "art" }, "no image");
+  $("searchResults").replaceChildren(...search.shown.map((c) => {
+    const have = inList.has(c.id);
+    const art = c.thumb ? el("img", { class: "art", src: c.thumb, alt: "", loading: "lazy" }) : noArt();
+    if (c.thumb) art.addEventListener("error", () => art.replaceWith(noArt()));
+    const tile = el("button", { type: "button", class: "tile", disabled: have, title: have ? "Already in the list" : c.id,
+      "aria-pressed": String(search.picked.has(c.id)) }, art, el("span", { class: "nm" }, c.name),
+      el("span", { class: "sub" }, `${c.set} · ${c.localId}${have ? " · in the list" : ""}`));
+    tile.addEventListener("click", () => {
+      if (!search.picked.delete(c.id)) search.picked.add(c.id);
+      tile.setAttribute("aria-pressed", String(search.picked.has(c.id)));
+      drawSearchFoot();
+    });
+    return tile;
+  }));
+  drawSearchFoot();
+}
+
+function drawSearchFoot() {
+  const inList = new Set(state.setCards.map((c) => c.id));
+  const open = search.shown.filter((c) => !inList.has(c.id));
+  $("searchMoreBtn").hidden = search.shown.length >= search.total;
+  $("searchAllBtn").hidden = !open.length;
+  $("searchAllBtn").textContent = open.every((c) => search.picked.has(c.id)) ? "Clear shown" : "Select all shown";
+  const n = search.picked.size;
+  $("searchAddBtn").textContent = n ? `Add ${cardCount(n)}` : "Add to the list";
+  $("searchAddBtn").disabled = !n;
+}
+
+function pickAllShown() {
+  const inList = new Set(state.setCards.map((c) => c.id));
+  const open = search.shown.filter((c) => !inList.has(c.id));
+  const all = open.every((c) => search.picked.has(c.id));
+  for (const c of open) all ? search.picked.delete(c.id) : search.picked.add(c.id);
+  drawResults();
+}
+
+async function openSearch() {
+  if (!search.options) {
+    try { search.options = await (await api("/api/find/options")).json(); }
+    catch (e) { showError(`Could not open the search: ${e.message}`); return; }
+    drawFilters();
+  }
+  $("searchDlg").showModal();
+  $("searchName").focus();
+  if (search.shown.length) drawResults();                  // cards added since show as in the list
+  else scheduleSearch(0);
+}
+
+async function addPicked() {
+  const ids = [...search.picked];
+  if (!ids.length) return;
+  search.picked.clear();
+  $("searchDlg").close();
+  await addCards(ids.join(", "));
+}
+
 // ---------------------------------------------------------------- wiring
 async function init() {
   state.meta = await (await api("/api/meta")).json();
@@ -1546,6 +1891,14 @@ async function init() {
   $("importBtn").addEventListener("click", () => $("setFile").click());
   $("addBtn").addEventListener("click", () => addCards($("addIds").value));
   $("addIds").addEventListener("keydown", (e) => { if (e.key === "Enter") addCards($("addIds").value); });
+  $("searchBtn").addEventListener("click", openSearch);
+  $("searchName").addEventListener("input", () => scheduleSearch());
+  $("searchName").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(false); });
+  $("searchMoreBtn").addEventListener("click", () => runSearch(true));
+  $("searchAllBtn").addEventListener("click", pickAllShown);
+  $("searchAddBtn").addEventListener("click", addPicked);
+  $("searchCloseBtn").addEventListener("click", () => $("searchDlg").close());
+  $("clearFiltersBtn").addEventListener("click", clearFilters);
   $("findCards").addEventListener("input", drawSet);
   $("findCards").addEventListener("keydown", (e) => {
     if (e.key === "Escape") { $("findCards").value = ""; drawSet(); }
@@ -1642,6 +1995,9 @@ async function init() {
   $("saveProjectBtn").addEventListener("click", () => saveProject($("projectName").value));
   $("projectName").addEventListener("keydown", (e) => { if (e.key === "Enter") saveProject($("projectName").value); });
   $("deleteProjectBtn").addEventListener("click", () => deleteProject($("projectSel").value || state.project));
+  $("historyBtn").addEventListener("click", showHistory);
+  $("allProjectsBtn").addEventListener("click", downloadAllProjects);
+  $("historyCloseBtn").addEventListener("click", () => $("historyDlg").close());
   window.addEventListener("beforeunload", () => {          // the last edit, if it has not gone out yet
     const patch = state.project && state.synced && diffData(projectData(), state.synced);
     if (patch) navigator.sendBeacon("/api/projects/patch",

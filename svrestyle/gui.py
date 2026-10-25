@@ -19,6 +19,10 @@ API (JSON in and out unless noted):
                               {text, notes: [str]}: the text rewritten in printed-card wording by Claude
                               (wording.suggest: ANTHROPIC_API_KEY, else the Claude Code CLI's login)
   GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern"|"trainer", name, card: editable fields}
+  GET  /api/find/options      {sets: [{id, name}] newest first, rarities: [str]}: what the card search filters by
+  POST /api/find              {name?, filters?: {category|types|stage|suffix|trainerType|regulationMark|rarity|set:
+                              [str], hpMin?, hpMax?}, offset?, limit?} -> {total, cards: [{id, name, localId, set,
+                              thumb}]}: a TCGdex search (tcg.find), Pokemon and Trainer cards, newest set first
   POST /api/render            {id, edits?, style?, attacks?, foil?} -> {png: base64, warnings, layout, changes,
                               foil?: {front: URL, base, reverse: {png: base64 white plate (card size), shader,
                               material, cc, textures: {wp, etch?, cf?: URL}} | null}}
@@ -60,10 +64,28 @@ API (JSON in and out unless noted):
                               deleted {client}, viewers {viewers}. after=-1 (or a SEQ it no longer has) -> {seq,
                               viewers, events: [], hello: {rev}} at once: the page reads the project again if its
                               rev differs. (Long polls, not an event stream: Cloudflare quick tunnels hold streams.)
+  POST /api/projects/merged   {} -> {id, state: "running"|"done"|"failed"|"cancelled", done, total, current, projects, repeats,
+                              failed: [{id, why}], error}: start building every saved project, merged into one list
+                              (a card in several: the newest project's copy), as one zip in the background; a build
+                              already running is joined. Poll with GET /api/projects/merged?job=ID (same answer)
+  POST /api/projects/merged/cancel  {job} -> its progress (cancelling: true): the build stops after the card it is
+                              rendering, state "cancelled", and its zip is removed
+  GET  /api/projects/merged/file?job=ID  the finished zip (application/zip, as a download): the renders,
+                              CHANGELOG.md, and NOT-INCLUDED.txt for cards that could not be rendered
   POST /api/projects/leave    {name, client}: the page is closing (it stops counting as a viewer at once)
+  GET  /api/projects/history?name=N  {name, versions: [{id, saved, rev, cards}]}: the project's kept versions,
+                              newest first
+  POST /api/projects/restore  {name, version, client?} -> {name, saved, rev}: the project as it was in that version
+                              (what it is now is kept as a version first)
+  GET  /api/projects/trash    {trash: [{id, name, deleted, saved, cards}]}: deleted projects, newest first
+  POST /api/projects/undelete {id} -> {name, saved, rev}: a deleted project back, under its name (or "<name>
+                              (restored)" when another project has it now)
 
 Projects are JSON files under the cache folder (SVRESTYLE_CACHE/projects), so work resumes after a restart. Each
-save or patch raises the project's rev; a page that missed some (reconnecting) reads the project again.
+save or patch raises the project's rev; a page that missed some (reconnecting) reads the project again. Before a
+project is written over, its file is copied to projects/.history/<project>/: always before a whole save or a
+restore, and while patches come in once every HISTORY_EVERY s and once more when work starts again after a break
+(the newest HISTORY_KEEP stay). Delete moves the file to projects/.trash/ (the newest TRASH_KEEP stay).
 """
 import base64
 import datetime
@@ -71,9 +93,11 @@ import functools
 import hashlib
 import hmac
 import io
+import itertools
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -110,6 +134,12 @@ MAX_PROJECT = 4 << 20                 # bytes of one saved project
 POLL_WAIT = 20                        # s a poll waits for news before answering with none (tunnels cut at ~100 s)
 VIEWER_GONE = POLL_WAIT + 25          # s without a poll after which a page no longer counts as having it open
 EVENT_LOG = 200                       # events each project keeps for pages catching up
+HISTORY_EVERY = 600                   # s between versions kept while patches come in; also the break that keeps one
+HISTORY_KEEP = 100                    # versions kept of each project
+TRASH_KEEP = 100                      # deleted projects kept
+MERGED_KEEP = 3                       # finished all-projects downloads kept on disk (exports/)
+VERSION_ID = re.compile(r"\d{8}-\d{6}-r\d{6,9}")
+TRASH_ID = re.compile(r"\d{8}-\d{6}-[\w-]{1,80}")
 
 SIM_SETS = ("client", "src", "assets", "custom-sets")   # where the simulator keeps custom sets, in its checkout
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -167,6 +197,22 @@ def read(card_id):
     except cache.DownloadError as e:
         raise UserError(str(e)) from e
     return layout, card
+
+
+def find_cards(body):
+    """A card search on TCGdex (tcg.find): {"name", "filters", "offset", "limit"} -> {"total", "cards"}."""
+    try:
+        return tcg.find(body.get("name"), body.get("filters"), body.get("offset", 0), body.get("limit", 48))
+    except (ValueError, TypeError, cache.DownloadError) as e:
+        raise UserError(str(e)) from e
+
+
+def find_options():
+    """What the search offers to filter by, from TCGdex: the sets (newest first) and the rarities."""
+    try:
+        return {"sets": tcg.sets(), "rarities": tcg.rarities()}
+    except cache.DownloadError as e:
+        raise UserError(str(e)) from e
 
 
 def card_summary(card_id):
@@ -564,6 +610,10 @@ def project_file(name):
     return projects_dir() / f"{slug}.json"
 
 
+def _cards(p):
+    return len((p.get("data") or {}).get("cards") or [])
+
+
 def list_projects():
     out = []
     for f in projects_dir().glob("*.json") if projects_dir().exists() else ():
@@ -571,8 +621,7 @@ def list_projects():
             p = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        out.append({"name": p.get("name", f.stem), "saved": p.get("saved", ""),
-                    "cards": len((p.get("data") or {}).get("cards") or [])})
+        out.append({"name": p.get("name", f.stem), "saved": p.get("saved", ""), "cards": _cards(p)})
     return {"projects": sorted(out, key=lambda p: p["saved"], reverse=True)}
 
 
@@ -617,6 +666,7 @@ def save_project(name, data, client=None):
     _check_data(data)
     f = project_file(name)
     with _project_lock:
+        _keep_version(f, always=True)
         out = _write(f, name.strip(), data, _rev(f) + 1 if f.exists() else 1)
         HUB.publish(f.stem, "replaced", {"rev": out["rev"], "client": client})
     return out
@@ -684,25 +734,313 @@ def patch_project(name, patch, client=None):
         held = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"data": {"version": 1}}
         data = apply_patch(held.get("data") or {}, patch)
         _check_data(data)
+        _keep_version(f)
         out = _write(f, name.strip(), data, int(held.get("rev", 0)) + 1)
         HUB.publish(f.stem, "patch", {"rev": out["rev"], "client": client, "patch": patch})
     return out
 
 
 def delete_project(name, renamed=None, client=None):
-    """renamed: the name the work was saved under instead, so the others with it open move there."""
+    """renamed: the name the work was saved under instead, so the others with it open move there, and its
+    history with them. A plain delete moves the project to the trash."""
     f = project_file(name)
-    if renamed is not None:
-        project_file(renamed)                    # checks the name
+    to = project_file(renamed) if renamed is not None else None      # checks the name
     with _project_lock:
         if not f.exists():
             raise UserError(f"no saved project {name.strip()!r}")
-        f.unlink()
-        if renamed is not None:
+        if to is not None:
+            _move_history(f, to)
+            f.unlink()
             HUB.publish(f.stem, "renamed", {"to": renamed.strip(), "client": client})
         else:
+            _to_trash(f)
             HUB.publish(f.stem, "deleted", {"client": client})
     return {"deleted": name.strip()}
+
+
+# ---------------------------------------------------------------- project history and trash
+def _history_dir(f):
+    return projects_dir() / ".history" / f.stem
+
+
+def _trash_dir():
+    return projects_dir() / ".trash"
+
+
+def _stamp(t):
+    return datetime.datetime.fromtimestamp(t).strftime("%Y%m%d-%H%M%S")
+
+
+def _time_of(file_id):
+    """The time a version's or a trashed project's id starts with (_stamp), or None."""
+    try:
+        return datetime.datetime.strptime(file_id[:15], "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def _prune(folder, keep):
+    for old in sorted(folder.glob("*.json"))[:-keep]:
+        old.unlink(missing_ok=True)
+
+
+def _saved(f):
+    """(time, rev) the project file was saved with; its file time when it does not say (a copy has the copy's)."""
+    try:
+        p = json.loads(f.read_text(encoding="utf-8"))
+        return datetime.datetime.fromisoformat(p["saved"]).timestamp(), int(p.get("rev", 0))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return f.stat().st_mtime, _rev(f)
+
+
+def _keep_version(f, always=False):
+    """Copy the project file into its history before it is written over. Pages patch 0.3 s after each change, so
+    not each time: when `always` (a whole save, a restore), when the newest version is HISTORY_EVERY older than the
+    project, or when the project has not changed for HISTORY_EVERY (the work a break ended on). Versions are named
+    by the project's saved time and rev, so their names sort oldest first. Under _project_lock."""
+    if not f.exists():
+        return
+    folder = _history_dir(f)
+    versions = sorted(folder.glob("*.json")) if folder.exists() else []
+    changed, rev = _saved(f)
+    newest = _time_of(versions[-1].stem) if versions else None
+    if not (always or newest is None or changed - newest.timestamp() >= HISTORY_EVERY
+            or time.time() - changed >= HISTORY_EVERY):
+        return
+    to = folder / f"{_stamp(changed)}-r{rev:06d}.json"
+    if to.exists():                              # kept already (a restore right after another)
+        return
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(f, to)
+    _prune(folder, HISTORY_KEEP)
+
+
+def _move_history(f, to):
+    """A renamed project's versions join those of its new name."""
+    src, dst = _history_dir(f), _history_dir(to)
+    if src == dst or not src.exists():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+    for v in src.glob("*.json"):
+        if not (dst / v.name).exists():
+            os.replace(v, dst / v.name)
+    shutil.rmtree(src, ignore_errors=True)
+    _prune(dst, HISTORY_KEEP)
+
+
+def _to_trash(f):
+    folder = _trash_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = _stamp(time.time())
+    to = folder / f"{stamp}-{f.stem}.json"
+    for n in itertools.count(2):
+        if not to.exists():
+            break
+        to = folder / f"{stamp}-{f.stem}-{n}.json"
+    os.replace(f, to)
+    _prune(folder, TRASH_KEEP)
+
+
+def list_versions(name):
+    f = project_file(name)
+    folder = _history_dir(f)
+    out = []
+    for v in sorted(folder.glob("*.json"), reverse=True) if folder.exists() else ():
+        try:
+            p = json.loads(v.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        out.append({"id": v.stem, "saved": p.get("saved", ""), "rev": p.get("rev", 0), "cards": _cards(p)})
+    return {"name": name.strip(), "versions": out}
+
+
+def restore_version(name, version, client=None):
+    f = project_file(name)
+    if not isinstance(version, str) or not VERSION_ID.fullmatch(version):
+        raise UserError("version: an id from the project's history")
+    v = _history_dir(f) / f"{version}.json"
+    with _project_lock:
+        if not v.exists():
+            raise UserError(f"no version {version} of {name.strip()!r}")
+        data = json.loads(v.read_text(encoding="utf-8")).get("data")
+        _check_data(data)
+        _keep_version(f, always=True)
+        out = _write(f, name.strip(), data, _rev(f) + 1 if f.exists() else 1)
+        HUB.publish(f.stem, "replaced", {"rev": out["rev"], "client": client})
+    return out
+
+
+def list_trash():
+    out = []
+    for t in sorted(_trash_dir().glob("*.json"), reverse=True) if _trash_dir().exists() else ():
+        deleted = _time_of(t.stem)
+        try:
+            p = json.loads(t.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        out.append({"id": t.stem, "name": p.get("name", t.stem[16:]), "saved": p.get("saved", ""),
+                    "deleted": deleted.isoformat() if deleted else "", "cards": _cards(p)})
+    return {"trash": out}
+
+
+def _free_name(name):
+    """name, or "name (restored)", "name (restored 2)"... when a project has it now."""
+    if not project_file(name).exists():
+        return name
+    for n in itertools.count(1):
+        tail = " (restored)" if n == 1 else f" (restored {n})"
+        free = name[:60 - len(tail)].rstrip() + tail
+        if not project_file(free).exists():
+            return free
+
+
+def undelete_project(trash_id):
+    if not isinstance(trash_id, str) or not TRASH_ID.fullmatch(trash_id):
+        raise UserError("id: a deleted project's id")
+    t = _trash_dir() / f"{trash_id}.json"
+    with _project_lock:
+        if not t.exists():
+            raise UserError("no such deleted project (restored already, or emptied from the trash)")
+        held = json.loads(t.read_text(encoding="utf-8"))
+        _check_data(held.get("data"))
+        name = _free_name(str(held.get("name") or "").strip())
+        out = _write(project_file(name), name, held["data"], int(held.get("rev", 0)) + 1)
+        t.unlink()
+    return out
+
+
+# ---------------------------------------------------------------- every project as one download
+_exports = {}                         # job id -> progress of an all-projects zip: the last MERGED_KEEP
+_exports_lock = threading.Lock()
+
+
+def exports_dir():
+    return cache.CACHE / "exports"
+
+
+def merged_items():
+    """Every saved project's cards as one list of zip items (like the page's own, see zip_renders). A card in
+    several projects comes from the most recently saved one, with that project's edits and options; Energy and
+    cards a project lists as skipped stay out. -> (items, projects read, repeats left out)"""
+    items, seen, projects, repeats = [], set(), 0, 0
+    for listed in list_projects()["projects"]:                       # newest saved first
+        try:
+            data = load_project(listed["name"]).get("data") or {}
+        except (UserError, OSError, ValueError):
+            continue
+        projects += 1
+        foil = bool(data.get("foil")) and bool(tcg.TCGLIVE)
+        for c in data.get("cards") or []:
+            if not isinstance(c, dict) or c.get("skip") or not edit.valid_card_id(c.get("id")):
+                continue
+            if c["id"] in seen:
+                repeats += 1
+                continue
+            seen.add(c["id"])
+            opt = (data.get("options") or {}).get(c["id"]) or {}
+            items.append({"id": c["id"], "edits": (data.get("edits") or {}).get(c["id"]),
+                          "style": opt.get("style", "hybrid"), "attacks": opt.get("attacks", True),
+                          "foil": foil and c.get("layout") != "trainer"})
+    return items, projects, repeats
+
+
+class _Cancelled(Exception):
+    pass
+
+
+def _export_view(job):
+    return {**{k: job[k] for k in ("id", "state", "done", "total", "current", "projects", "repeats")},
+            "failed": list(job["failed"]), "error": job.get("error"), "cancelling": job["cancel"]}
+
+
+def start_merged_zip():
+    """Build every saved project, merged (merged_items), as one zip in the background: a card takes 10-20 s to
+    render the first time and tunnels cut a request at ~100 s, so the page polls merged_progress. A build already
+    running is joined, not started again. -> its progress"""
+    with _exports_lock:
+        for job in _exports.values():
+            if job["state"] == "running" and not job["cancel"]:
+                return _export_view(job)
+        items, projects, repeats = merged_items()
+        if not items:
+            raise UserError("no saved project has a card to download")
+        job = {"id": secrets.token_hex(8), "state": "running", "done": 0, "total": len(items), "current": "",
+               "projects": projects, "repeats": repeats, "failed": [], "file": None, "cancel": False}
+        _exports[job["id"]] = job
+        while len(_exports) > MERGED_KEEP:
+            old = _exports.pop(next(iter(_exports)))
+            if old["file"]:
+                old["file"].unlink(missing_ok=True)
+        for f in exports_dir().glob("*.zip") if exports_dir().exists() else ():       # left by an earlier run
+            if f.stem not in _exports:
+                f.unlink(missing_ok=True)
+        threading.Thread(target=_build_merged, args=(job, items), daemon=True).start()
+        return _export_view(job)
+
+
+def _build_merged(job, items):
+    """Render each card and zip it (renders are cached, so a card done before is quick). A card that fails does
+    not stop the others: it is listed in NOT-INCLUDED.txt and in the progress."""
+    path = exports_dir() / f"{job['id']}.zip"
+    made = []
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for it in items:
+                if job["cancel"]:
+                    raise _Cancelled
+                job["current"] = it["id"]
+                try:
+                    png, _, layout, holo = render(it["id"], it["edits"], it["style"], it["attacks"], it["foil"])
+                except (Exception, SystemExit) as e:             # noqa: BLE001 - keep the cards that do render
+                    job["failed"].append({"id": it["id"], "why": str(e) or type(e).__name__})
+                else:
+                    z.writestr(f"{it['id']}-{layout}.png", png)
+                    for name, data in (holo[1].items() if holo else ()):
+                        z.writestr(name, data)
+                    made.append(it)
+                job["done"] += 1
+            if not made:
+                raise UserError("no card could be rendered: " + "; ".join(f"{f['id']}: {f['why']}" for f in job["failed"][:3]))
+            z.writestr("CHANGELOG.md", changelog(made, "All projects"))
+            if job["failed"]:
+                z.writestr("NOT-INCLUDED.txt", "These cards could not be rendered:\n\n"
+                           + "\n".join(f"{f['id']}: {f['why']}" for f in job["failed"]) + "\n")
+        job["file"], job["state"] = path, "done"
+    except _Cancelled:
+        job["state"] = "cancelled"
+        path.unlink(missing_ok=True)
+    except Exception as e:                                       # noqa: BLE001 - the page shows it
+        job["error"], job["state"] = (str(e) if isinstance(e, UserError) else f"{type(e).__name__}: {e}"), "failed"
+        path.unlink(missing_ok=True)
+
+
+def merged_progress(job_id):
+    with _exports_lock:
+        job = _exports.get(job_id)
+    if not job:
+        raise LookupError("no such download (the server restarted since?): start it again")
+    return _export_view(job)
+
+
+def cancel_merged_zip(job_id):
+    """Stop a build: it ends after the card being rendered (a render cannot be stopped halfway) and its zip is
+    removed. Cancelling a build that is over changes nothing. -> its progress"""
+    with _exports_lock:
+        job = _exports.get(job_id)
+        if not job:
+            raise LookupError("no such download (the server restarted since?)")
+        if job["state"] == "running":
+            job["cancel"] = True
+    return _export_view(job)
+
+
+def merged_file(job_id):
+    with _exports_lock:
+        job = _exports.get(job_id)
+    if not job or job["state"] != "done" or not job["file"].exists():
+        raise LookupError("that download is not ready, or was removed: start it again")
+    return job["file"]
 
 
 class Room:
@@ -806,6 +1144,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _file(self, path, filename):
+        """Send a (large) file in chunks, as a download."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(path, "rb") as f:
+                shutil.copyfileobj(f, self.wfile, 1 << 20)
+        except (BrokenPipeError, ConnectionResetError):          # the page gave up on it
+            pass
+
     def _json(self, obj, status=HTTPStatus.OK):
         self._send(status, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
@@ -874,15 +1226,25 @@ class Handler(BaseHTTPRequestHandler):
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
                             "weakness": list(edit.WEAKNESS_VALUES), "resistance": list(edit.RESISTANCE_VALUES),
                             "foil": bool(tcg.TCGLIVE)})
+            elif url.path == "/api/find/options":
+                self._json(find_options())
             elif url.path == "/api/card":
                 self._json(card_summary((parse_qs(url.query).get("id") or [""])[0].strip()))
             elif url.path == "/api/projects":
                 name = (parse_qs(url.query).get("name") or [None])[0]
                 self._json(load_project(name) if name is not None else list_projects())
+            elif url.path == "/api/projects/merged":
+                self._json(merged_progress((parse_qs(url.query).get("job") or [""])[0]))
+            elif url.path == "/api/projects/merged/file":
+                self._file(merged_file((parse_qs(url.query).get("job") or [""])[0]), "all-projects.zip")
             elif url.path == "/api/projects/poll":
                 q = parse_qs(url.query)
                 self._json(poll_project((q.get("name") or [""])[0], (q.get("after") or ["-1"])[0],
                                         (q.get("client") or [""])[0]))
+            elif url.path == "/api/projects/history":
+                self._json(list_versions((parse_qs(url.query).get("name") or [""])[0]))
+            elif url.path == "/api/projects/trash":
+                self._json(list_trash())
             elif url.path.startswith("/api/original/") and url.path.endswith(".png"):
                 self._send(HTTPStatus.OK, original_png(url.path[len("/api/original/"):-4]), "image/png")
             elif url.path.startswith("/api/icon/") and url.path.endswith(".png"):
@@ -916,6 +1278,8 @@ class Handler(BaseHTTPRequestHandler):
                 if made:
                     out["foil"] = holo_json(made)
                 self._json(out)
+            elif url.path == "/api/find":
+                self._json(find_cards(body))
             elif url.path == "/api/set":
                 self._json(import_set(body))
             elif url.path == "/api/suggest":
@@ -949,12 +1313,20 @@ class Handler(BaseHTTPRequestHandler):
                            "text/markdown; charset=utf-8")
             elif url.path == "/api/projects":
                 self._json(save_project(body.get("name"), body.get("data"), body.get("client")))
+            elif url.path == "/api/projects/merged":
+                self._json(start_merged_zip())
+            elif url.path == "/api/projects/merged/cancel":
+                self._json(cancel_merged_zip(body.get("job")))
             elif url.path == "/api/projects/patch":
                 self._json(patch_project(body.get("name"), body.get("patch"), body.get("client")))
             elif url.path == "/api/projects/delete":
                 self._json(delete_project(body.get("name"), body.get("renamed"), body.get("client")))
             elif url.path == "/api/projects/leave":
                 self._json(leave_project(body.get("name"), body.get("client")))
+            elif url.path == "/api/projects/restore":
+                self._json(restore_version(body.get("name"), body.get("version"), body.get("client")))
+            elif url.path == "/api/projects/undelete":
+                self._json(undelete_project(body.get("id")))
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         self._guard(go)

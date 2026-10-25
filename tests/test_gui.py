@@ -3,6 +3,7 @@ Run: python -m unittest discover tests"""
 import io
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -179,6 +180,26 @@ class Http(unittest.TestCase):
         self.assertEqual(self.call("/api/projects/poll?name=../x&after=-1&client=b")[0], 400)
         self.assertEqual(self.call("/api/projects/poll?name=x&after=soon&client=b")[0], 400)
         self.assertEqual(self.call("/api/projects/poll?name=x&after=-1")[0], 400)
+
+    def test_project_history_and_trash(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gui.cache, "CACHE", Path(tmp)):
+            self.call("/api/projects", {"name": "H", "data": {"cards": []}})
+            self.call("/api/projects", {"name": "H", "data": {"cards": [{"id": "a"}]}})
+            status, _, body = self.call("/api/projects/history?name=H")
+            versions = json.loads(body)["versions"]
+            self.assertEqual((status, [v["cards"] for v in versions]), (200, [0]))
+            status, _, body = self.call("/api/projects/restore", {"name": "H", "version": versions[0]["id"]})
+            self.assertEqual((status, json.loads(body)["rev"]), (200, 3))
+            self.assertEqual(self.call("/api/projects/delete", {"name": "H"})[0], 200)
+            status, _, body = self.call("/api/projects/trash")
+            trash = json.loads(body)["trash"]
+            self.assertEqual((status, [(t["name"], t["cards"]) for t in trash]), (200, [("H", 0)]))
+            status, _, body = self.call("/api/projects/undelete", {"id": trash[0]["id"]})
+            self.assertEqual((status, json.loads(body)["name"]), (200, "H"))
+            self.assertEqual(self.call("/api/projects/restore", {"name": "H", "version": "../x"})[0], 400)
+            self.assertEqual(self.call("/api/projects/undelete", {"id": "../x"})[0], 400)
 
     def test_holofoil_needs_an_extract(self):
         with mock.patch.object(gui.tcg, "TCGLIVE", None):
@@ -360,6 +381,58 @@ class Projects(unittest.TestCase):
                 hub.publish("k", "patch", {"rev": i})
             self.assertEqual(hub.poll("k", start, "me", lambda: 5, wait=0)["hello"], {"rev": 5})
             self.assertEqual(hub.poll("k", 999, "me", lambda: 5, wait=0)["hello"], {"rev": 5})   # server restarted
+
+    def test_versions_kept_while_working_and_restored(self):
+        gui.patch_project("Hist", {"setName": "one"})
+        self.assertEqual(gui.list_versions("Hist")["versions"], [])           # nothing written over yet
+        gui.patch_project("Hist", {"setName": "two"})                         # the first one written over: kept
+        gui.patch_project("Hist", {"setName": "three"})                       # soon after: not kept
+        first = gui.list_versions("Hist")["versions"]
+        self.assertEqual([(v["rev"], v["cards"]) for v in first], [(1, 0)])
+        f = gui.project_file("Hist")                                          # work stopped, then goes on
+        held = json.loads(f.read_text(encoding="utf-8"))
+        then = gui.datetime.datetime.fromtimestamp(time.time() - gui.HISTORY_EVERY - 5)
+        f.write_text(json.dumps({**held, "saved": then.isoformat(timespec="seconds")}), encoding="utf-8")
+        gui.patch_project("Hist", {"setName": "four"})
+        self.assertEqual(sorted(v["rev"] for v in gui.list_versions("Hist")["versions"]), [1, 3])
+        self.assertEqual(gui.restore_version("Hist", first[0]["id"], client="me")["rev"], 5)
+        self.assertEqual(gui.load_project("Hist")["data"]["setName"], "one")
+        self.assertIn(4, [v["rev"] for v in gui.list_versions("Hist")["versions"]])   # what it was, kept first
+        for bad in ("../../x", "20200101-000000-r000001", None):
+            with self.subTest(bad), self.assertRaises(gui.UserError):
+                gui.restore_version("Hist", bad)
+
+    def test_whole_saves_keep_a_version_and_old_versions_go(self):
+        gui.save_project("Whole", {"cards": [{"id": "a"}]})
+        gui.save_project("Whole", {"cards": []})
+        self.assertEqual([(v["rev"], v["cards"]) for v in gui.list_versions("Whole")["versions"]], [(1, 1)])
+        with mock.patch.object(gui, "HISTORY_EVERY", 0), mock.patch.object(gui, "HISTORY_KEEP", 2):
+            for i in range(5):
+                gui.patch_project("Busy", {"setName": str(i)})
+        self.assertEqual([v["rev"] for v in gui.list_versions("Busy")["versions"]], [4, 3])
+
+    def test_deleted_projects_go_to_the_trash(self):
+        gui.save_project("Gone", {"cards": [{"id": "a"}]})
+        gui.delete_project("Gone")
+        trash = gui.list_trash()["trash"]
+        self.assertEqual([(t["name"], t["cards"]) for t in trash], [("Gone", 1)])
+        gui.save_project("Gone", {"cards": []})                               # the name taken again meanwhile
+        self.assertEqual(gui.undelete_project(trash[0]["id"])["name"], "Gone (restored)")
+        self.assertEqual(gui.load_project("Gone (restored)")["data"]["cards"], [{"id": "a"}])
+        self.assertEqual(gui.list_trash(), {"trash": []})
+        for bad in (trash[0]["id"], "../x", None):                            # restored already, not an id
+            with self.subTest(bad), self.assertRaises(gui.UserError):
+                gui.undelete_project(bad)
+
+    def test_a_rename_takes_the_history_along(self):
+        with mock.patch.object(gui, "HISTORY_EVERY", 0):
+            gui.patch_project("Untitled 1", {"setName": "a"})
+            gui.patch_project("Untitled 1", {"setName": "b"})
+        gui.save_project("Named", gui.load_project("Untitled 1")["data"])
+        gui.delete_project("Untitled 1", renamed="Named")
+        self.assertEqual([v["rev"] for v in gui.list_versions("Named")["versions"]], [1])
+        self.assertEqual(gui.list_versions("Untitled 1")["versions"], [])
+        self.assertEqual(gui.list_trash(), {"trash": []})                    # a rename is not a delete
 
     def test_quiet_pages_stop_counting(self):
         hub = gui.Hub()
