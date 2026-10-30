@@ -6,13 +6,15 @@ overlap the art, are inpainted first. Card text comes from TCGdex, the Pokedex l
 were measured on me1 scans: name bar, weakness row and footer match the SV ex ones in compose.py; the vertical
 spacing of abilities and attacks was fitted on 45 me1 cards.
 """
+import functools
+import math
 import re
 import warnings
 
 import cv2
 import numpy as np
 
-from . import cache, compose, frame, inpaint, meframe, stage, tcg
+from . import cache, compose, frame, inpaint, meframe, stage, tcg, xyrule
 from . import typeset as ts
 from .imaging import dilate, fill_holes, hsv, load_rgba, luminance, save_rgba
 
@@ -210,13 +212,14 @@ def _snap(top):
     return min(GRID, key=lambda g: abs(g - top))
 
 
-def me_layout(laid, pitch):
-    """Vertical placement of abilities then attacks, fitted on me1. laid: [(kind, block, lines)].
+def me_layout(laid, pitch, floor=None):
+    """Vertical placement of abilities then attacks, fitted on me1. laid: [(kind, block, lines)]; floor: the highest
+    icon-row top the first block may have (under the XY Mega Evolution rule box).
     -> (top of each block's name cap, as compose.text_block expects; whether it fits)"""
     extents = [_extent(kind, lines, pitch) for kind, _, lines in laid]
 
     def stack(first, gap):
-        tops, t = [], first
+        tops, t = [], first if floor is None else max(first, math.ceil(floor))
         for e, (kind, _, lines) in zip(extents, laid):
             tops.append(t)
             # a loose gap after a text-less attack is a little smaller (Vulpix, Nuzleaf, Corphish: 59)
@@ -241,6 +244,13 @@ def me_layout(laid, pitch):
     # compose.text_block works from the name's cap top: icon-row top + 4 (attacks), badge top + 5 (abilities).
     caps = [t + (5 if kind == "ability" else 4) for t, (kind, _, _) in zip(tops, laid)]
     return caps, bottom <= PANEL_BOTTOM
+
+
+def rule_layout(card):
+    """me_layout, starting under the XY Mega Evolution rule box when the card has it."""
+    if not card.get("mega_rule"):
+        return me_layout
+    return functools.partial(me_layout, floor=xyrule.floor("regular"))
 
 
 # ---------------------------------------------------------------- text
@@ -299,9 +309,11 @@ def compose_card(card_id, attacks=True, card=None):
     panel_lum = float(np.median(luminance(canvas[meframe.PANEL[1]:meframe.PANEL[3], meframe.PANEL[0]:meframe.PANEL[2]])))
     white_text = panel_lum < 110
     fill = compose.WHITE if white_text else np.array(frame.DARK_INK, np.float32)
+    if card.get("mega_rule"):            # after the panel is read: the box is not the panel the text is inked for
+        xyrule.draw(canvas, "regular")
     name_and_hp(canvas, card, prof)
     dex_line(canvas, card)
-    shrink = None if not attacks else compose.text_block(canvas, card, fill, None, layout=me_layout, name_to_body=NAME_TO_BODY,
+    shrink = None if not attacks else compose.text_block(canvas, card, fill, None, layout=rule_layout(card), name_to_body=NAME_TO_BODY,
                                 fit_tracking=BODY_FIT_TRACK, min_tracking=BODY_MIN_TRACK,
                                 red_edge=RED_ON_DARK if white_text else None,
                                 cost_r=COST_R, cost_dy=COST_DY)

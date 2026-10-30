@@ -293,6 +293,7 @@
           <div data-stage><label for="evolves_from">Evolves from</label><input id="evolves_from" type="text"></div>
           <div data-stage><label for="portrait">Portrait from card (optional)</label><input id="portrait" type="text" placeholder="found by name"></div>
         </div>
+        <label data-pokemon style="display:flex; gap:6px; align-items:center" title="The box XY prints under the art of its M Pokémon-EX: When 1 of your Pokémon becomes a Mega Evolution Pokémon, your turn ends."><input id="megaRule" type="checkbox"> Mega Evolution rule (the XY box under the art; abilities and attacks move below it)</label>
         <p class="hint" data-stage data-pokemon>The portrait is the pre-evolution's picture from a Scarlet &amp; Violet or Mega Evolution card that evolves from it. Name a card id to choose: a Stage card gives its portrait, any other card the middle of its art.</p>
         <div data-restyle data-special><label for="illustrator">Illustrator</label><input id="illustrator" type="text"></div>
         <div data-me><label for="flavor">Flavour text</label><textarea id="flavor" rows="2"></textarea></div>
@@ -586,6 +587,7 @@ function fillForm() {
   if (layout !== "energy") {                  // an Energy card has no stage, weakness, retreat, abilities or attacks
     $("stageSel").value = String(card.stage || 0);
     drawStage();
+    $("megaRule").checked = !!card.mega_rule;
     setSide("weak", card.weakness, "×2");
     setSide("res", card.resistance, "-30");
     drawRetreat();
@@ -745,6 +747,7 @@ function readForm() {
   card.stage = Number($("stageSel").value);
   card.evolves_from = $("evolves_from").value;
   card.portrait = $("portrait").value.trim();
+  card.mega_rule = $("megaRule").checked;
   if (state.current.layout === "me") card.flavor = $("flavor").value;
   card.weakness = $("weakType").value ? { type: $("weakType").value, value: $("weakValue").value || "×2" } : null;
   card.resistance = $("resType").value ? { type: $("resType").value, value: $("resValue").value || "-30" } : null;
@@ -2221,7 +2224,7 @@ async function init() {
     if ($("stageSel").value !== "0" && !$("evolves_from").value.trim()) $("evolves_from").focus();
     changed();
   });
-  for (const id of ["weakValue", "resValue", "style", "showAttacks"]) $(id).addEventListener("change", changed);
+  for (const id of ["weakValue", "resValue", "style", "showAttacks", "megaRule"]) $(id).addEventListener("change", changed);
   for (const p of ["weak", "res"]) $(p + "Type").addEventListener("change", () => { drawSide(p); changed(); });
   $("foilOn").addEventListener("change", () => {
     autosave();

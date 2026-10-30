@@ -44,9 +44,9 @@ ME_REVERSE = ("TPCi/Cards3D/HoloFoil/FlatSilver", "MAT_Cards3D_FlatSilver", None
 NON_FOIL = "NonFoil"      # in the material name of a non-foil printing (old bundles: Standard_NonFoil_J)
 
 # Drawn kinds left out of the foil (black on the plate).
-STAGE_CUT = ("stage", "stage_text", "portrait", "evolves")
+STAGE_CUT = ("stage", "stage_text", "portrait", "evolves", "mega_rule")     # mega_rule: the XY box (xyrule.KIND)
 EX_CUT = ("hp", "type_icon", "icon", "row_icon", "badge", "ability_name", "text", "row_text", "footer",
-          "stage_text", "portrait", "evolves")
+          "stage_text", "portrait", "evolves", "mega_rule")
 ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer") + STAGE_CUT
 # Edits to the text blocks on cards edited in place (abilities and attacks, the weakness row), and the kinds they
 # draw. Their plates are the card's own foil field where the old block's cut-outs were (block_cutout_value).

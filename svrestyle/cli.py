@@ -23,7 +23,7 @@ import warnings
 from pathlib import Path
 
 from . import (badges, cache, energy, fairy, foil, frame, inpaint, layers, lifted, megaretype, meframe, oldwindow, refs,
-               swsh, tcg, trainer, trainerframe)
+               swsh, tcg, trainer, trainerframe, xyrule)
 from . import typeset as ts
 from .imaging import save_rgba
 
@@ -50,6 +50,8 @@ def cmd_prepare(a):
     print("ex assets built for:", ", ".join(list(refs.TYPES) + with_fairy))
     meframe.build_all()
     print("Mega Evolution assets built for:", ", ".join(list(meframe.POOL) + with_fairy))
+    xyrule.sprite()
+    print(f"XY Mega Evolution rule box lifted from {len(xyrule.SOURCES)} M Pokemon-EX prints")
     if tcg.TCGLIVE:
         megaretype.build_all()
         print("Mega ex type change assets built for:", ", ".join(t for t in megaretype.TYPES

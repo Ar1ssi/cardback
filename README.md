@@ -151,6 +151,23 @@ lettering is swapped, so each card keeps its own tab and border. On the holofoil
 SV ex frame's silver value on ex cards and are left out elsewhere; the portrait, lettering and "Evolves from" line
 are cut out.
 
+### Mega Evolution rule (XY)
+
+Tick "Mega Evolution rule" in the editor (edit field `mega_rule`) and any Pokemon card - a Mega ex print, a card made
+Mega, a restyled card - gets the box every XY "M ... EX" card prints under its art: the silver plate with the Mega
+Evolution symbol, the "Mega Evolution rule" tab and the gold panel reading "When 1 of your Pokémon becomes a Mega
+Evolution Pokémon, your turn ends." (`xyrule.py`). It is the print's own box, not set again: art runs over its right
+end on most XY prints, so it is the median of 59 of them (XY and Generations main sets, secret rares and promos;
+not Evolutions or the Primal Reversion cards, which print other boxes), each moved onto M Charizard-EX's (xy2-13) by
+its tab, cut along an outline measured on that median; the dark rim along its top, which art tints on half the prints,
+takes its shade from the stretch above the tab. `prepare` builds it (from pokemontcg.io, with or without a TCG Live
+extract: TCG Live has no XY cards). It is set unscaled: XY hangs it from the silver bar that closes the art window,
+so it hangs from the Pokedex strip (regular cards) or the window bar (ex cards), and abilities and attacks start
+20 px under it, as XY sets its first attack. On a card edited in place, abilities and attacks are taken off and set
+again under it (in the ex layout on ex prints, as any edit to them is); text that no longer fits is set smaller,
+with the usual warning. The holofoil plates leave the box out. The simulator does not read it: a card exported with
+it plays as it did.
+
 ### Type
 
 A regular Pokemon (one Prize: no ex, V or other rule), a Pokemon V restyled as ex, a Mega Evolution ex and a Scarlet &
@@ -504,6 +521,7 @@ How it works, module by module:
 - `retype.py` - a Scarlet & Violet / Mega Evolution regular card's print lifted off its type's frame and set on
   another's (see Type above).
 - `stage.py` - Stage pieces, evolution portrait (found on TCGdex) and "Evolves from" line, for every layout.
+- `xyrule.py` - the XY Mega Evolution rule box, lifted from the XY "M ... EX" prints, and where it hangs on each layout.
 - `edit.py` / `gui.py` / `gui.html` - the editor: which fields can change and the checks on them, the local HTTP
   server, and the page.
 - `mecompose.py` - the Mega Evolution layout: art window, portrait, Pokedex line (PokeAPI), the vertical spacing of

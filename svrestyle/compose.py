@@ -4,6 +4,8 @@ Card text comes from TCGdex. Layout constants were measured at 733x1024 on real 
 attacks, weakness row), Paldean Clodsire ex (regional-form name), Mew ex and Chien-Pao ex (ability rows),
 Wo-Chien ex (four-cost attacks, damage), Alakazam ex (footer, resistance).
 """
+import functools
+import math
 import re
 import warnings
 from dataclasses import dataclass
@@ -11,7 +13,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from . import cache, frame, layers, lifted, meframe, refs, stage, swsh, tcg
+from . import cache, frame, layers, lifted, meframe, refs, stage, swsh, tcg, xyrule
 from . import typeset as ts
 from .imaging import load_rgba, luminance, put_sprite, save_rgba
 
@@ -38,6 +40,7 @@ COST_X0, COST_PITCH, COST_R = 71, 44, 18.8
 BODY_FACE, BODY_SIZE, BODY_X, BODY_FULL_W, BODY_TRACK = ts.MEDIUM, 24.9, 60, 615, 0.6
 BODY_PITCH, NAME_TO_BODY, BLOCK_GAP, NAME_ROW_H = 29, 45, 51, 30
 BLOCK_CENTRE, BLOCK_TOP_MIN, BLOCK_BOTTOM_MAX = (597 + 794) / 2, 540, 862
+CAP_UNDER_ROW = 5         # px a block's name cap top sits under its row's top: badge rim (Chien-Pao), cost icons
 SHRINK_STEPS = (1.0, 0.95, 0.9, 0.85, 0.8)
 
 ROW_ICON_R, ROW_Y = 12.8, 895.6
@@ -239,17 +242,27 @@ def damage_figures(damage, base):
     return ts.coverage(set_as)
 
 
-def sv_ex_layout(laid, pitch):
-    """Absol ex: blocks stacked with a fixed gap and centred on the panel. laid: [(kind, block, lines)].
-    -> (top of each block's name cap, whether it fits)"""
+def sv_ex_layout(laid, pitch, floor=None):
+    """Absol ex: blocks stacked with a fixed gap and centred on the panel. laid: [(kind, block, lines)]; floor: the
+    highest name-cap top the first block may have (under the XY Mega Evolution rule box). -> (top of each block's
+    name cap, whether it fits)"""
     heights = [(NAME_TO_BODY + pitch * (len(lines) - 1)) if lines else NAME_ROW_H for _, _, lines in laid]
     span = sum(heights) + BLOCK_GAP * (len(laid) - 1)
     top = round(BLOCK_CENTRE - span / 2)
+    if floor is not None:
+        top = max(top, math.ceil(floor))
     tops = []
     for h in heights:
         tops.append(top)
         top += h + BLOCK_GAP
     return tops, BLOCK_TOP_MIN <= tops[0] and tops[0] + span <= BLOCK_BOTTOM_MAX - pitch
+
+
+def ex_layout(card):
+    """sv_ex_layout, starting under the XY Mega Evolution rule box when the card has it."""
+    if not card.get("mega_rule"):
+        return sv_ex_layout
+    return functools.partial(sv_ex_layout, floor=xyrule.floor("ex") + CAP_UNDER_ROW)
 
 
 def held_left(coverage, limit):
@@ -490,12 +503,14 @@ def compose(card_id, opts, card=None):
     name_icon(canvas, card["type"])
     if card.get("stage"):
         stage.draw(canvas, card, stage.EX)
+    if card.get("mega_rule"):
+        xyrule.draw(canvas, "ex")
 
     name_xscale = name_bar_text(canvas, card, prof)
     white_text = hybrid or prof["light_text"]
     fill = WHITE if white_text else prof["ink"]
     edge = ART_EDGE if hybrid else None
-    shrink = text_block(canvas, card, fill, edge) if opts.attacks else None
+    shrink = text_block(canvas, card, fill, edge, layout=ex_layout(card)) if opts.attacks else None
     weakness_row(canvas, card, fill, edge)
     footer(canvas, card, white_text)
     return canvas, {"card": card, "name_xscale": round(name_xscale, 3), "body_scale": shrink,

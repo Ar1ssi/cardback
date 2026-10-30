@@ -91,6 +91,7 @@ def editable(card):
     out["retreat"] = card["retreat"]
     out["stage"] = card.get("stage", 0)
     out["portrait"] = card.get("portrait", "")
+    out["mega_rule"] = bool(card.get("mega_rule"))
     return out
 
 
@@ -300,6 +301,10 @@ def apply(card, edits):
         if p and not valid_card_id(p):
             raise ValueError("portrait: a TCGdex card id (like sv03.5-064), or empty to find one by name")
         out["portrait"] = p or ""
+    if "mega_rule" in edits:
+        if not isinstance(edits["mega_rule"], bool):
+            raise ValueError("mega rule: true or false")
+        out["mega_rule"] = edits["mega_rule"]
     if out.get("stage") and not out.get("evolves_from"):
         raise ValueError("evolves from: a Stage 1, Stage 2 or Mega card names what it evolves from")
     return out
@@ -423,6 +428,8 @@ def changes(before, after):
         out.append(_was("Evolves from", a.get("evolves_from") or "none", b.get("evolves_from")))
     if b.get("stage") and a.get("portrait") != b.get("portrait"):
         out.append(f"Portrait: from {b['portrait']}" if b.get("portrait") else "Portrait: found by name")
+    if a.get("mega_rule") != b.get("mega_rule"):
+        out.append("Mega Evolution rule (XY): " + ("added" if b.get("mega_rule") else "taken off"))
     out += _blocks("Ability", a["abilities"], b["abilities"], _ability_diff, lambda x: f"{x['name']}: {_quote(x['effect'])}")
     out += _blocks("Attack", a["attacks"], b["attacks"], _attack_diff, _attack_line)
     for side in ("weakness", "resistance"):

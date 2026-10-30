@@ -17,6 +17,8 @@ was edited is taken off and set again in the same layouts the restyles use.
   print is the card as printed for every other edit.
 - Abilities and attacks whose Energy types or damages alone change (costs, {X} in effect text, a damage) keep their
   print: the icons, symbols and figures are set again where they are printed (inplace.py).
+- The XY Mega Evolution rule box ("mega_rule", xyrule.py) hangs from the window bar or Pokedex strip, over the top of
+  the text zone: abilities and attacks are taken off and set again under it.
 What is taken off is rebuilt by LaMa (cached per print and set of edited parts), except in the weakness row, which
 is filled along its pixel rows (fill_band), and on the "Evolves from" strip (fill_strip). Energy written {G}, {R} ...
 in effect text prints as its symbol.
@@ -29,14 +31,14 @@ import cv2
 import numpy as np
 
 from . import (cache, compose, edit, frame, inpaint, inplace, layers, mecompose, megaretype, meframe, retype, stage,
-               tcg)
+               tcg, xyrule)
 from .imaging import dilate, fill_holes, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
 MODERN = ("sv", "me")
 GROUPS = {"name": ("prefix", "name", "hp"), "moves": ("abilities", "attacks"),
           "row": ("weakness", "resistance", "retreat"), "stage": ("stage", "evolves_from", "portrait"),
-          "type": ("type",)}
+          "type": ("type",), "rule": ("mega_rule",)}
 
 # Abilities and attacks sit in this zone: x0, y0, x1, y1 (under the window bar / Pokedex strip, above the weakness
 # row).
@@ -125,9 +127,13 @@ def read_card(card_id):
 
 
 def changed(original, card):
-    """Which of GROUPS the edits change."""
+    """Which of GROUPS the edits change. The rule box covers the top of the text zone, so it moves the abilities and
+    attacks too."""
     a, b = edit.editable(original), edit.editable(card)
-    return tuple(g for g, keys in GROUPS.items() if any(a.get(k) != b.get(k) for k in keys))
+    groups = tuple(g for g, keys in GROUPS.items() if any(a.get(k) != b.get(k) for k in keys))
+    if "rule" in groups and "moves" not in groups:
+        groups = tuple(g for g in GROUPS if g in groups or g == "moves")
+    return groups
 
 
 # ---------------------------------------------------------------- drawing, the same way for finding and setting
@@ -140,8 +146,8 @@ def _name(canvas, card, logo=None):
 
 def _moves(canvas, card, fill, edge=None, symbol=None):
     if card["family"] == "ex":
-        return compose.text_block(canvas, card, fill, edge, symbol=symbol)
-    return compose.text_block(canvas, card, fill, edge, layout=mecompose.me_layout,
+        return compose.text_block(canvas, card, fill, edge, layout=compose.ex_layout(card), symbol=symbol)
+    return compose.text_block(canvas, card, fill, edge, layout=mecompose.rule_layout(card),
                               name_to_body=mecompose.NAME_TO_BODY, fit_tracking=mecompose.BODY_FIT_TRACK,
                               min_tracking=mecompose.BODY_MIN_TRACK,
                               cost_r=mecompose.COST_R, cost_dy=mecompose.COST_DY, symbol=symbol)
@@ -697,8 +703,8 @@ def compose_card(card_id, card, original=None):
     groups = changed(original, card)
     if not groups:
         return scan.copy(), {"card": card, "edited": list(retyped), "taken_off": None}
-    plan = inplace.find(scan, original, card) if "moves" in groups else None
-    parts = tuple(g for g in groups if g != "type" and not (g == "moves" and plan))
+    plan = inplace.find(scan, original, card) if "moves" in groups and "rule" not in groups else None
+    parts = tuple(g for g in groups if g not in ("type", "rule") and not (g == "moves" and plan))   # what is taken off
     if parts:
         canvas, mask = cleaned(card_id, original, parts, card, scan)
         canvas = canvas.copy()
@@ -713,6 +719,8 @@ def compose_card(card_id, card, original=None):
     if "name" in groups:
         logo = card_logo(scan, original) if card["family"] == "ex" else None
         _name(canvas, card, logo)
+    if "rule" in groups and card.get("mega_rule"):
+        xyrule.draw(canvas, card["family"])
     if plan:
         canvas = inplace.apply(canvas, plan, original)
     elif "moves" in groups:
