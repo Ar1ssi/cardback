@@ -1,6 +1,6 @@
 ---
 name: sv-restyle
-description: Re-make older Pokemon cards in the current look. A Sword & Shield Pokemon V (any type) becomes a Scarlet & Violet "ex" card (SV frame, Gill Sans lettering, ex logo, rule box, footer; full-art "hybrid" or translucent-panel layout, with or without attack text). A regular Sun & Moon or Sword & Shield Pokemon (Basic/Stage 1/Stage 2) becomes a Mega Evolution regular card (its art in the Mega Evolution frame of its type, evolution portrait, Pokedex line, attacks, flavour text). An older Trainer (Item, Supporter, Stadium, Pokemon Tool, Sword & Shield back to Base Set) becomes a Scarlet & Violet Trainer (its art in the Gen 9 frame of its kind, text without the old rule sentences). Use when the user names such cards (by name or TCGdex id like swsh6-99, sm10-19) and wants them restyled, made uniform with Scarlet & Violet / Mega Evolution cards, converted to ex, or their text or attacks removed in that style.
+description: Re-make older Pokemon cards in the current look. A Sword & Shield Pokemon V (any type) becomes a Scarlet & Violet "ex" card (SV frame, Gill Sans lettering, ex logo, rule box, footer; full-art "hybrid" or translucent-panel layout, with or without attack text). A regular Sun & Moon or Sword & Shield Pokemon (Basic/Stage 1/Stage 2) becomes a Mega Evolution regular card (its art in the Mega Evolution frame of its type, evolution portrait, Pokedex line, attacks, flavour text). An older Trainer (Item, Supporter, Stadium, Pokemon Tool, Sword & Shield back to Base Set) becomes a Scarlet & Violet Trainer (its art in the Gen 9 frame of its kind, text without the old rule sentences). An older Energy card (Basic Energy of the eight types and Fairy, or Special Energy such as Double Colorless Energy) becomes a Mega Evolution Energy (Basic: the type's Mega Evolution Basic Energy with the card's set code and number; Special: its art in the Mega Evolution Special Energy frame, text reworded, with its holofoil). Fairy cards (Sun & Moon, XY Basic Energy) get a Fairy look made from Psychic's, and in the editor a card can change type (regular Pokemon, restyled ex, Mega Evolution ex, Scarlet & Violet ex; Fairy included) with its costs and weakness following. Use when the user names such cards (by name or TCGdex id like swsh6-99, sm10-19) and wants them restyled, made uniform with Scarlet & Violet / Mega Evolution cards, converted to ex, or their text or attacks removed in that style.
 ---
 
 # SV restyle: older cards -> Scarlet & Violet ex / Mega Evolution regular
@@ -11,9 +11,16 @@ or `SVRESTYLE_TCGLIVE`: the game's own 1024x1024 card fronts, cropped to the sam
 scans in `svrestyle/refs.py`); regular Pokemon -> Mega Evolution regular card (frame built from me1/me2 scans listed
 in `svrestyle/meframe.py`); Trainer -> Scarlet & Violet Trainer (frame per kind from SV / ME prints,
 `svrestyle/trainerframe.py`; old art windows per era in `svrestyle/trainer.py`, registered on pre-HGSS scans by
-`svrestyle/oldwindow.py`). Cards already from Scarlet & Violet or Mega Evolution need nothing. In the editor, a
-regular (one-Prize) Pokemon can change type: restyled cards take the new type's frame, SV / ME cards are recoloured
-on their own print (`svrestyle/retype.py`).
+`svrestyle/oldwindow.py`); Energy -> Mega Evolution Energy (frames from me02.5-217, me02-124 and mee-001..008,
+`svrestyle/energy.py`). Cards already from Scarlet & Violet or Mega Evolution need nothing. In the editor, a
+regular (one-Prize) Pokemon, a V restyled as ex, a Mega Evolution ex and a Scarlet & Violet ex (not Tera) can change
+type: restyled cards take the new type's frame, SV / ME regular cards are recoloured on their own print
+(`svrestyle/retype.py`), Mega ex and SV ex too (`svrestyle/megaretype.py`, TCG Live extract needed); "Follow the type"
+sets the costs, weakness and resistance that go
+with it (`svrestyle/follow.py`), and Energy that only changes type is swapped where printed (`svrestyle/inplace.py`).
+Fairy, which neither Scarlet & Violet nor Mega Evolution prints, has a look made from Psychic's (`svrestyle/fairy.py`,
+TCG Live extract needed): Sun & Moon / XY-layout Fairy cards restyle onto a pink Fairy frame, any retypable card can be
+made Fairy, and Fairy works as a weakness, resistance, cost, `{Y}` in text and a Basic Energy.
 
 ## 1. Setup (once per machine/session)
 1. `pip install numpy pillow opencv-python-headless` and `pip install torch --index-url https://download.pytorch.org/whl/cpu`
@@ -33,8 +40,8 @@ TCGdex ids: `curl -s "https://api.tcgdex.net/v2/en/cards?name=<name>"` and pick 
 regular number (not a TG/SV/full-art number). When the user gives a deck or custom-set export (JSON with card ids),
 use exactly those ids - a promo there has different art from the set print. Otherwise the regular print is the
 lowest local number in the main set. Supported: Basic Pokemon **V** (no VMAX/VSTAR) and regular Basic/Stage 1/
-Stage 2 Pokemon, and regular Trainers; GX, ex, BREAK and Energy cards are refused, and so are full-art / gold
-Trainers, ACE SPEC, Prism Star, GX-attack Z-Crystals, Team Flare Hyper Gear, Chaos Tower, Classic Collection and TCG
+Stage 2 Pokemon, and regular Trainers; GX, ex and BREAK cards are refused (Energy is supported, see section 3c), and so are full-art / gold
+Trainers, older ACE SPEC (Scarlet & Violet ones are edited in place: name, text and illustrator only), Prism Star, GX-attack Z-Crystals, Team Flare Hyper Gear, Chaos Tower, Classic Collection and TCG
 Pocket cards (the tool says why).
 
 ## 3. Render
@@ -58,10 +65,29 @@ headless session). The same edits go through `svrestyle.edit.apply` if you scrip
 `trainer.compose_card(id, card=edit.apply(trainer.read_card(id), edits))` (Trainers: name, character, kind, hp,
 illustrator, effect, abilities, attacks).
 
+## 3c. Energy
+`python -m svrestyle card <id>` takes Energy ids (`sm3.5-69`, `sm2-166`, `base1-99`); output names end `-energy.png`
+and `--foil` (needs the TCG Live extract) also writes the foil files. A Basic Energy of Grass, Fire, Water,
+Lightning, Psychic, Fighting, Darkness, Metal or Fairy becomes that type's Mega Evolution Basic Energy with its set code and
+number set again; a Special Energy keeps its art in a Mega Evolution Special Energy frame (regular: art and text panel;
+full art for Secret Rare and up), its text reworded and the Energy it provides as the name bar's icons. Refused: SV /
+ME Energy (already this look), TCG Pocket, Dragon / Colorless Basic Energy, frames whose art window is not
+found on the scan (the tool says the size it found). Say so when a warning reports no icons could be read from the
+text (set them in the editor: "Provides"). In the editor a Special Energy has name, illustrator, text, Provides
+and Frame; a Basic Energy has nothing to edit but its Frame (Mega Evolution or gold Hyper Rare). A Special Energy that
+provides one type can take Frame "Mega Evolution typed": that type's Mega Evolution typed Special Energy (Telepathic
+Psychic Energy and its like, Fairy's made from Psychic's) with the card's name, text and footer, graded Rare; name it
+"<Word> <Type> Energy" and the type prints as its symbol, as the prints do. A custom set takes Basic and Special
+Energy.
+The simulator's deployed site must run the schema that accepts Energy before an Energy card is published there.
+
 ## 4. Check before handing over
 Holofoil: add `--foil` (needs the TCG Live extract) for `<card>-front.png`, `<card>-wp.png`, `<card>-wp-ph.png` and
 `<card>-foil.json` (see README "Holofoil"). Check the plates next to the front: black where the HP, icons, Ability
-badge and footer are, the Pokemon black inside the art.
+badge and footer are, the Pokemon black inside the art. The reverse plate (`-wp-ph`) of a 1-prize Pokemon or a
+Trainer (not ACE SPEC) is the Gen 8 reverse holo: Sword & Shield's chevrons with the card's type's symbol in each
+tile (Fairy: the Fairy symbol; Trainers: Poké Balls), whether the old print had a reverse holo or not. A holo
+printing, a print's own non-generic reverse, ex cards and Energy keep their foil.
 
 Open the PNG and zoom (2-3x) on: the name bar, the text block, the weakness row and the area right under the
 name bar. Things to look for, and what to do:
@@ -76,7 +102,15 @@ Report failures verbatim. Send the PNG to the user (SendUserFile) rather than ju
   `--no-attacks` drops it. Old art and its stamps (Ultra Beast banner, Rapid/Single Strike) are kept as printed.
   Dragon has one Mega Evolution reference (Latios), so its blank frame relies more on inpainting.
   Promos print no set code. Sub-sets without their own code (Shiny Vault) use the main set's (`SUBSET_CODES`).
-- Fairy has no SV frame (SWSH has no Fairy cards anyway); Dragon uses Raging Bolt ex's bar.
+- Fairy's frames, icons and Basic Energy are Psychic's made Fairy's (no real card prints them): say so when showing
+  one. They need the TCG Live extract. The simulator's custom-set schema must list Fairy before a Fairy card goes into
+  a set (Send / Publish refuse it otherwise; the deployed site must run that schema before publishing).
+- Mega ex type change: a Darkness Mega ex's panel red is rebuilt from green and blue (its art's true red is not on
+  the card); Ultra Rare / Special Illustration Rare / Mega Hyper Rare change only their icon (their frames carry no
+  type colour). Promos of their own frame design (not the Double Rare's) cannot change type.
+- SV ex type change: the band below the panel is the card's own art under the type's colour, so art reaching over it
+  keeps its colours on the new type (a light streak on Metal stays light on Darkness); Tera ex cannot change type.
+- Dragon uses Raging Bolt ex's bar.
 - Types TCGdex spells out in effect text print as energy symbols where the newer cards print one.
 - Trainers: Gill Sans has no Greek letters, so "Miracle Sphere α" warns and prints an empty box for the letter (edit
   the text). A Trainer TCGdex gives no type and whose text holds no rule is set as an Item, with a warning: offer to

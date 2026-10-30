@@ -22,6 +22,11 @@ A card flagged for holofoil is kept only when its foil is the one its record nam
 made outside a push (import-foil.py) is made again by the first push that meets it. It reports its progress and can
 be cancelled until it starts writing (a cancel leaves the folder as it was).
 existing_cards and dropped_cards tell what a push would take out of the set already there.
+
+The simulator checks a set against its custom-set schema (shared/custom-sets/custom-set-schema.mjs), which lists the
+Energy types it takes (ENERGY_TYPES): a card with a type it does not list (Fairy, before the simulator lists it) makes
+it reject the whole set, and a set published so vanishes from the site. So write_set_dir refuses such cards, before
+rendering, when the simulator's checkout says which types its schema takes (unsupported_types).
 """
 import datetime
 import hashlib
@@ -50,6 +55,8 @@ NO_FOIL = "none"                  # custom.files.foil of a card whose render had
 STAGE_NAMES = {0: "Basic", 1: "Stage1", 2: "Stage2"}
 RARITY = {"common": "Common", "uncommon": "Uncommon", "rare": "Rare"}
 MAX_CARDS = 999
+SCHEMA = ("shared", "custom-sets", "custom-set-schema.mjs")      # the simulator's custom-set schema, in its checkout
+SCHEMA_TYPES = re.compile(r"ENERGY_TYPES\s*=\s*Object\.freeze\(\[(.*?)\]\)", re.S)
 
 
 class Cancelled(Exception):
@@ -124,10 +131,16 @@ def tcgdex_record(card, layout, set_id, local_id, source):
            "custom": {"source": source["id"], "layout": layout, "edits": source.get("edits") or {},
                       "style": source.get("style", "hybrid"), "attacks": bool(source.get("attacks", True)),
                       "foil": bool(source.get("foil"))}}
+    if edit.is_energy(card):
+        rec.update(category="Energy", energyType="Special" if card["energy"] == "special" else "Normal",
+                   rarity=card.get("rarity_name") or RARITY.get(card.get("rarity"), "Common"))
+        if card["energy"] == "special":
+            rec["effect"] = "\n\n".join(straight(p) for p in card.get("effect", "").split("\n") if p.strip())
+        return rec
     if edit.is_trainer(card):
         rec.update(category="Trainer", trainerType=card["kind"],
                    effect="\n\n".join(straight(p) for p in card.get("effect", "").split("\n") if p.strip()),
-                   rarity=RARITY.get(card.get("rarity"), "Uncommon"))
+                   rarity="ACE SPEC Rare" if card.get("ace") else RARITY.get(card.get("rarity"), "Uncommon"))
         if card.get("hp"):
             rec["hp"] = int(card["hp"])
         if card.get("attacks"):
@@ -152,6 +165,81 @@ def tcgdex_record(card, layout, set_id, local_id, source):
     return rec
 
 
+TRAINER_ORDER = ("Item", "Supporter", "Stadium", "Tool")
+POKEMON_STAGES = ("Basic", "Stage1", "Stage2")
+# Evolution lines listed under another type than their lowest-stage card's: line (its first card, lowercase) -> type
+LINE_TYPES = {"rookidee": "Metal"}
+# Cards listed in an evolution line their record does not name (a V restyled as ex is a Basic with no evolveFrom):
+# name (lowercase) -> (the line's first card, lowercase; the stage it sorts at, 0-2)
+LINE_MEMBERS = {"gallade ex": ("ralts", 2)}
+
+
+def is_ace_record(rec):
+    """Whether a record is an ACE SPEC card: its TCGdex rarity says so."""
+    return "ace spec" in str(rec.get("rarity") or "").lower()
+
+
+def display_order(records, is_ace=None):
+    """The records in the order the simulator lists a set: Pokemon (by type A-Z, then evolution line A-Z by its first card, each line
+    Basic, Stage 1, Stage 2), then Trainers (Item, Supporter, Stadium, Tool, each A-Z; the ACE SPEC Trainers after them, A-Z), then
+    Energy in card-number order (an ACE SPEC Energy stays among it). Only the order of the list: ids and numbers stay. is_ace(source card id) -> bool
+    says whether a Trainer whose record does not call itself ACE SPEC is one (records made before it did)."""
+    def ace(rec):
+        source = _source_of(rec)
+        return is_ace_record(rec) or bool(is_ace and source and is_ace(source))
+
+    def stage_of(rec):
+        member = LINE_MEMBERS.get(str(rec.get("name") or "").casefold())
+        if member:
+            return member[1]
+        stage = rec.get("stage")
+        return POKEMON_STAGES.index(stage) if stage in POKEMON_STAGES else len(POKEMON_STAGES)
+
+    # An evolution line sits together: a Pokemon's line is named by the first card it evolves from, and the line
+    # takes the type of its lowest-stage card.
+    pokemon = [r for r in records if r.get("category") == "Pokemon"]
+    parent = {}
+    for r in sorted(pokemon, key=stage_of, reverse=True):
+        if r.get("evolveFrom"):
+            parent[str(r.get("name") or "").casefold()] = str(r["evolveFrom"]).casefold()
+
+    def line_of(rec):
+        name, seen = str(rec.get("name") or "").casefold(), set()
+        if name in LINE_MEMBERS:
+            return LINE_MEMBERS[name][0]
+        while name in parent and name not in seen:
+            seen.add(name)
+            name = parent[name]
+        return name
+
+    lowest = {}
+    for r in pokemon:
+        line = line_of(r)
+        if line not in lowest or (stage_of(r), str(r.get("name") or "")) < (stage_of(lowest[line]), str(lowest[line].get("name") or "")):
+            lowest[line] = r
+
+    def key(rec):
+        number = number_of(rec)
+        name = str(rec.get("name") or "").casefold()
+        category = rec.get("category")
+        if category == "Pokemon":
+            line = line_of(rec)
+            if line in LINE_TYPES:
+                types = [LINE_TYPES[line]]
+            elif stage_of(rec) == 0 and name not in parent.values():      # a Basic nothing evolves from: its own type
+                types = rec.get("types") or []
+            else:
+                types = lowest[line].get("types") or []
+            return (0, (0, str(types[0]).casefold()) if types else (1, ""), line, stage_of(rec), name, number)
+        if category == "Trainer":
+            if ace(rec):
+                return (1, 1, 0, name, number)
+            kind = rec.get("trainerType")
+            return (1, 0, TRAINER_ORDER.index(kind) if kind in TRAINER_ORDER else len(TRAINER_ORDER), name, number)
+        return (2, 0, 0, "", number) if category == "Energy" else (3, 0, 0, "", number)
+    return sorted(records, key=key)
+
+
 def set_record(set_id, code, title, cards, today=None):
     date = (today or datetime.date.today()).isoformat()
     return {"format": FORMAT, "version": VERSION, "id": set_id, "code": code, "name": title or code,
@@ -174,7 +262,7 @@ def card_options(item):
 
 
 def build_set(items, title, code, *, read, render, apply, changelog, today=None, reuse=None, progress=None,
-              cancelled=None):
+              cancelled=None, is_ace=None):
     """-> (set id, {path in the set folder: bytes}, {"rendered": n, "reused": n}): set.json, the cards' WebPs and
     CHANGELOG.md. items: [{id, edits?, style?, attacks?, foil?}] in set order (the first is card 001).
     read / render / apply / changelog: gui.read, gui.render, edit.apply, gui.changelog (passed in: no import cycle).
@@ -182,7 +270,8 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
     instead of rendered and numbered for its place in this list (foil: foil_from_holo's shape, None without holofoil).
     A card flagged for holofoil also gets its foil textures under foil/ and a row in foil.json.
     progress("rendering", cards done, cards in all, id of the card being made) is called before each card and once
-    at the end; cancelled() -> True before a card stops the build (Cancelled)."""
+    at the end; cancelled() -> True before a card stops the build (Cancelled).
+    set.json lists the cards in display order (display_order; is_ace: its callback), numbered by `items`' order."""
     set_id = set_id_for(code)
     if not isinstance(items, list) or not items:
         raise ValueError("items: a non-empty list")
@@ -228,7 +317,7 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
     if progress:
         progress("rendering", len(items), len(items), "")
     notes = sorted({str(w.message) for w in caught if "torch.jit" not in str(w.message)})
-    record = set_record(set_id, code, title, records, today)
+    record = set_record(set_id, code, title, display_order(records, is_ace), today)
     files["CHANGELOG.md"] = (changelog(items, title) + (
         "\n\n## Export notes\n" + "".join(f"- {n}\n" for n in notes) if notes else "")).encode()
     if foil_rows:
@@ -237,10 +326,10 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
     return set_id, files, counts
 
 
-def export_zip(items, title, code, *, read, render, apply, changelog, today=None):
+def export_zip(items, title, code, *, read, render, apply, changelog, today=None, is_ace=None):
     """-> zip bytes: build_set's files under one <set id>/ folder."""
     set_id, files, _ = build_set(items, title, code, read=read, render=render, apply=apply, changelog=changelog,
-                                 today=today)
+                                 today=today, is_ace=is_ace)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in files.items():
@@ -418,13 +507,29 @@ def _write_if_changed(path, data, attempts=5):
     return True
 
 
+def number_of(rec):
+    """A record's card number (its localId), or a number past every card's when it has none."""
+    local = rec.get("localId") if isinstance(rec, dict) else None
+    return int(local) if isinstance(local, str) and local.isdigit() else MAX_CARDS + 1
+
+
+def by_number(cards):
+    """The records in card-number order (a stable sort: records without a number keep their places at the end). The
+    set.json lists them in display order (display_order); numbers, and the position logic of a push, follow the
+    numbers."""
+    return sorted(cards, key=number_of)
+
+
 def _set_json(set_dir):
-    """The set.json in set_dir as a dict with a "cards" list, or None when there is none that can be read."""
+    """The set.json in set_dir as a dict with a "cards" list in card-number order, or None when there is none that can
+    be read."""
     try:
         data = json.loads((Path(set_dir) / "set.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) and isinstance(data.get("cards"), list) else None
+    if not (isinstance(data, dict) and isinstance(data.get("cards"), list)):
+        return None
+    return {**data, "cards": by_number(data["cards"])}
 
 
 def _source_of(rec):
@@ -440,6 +545,24 @@ def existing_cards(set_dir):
         return None
     return [(_source_of(rec), str(rec.get("name") or rec.get("id") or "?") if isinstance(rec, dict) else "?")
             for rec in data["cards"]]
+
+
+def unlisted_items(set_dir, ids):
+    """[(place, item)] of the cards in the set already in set_dir that `ids` (source card ids) do not name, in the
+    set's order, each as an item a push can send again: the card it was made from with the edits and options its
+    record keeps (custom). A card that names no source (a set this module did not write) cannot be sent again and is
+    not listed. place: where the card is in the set now (0-based)."""
+    data = _set_json(set_dir)
+    held, listed = [], set(ids)
+    for place, rec in enumerate(data["cards"] if data else []):
+        source = _source_of(rec)
+        if not source or source in listed:
+            continue
+        custom = rec["custom"]
+        held.append((place, {"id": source, "edits": custom.get("edits") or {}, "style": custom.get("style") or "hybrid",
+                             "attacks": custom.get("attacks") is not False, "foil": bool(custom.get("foil"))}))
+        listed.add(source)
+    return held
 
 
 def dropped_cards(existing, ids):
@@ -494,8 +617,44 @@ def existing_title(set_dir):
     return data["name"] if data and isinstance(data.get("name"), str) else ""
 
 
+def schema_types(root):
+    """The Energy types the simulator's custom-set schema takes, read from its checkout (root: its custom-sets folder,
+    client/src/assets/custom-sets); None when the checkout's schema is not there."""
+    path = Path(root).resolve().parents[3].joinpath(*SCHEMA) if len(Path(root).resolve().parents) > 3 else None
+    if path is None or not path.is_file():
+        return None
+    m = SCHEMA_TYPES.search(path.read_text(encoding="utf-8"))
+    return set(re.findall(r"['\"](\w+)['\"]", m.group(1))) if m else None
+
+
+def card_types(card):
+    """Every Energy type a card's record names that the simulator's schema checks: a Pokemon's type, costs, weakness
+    and resistance; a Trainer's attack costs (Technical Machines). An Energy card's record names none (its type and
+    what it provides stay in its text), and a Basic Energy is not exported."""
+    if edit.is_energy(card) or edit.is_trainer(card):
+        return {t for a in card.get("attacks") or [] for t in a.get("cost") or []}
+    return ({card["type"]} | {t for a in card.get("attacks") or [] for t in a.get("cost") or []}
+            | {v["type"] for v in (card.get("weakness"), card.get("resistance")) if v})
+
+
+def unsupported_types(items, root, *, read, apply):
+    """Cards of items naming an Energy type the simulator's schema does not take: [(card name, [types])], or []
+    when the schema takes them all or cannot be read (an older checkout's set is checked by the simulator itself)."""
+    taken = schema_types(root)
+    if taken is None:
+        return []
+    out = []
+    for item in items:
+        layout, card = read(item["id"])
+        card = apply(card, item.get("edits")) if item.get("edits") else card
+        missing = sorted(card_types(card) - taken)
+        if missing:
+            out.append((card_name(card, layout), missing))
+    return out
+
+
 def write_set_dir(items, title, code, root, *, read, render, apply, changelog, force=False, today=None, progress=None,
-                  cancelled=None):
+                  cancelled=None, is_ace=None):
     """The list as a custom set written straight into the simulator's custom-sets folder (root): <root>/<set id>/.
     A card whose source and options (card_options) match the set already there keeps its record, images and
     holofoil, unless force. Only files whose bytes changed are written, set.json last (the simulator reloads on it);
@@ -505,7 +664,17 @@ def write_set_dir(items, title, code, root, *, read, render, apply, changelog, f
     progress / cancelled: as build_set's, and progress("writing", files done, files in all, path written) while the
     files go out. A cancel counts until the first file is written (Cancelled: the folder is as it was); then the
     push finishes.
+    A card naming an Energy type the simulator's schema does not take (unsupported_types) is refused (ValueError)
+    before anything is rendered: the simulator would reject the whole set.
     -> {setId, rendered, reused, written: [path], unchanged: n, removed: [card folder]}"""
+    refused = unsupported_types(items, root, read=read, apply=apply)
+    if refused:
+        types = ", ".join(sorted({t for _, missing in refused for t in missing}))
+        names = "; ".join(f"{name} ({', '.join(missing)})" for name, missing in refused[:5])
+        more = " …" if len(refused) > 5 else ""
+        raise ValueError(f"the simulator's custom-set schema does not take {types} yet and would reject the whole set: "
+                         f"{names}{more}. Add it to ENERGY_TYPES in the simulator's {'/'.join(SCHEMA)} (and deploy "
+                         "that before publishing), or change these cards' types")
     set_dir = Path(root) / set_id_for(code)
     before = {} if force else exported_cards(set_dir)
 
@@ -518,7 +687,7 @@ def write_set_dir(items, title, code, root, *, read, render, apply, changelog, f
 
     set_id, files, counts = build_set(items, title, code, read=read, render=render, apply=apply,
                                       changelog=changelog, today=today, reuse=reuse, progress=progress,
-                                      cancelled=cancelled)
+                                      cancelled=cancelled, is_ace=is_ace)
     if cancelled and cancelled():
         raise Cancelled
     written, unchanged = [], 0
@@ -564,7 +733,7 @@ def import_set_data(data, entry):
     if data.get("version") != VERSION:
         raise ValueError(f"custom set version {data.get('version')!r} is not one this editor reads")
     cards, edits, options, seen = [], {}, {}, set()
-    for c in data["cards"]:
+    for c in by_number(data["cards"]):                    # the list keeps the numbers' order, not the display order
         custom = c.get("custom") if isinstance(c, dict) else None
         source = custom.get("source") if isinstance(custom, dict) else None
         if not edit.valid_card_id(source) or source in seen:

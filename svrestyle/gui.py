@@ -2,7 +2,9 @@
 retreat, and render it in the ex or Mega Evolution layout (Scarlet & Violet and Mega Evolution cards: edited in
 place, see modern.py), with its TCG Live holofoil re-made to fit the edits; or load a Trainer (Item, Supporter,
 Stadium, Pokemon Tool), edit its name, type and text, and render it as a Scarlet & Violet Trainer (trainer.py;
-a Scarlet & Violet or Mega Evolution Trainer keeps its art and is set again on its kind's frame); or import a custom-set export and restyle or edit every Pokemon and Trainer in it. Standard library
+a Scarlet & Violet or Mega Evolution Trainer keeps its art and is set again on its kind's frame); or load an Energy card (older Basic or Special Energy is set on a Mega Evolution Energy frame, a Special one with its
+name, text, the Energy it provides and frame to edit; Scarlet & Violet / Mega Evolution Energy is kept as printed,
+energy.py); or import a custom-set export and restyle or edit every Pokemon, Trainer and Energy card in it. Standard library
 only; serves on 127.0.0.1.
 
   python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--ptcg-sim DIR] [--no-browser]
@@ -18,7 +20,7 @@ API (JSON in and out unless noted):
   POST /api/suggest           {text, kind: "attack"|"ability"|"trainer", card?: {name, type, stage, hp}} ->
                               {text, notes: [str]}: the text rewritten in printed-card wording by Claude
                               (wording.suggest: ANTHROPIC_API_KEY, else the Claude Code CLI's login)
-  GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern"|"trainer", name, card: editable fields}
+  GET  /api/card?id=ID        {id, layout: "ex"|"me"|"modern"|"trainer"|"energy", name, card: editable fields}
   GET  /api/find/options      {sets: [{id, name}] newest first, rarities: [str]}: what the card search filters by
   POST /api/find              {name?, filters?: {category|types|stage|suffix|trainerType|regulationMark|rarity|set:
                               [str], hpMin?, hpMax?}, offset?, limit?} -> {total, cards: [{id, name, localId, set,
@@ -33,6 +35,8 @@ API (JSON in and out unless noted):
   GET  /api/foil/tex/NAME.png the materials' textures (spectrum, shine, glitter, patterns), lossless
   GET  /api/original/ID.png   the printed card (the scan the render starts from), for comparing
   GET  /api/icon/TYPE.png     the energy icon used on cards (PNG)
+  POST /api/follow            {id, edits} -> {abilities, attacks, weakness, resistance}: the card's costs, effect
+                              text, weakness and resistance following its edited type (follow.follow), as edits
   POST /api/set               a ptcg-sim custom-set export ({cards: [{id, name, supertype}]}) -> {name, cards:
                               [{id, name, layout | skip}]}; or a set.json this editor exported (export.py) ->
                               also {code, edits, options, foil}: the cards with their edits restored
@@ -42,7 +46,9 @@ API (JSON in and out unless noted):
   POST /api/push-set          {items, title?, code, force?, allowShrink?} -> a job (GET /api/set-job): the same set
                               written into the simulator's custom-sets folder (SVRESTYLE_PTCG_SIM), which the
                               running simulator reloads; only cards changed since the last push are rendered
-                              (export.write_set_dir), every card with force. A set that would lose cards is refused,
+                              (export.write_set_dir), every card with force. A push never takes a card out of the
+                              set: the cards it holds that the list does not name stay (keep_unlisted). Only cards
+                              that cannot be sent again (a set this editor did not write) would be lost: refused,
                               409 {error, drops: {setId, code, incoming, copies, names, message}}, unless allowShrink:
                               the page asks, then sends again with it
   POST /api/publish-set       {items, title?, code, force?, allowShrink?} -> a job: the set pushed as above, then
@@ -133,7 +139,8 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, edit, export, foil, layers, mecompose, meframe, modern, tcg, trainer, wording
+from . import (cache, compose, edit, energy, export, foil, follow, layers, mecompose, meframe, modern, tcg, trainer,
+               wording)
 
 PAGE = Path(__file__).with_name("gui.html")
 STATIC = Path(__file__).with_name("static")
@@ -212,6 +219,8 @@ def layout_of(card_id):
         raise UserError(str(e)) from e
     if data.get("category") == "Trainer":       # a Scarlet & Violet Trainer too: set again on its own kind's frame
         return "trainer"
+    if data.get("category") == "Energy":        # read_card refuses Scarlet & Violet and Mega Evolution Energy
+        return "energy"
     if modern.is_modern(card_id):
         return "modern"
     return "ex" if data.get("name", "").endswith(" V") else "me"
@@ -220,7 +229,7 @@ def layout_of(card_id):
 def read(card_id):
     layout = layout_of(card_id)
     reader = {"ex": compose.read_card, "me": mecompose.read_card, "modern": modern.read_card,
-              "trainer": trainer.read_card}[layout]
+              "trainer": trainer.read_card, "energy": energy.read_card}[layout]
     try:
         card = reader(card_id)
     except SystemExit as e:                     # the composers refuse unsupported cards this way
@@ -249,7 +258,9 @@ def find_options():
 def card_summary(card_id):
     layout, card = read(card_id)
     return {"id": card_id, "layout": layout, "name": f"{card['prefix']} {card['name']}".strip(),
-            "type": card.get("type", card.get("kind")), "gen9": modern.is_modern(card_id), "card": edit.editable(card)}
+            "type": card.get("type", card.get("kind")), "gen9": modern.is_modern(card_id),
+            "energy": card.get("energy"),
+            "ace": bool(card.get("ace")), "card": edit.editable(card)}
 
 
 def _png(arr, mode=None):
@@ -273,12 +284,15 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
     with _render_lock, warnings.catch_warnings(record=True) as caught, layers.recording() as drawn:
         warnings.simplefilter("always")
         layout, original = read(card_id)        # its warnings shown too (a Trainer's kind guessed, its text missing)
-        if holo and layout == "trainer":
-            raise UserError("holofoil is made for Pokemon cards only: turn it off for Trainers")
+        ace = layout == "trainer" and original.get("ace")
         card = edit.apply(original, edits) if edits else original
-        if layout == "trainer":
+        if layout == "energy":
+            img, _ = energy.compose_card(card_id, card=card)
+            built = energy.build_foil(card, img, drawn) if holo else None
+        elif layout == "trainer":
             img, _ = trainer.compose_card(card_id, card=card)
-            built = None
+            built = (foil.build_ace(card_id, card, img, drawn, original) if ace
+                     else foil.build_trainer(card_id, card, img, drawn)) if holo else None
         elif layout == "modern":
             img, report = modern.compose_card(card_id, card, original)
             built = foil.build_modern(card_id, card, img, drawn, original) if holo else None
@@ -301,8 +315,17 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
     return result
 
 
+def follow_type(card_id, edits):
+    """What goes with the card's edited type (follow.follow): its costs, effect text, weakness and resistance, as
+    edits for the page to take."""
+    layout, original = read(card_id)
+    if layout in ("trainer", "energy") or not edit.retypes(original):
+        raise UserError("only a Pokémon that can change type has a type to follow")
+    return follow.follow(original, edit.apply(original, edits) if edits else original)
+
+
 LAYOUT_NOTES = {"ex": "Restyled as a Scarlet & Violet ex card", "me": "Restyled as a Mega Evolution card",
-                "trainer": "Restyled as a Scarlet & Violet Trainer"}
+                "trainer": "Restyled as a Scarlet & Violet Trainer", "energy": "Restyled as a Mega Evolution Energy"}
 
 
 def card_changes(card_id, edits=None, style="hybrid", attacks=True):
@@ -312,7 +335,7 @@ def card_changes(card_id, edits=None, style="hybrid", attacks=True):
     notes = []
     if layout in LAYOUT_NOTES and not modern.is_modern(card_id):     # a Gen 9 Trainer is set again, not restyled
         notes.append(LAYOUT_NOTES[layout] + (" (translucent type panel)" if layout == "ex" and style == "panel" else ""))
-        if not attacks and layout != "trainer":
+        if not attacks and layout not in ("trainer", "energy"):
             notes.append("Abilities and attacks left off")
     return tcg.card(card_id).get("name", card_id), notes + edit.changes(original, card)
 
@@ -449,13 +472,25 @@ def import_set(data):
     return {"name": data.get("name", ""), "cards": out}
 
 
+def _is_ace(cid):
+    """Whether a Scarlet & Violet Trainer is an ACE SPEC card (its holofoil can be made); False when TCGdex cannot say."""
+    if not modern.is_modern(cid):
+        return False
+    try:
+        return trainer.ACE_RARITY in (tcg.card(cid).get("rarity") or "").lower()
+    except (ValueError, cache.DownloadError):
+        return False
+
+
 def _set_entry(cid, name, supertype):
     """A set list's entry: the layout the card gets, or why it is skipped. supertype: the export's or TCGdex's."""
     entry = {"id": cid, "name": name}
     if supertype == "Trainer":
-        entry.update(layout="trainer", gen9=modern.is_modern(cid))
+        entry.update(layout="trainer", gen9=modern.is_modern(cid), ace=_is_ace(cid))
+    elif supertype == "Energy":
+        entry["layout"] = "energy"           # a Scarlet & Violet / Mega Evolution one is kept as printed
     elif supertype not in (None, "Pokémon", "Pokemon"):
-        entry["skip"] = "not a Pokémon or Trainer"
+        entry["skip"] = "not a Pokémon, Trainer or Energy card"
     elif modern.is_modern(cid):
         entry["layout"] = "modern"
     else:
@@ -473,8 +508,8 @@ def _current_entries(cards):
                 c = _set_entry(c["id"], c.get("name", ""), tcg.card(c["id"]).get("category"))
             except (ValueError, cache.DownloadError):
                 pass
-        elif isinstance(c, dict) and c.get("layout") == "trainer" and "gen9" not in c:
-            c = {**c, "gen9": modern.is_modern(c.get("id"))}
+        elif isinstance(c, dict) and c.get("layout") == "trainer" and ("gen9" not in c or "ace" not in c):
+            c = {**c, "gen9": modern.is_modern(c.get("id")), "ace": _is_ace(c.get("id"))}
         out.append(c)
     return out
 
@@ -486,7 +521,8 @@ def export_set(items, title, code):
     if len(items) > MAX_ZIP_ITEMS:
         raise UserError(f"items: at most {MAX_ZIP_ITEMS} per download")
     try:
-        return export.export_zip(items, title, code, read=read, render=render, apply=edit.apply, changelog=changelog)
+        return export.export_zip(items, title, code, read=read, render=render, apply=edit.apply, changelog=changelog,
+                                 is_ace=_is_ace)
     except ValueError as e:
         raise UserError(str(e)) from e
 
@@ -518,7 +554,8 @@ def _write_set(items, title, code, root, force, progress=None, cancelled=None):
     """export.write_set_dir into `root`; the caller holds _push_lock."""
     try:
         return export.write_set_dir(items, title, code, root, read=read, render=render, apply=edit.apply,
-                                    changelog=changelog, force=bool(force), progress=progress, cancelled=cancelled)
+                                    changelog=changelog, force=bool(force), progress=progress, cancelled=cancelled,
+                                    is_ace=_is_ace)
     except ValueError as e:
         raise UserError(str(e)) from e
 
@@ -683,6 +720,13 @@ def start_set_job(kind, items, title, code, force=False, allow_shrink=False):
         running = _running_set_job()
         if running:
             return _joined_or_refused(running, kind, set_id)
+    set_dir = sim_sets_dir() / set_id
+    # The list's order is only how it looks here: a card in the set keeps its number whatever its place in the list, and
+    # a push never takes a card out of the set. set.json lists the cards in display order (export.display_order).
+    # Every 1-prize Pokemon and Trainer goes with its holofoil (standard_foil).
+    items = standard_foil(keep_unlisted(keep_numbers(items, export.existing_cards(set_dir)), set_dir))
+    if len(items) > export.MAX_CARDS:
+        raise UserError(f"items: at most {export.MAX_CARDS} cards in a set")
     if not allow_shrink:
         info = drops_for(kind, items, code, set_id)
         if info:
@@ -1109,8 +1153,8 @@ def exports_dir():
 
 def merged_items():
     """Every saved project's cards as one list of zip items (like the page's own, see zip_renders). A card in
-    several projects comes from the most recently saved one, with that project's edits and options; Energy and
-    cards a project lists as skipped stay out. -> (items, projects read, repeats left out)"""
+    several projects comes from the most recently saved one, with that project's edits and options; cards a project
+    lists as skipped stay out. -> (items, projects read, repeats left out)"""
     items, seen, projects, repeats = [], set(), 0, 0
     for listed in list_projects()["projects"]:                       # newest saved first
         try:
@@ -1129,7 +1173,7 @@ def merged_items():
             opt = (data.get("options") or {}).get(c["id"]) or {}
             items.append({"id": c["id"], "edits": (data.get("edits") or {}).get(c["id"]),
                           "style": opt.get("style", "hybrid"), "attacks": opt.get("attacks", True),
-                          "foil": foil and c.get("layout") != "trainer"})
+                          "foil": foil})
     return items, projects, repeats
 
 
@@ -1233,6 +1277,38 @@ def merged_file(job_id):
 
 
 # ---------------------------------------------------------------- push all: what it would change
+def keep_unlisted(items, set_dir):
+    """`items` with the cards the set already in set_dir holds that the list does not name put back where they are in
+    the set (export.unlisted_items): a push adds and changes cards, it never takes one out. A card made by hand in
+    the simulator's folder, or sent from another list, stays with its number and its files."""
+    out = list(items)
+    for place, item in export.unlisted_items(set_dir, {it["id"] for it in items}):
+        out.insert(min(place, len(out)), item)
+    return out
+
+
+MULTI_PRIZE = (" ex", " EX", " GX", " V", " VMAX", " VSTAR")   # name endings of Pokemon worth more than 1 prize
+
+
+def takes_reverse(card_id):
+    """Whether a card always gets the Gen 8 reverse holo (foil.gen8_plate): a 1-prize Pokemon, a Trainer but an ACE
+    SPEC card (its own foil). Energy and multi-prize Pokemon keep the holofoil switch's choice."""
+    try:
+        layout = layout_of(card_id)
+        name = tcg.card(card_id).get("name") or ""
+    except (UserError, ValueError, cache.DownloadError):
+        return False
+    if layout == "trainer":
+        return not _is_ace(card_id)
+    return layout in ("me", "modern") and not name.endswith(MULTI_PRIZE)
+
+
+def standard_foil(items):
+    """`items` with holofoil on for every card that takes the Gen 8 reverse holo as standard (takes_reverse): a
+    push sets it whatever the holofoil switch says. A card the old print made holo keeps its holo."""
+    return [it if it.get("foil") or not takes_reverse(it["id"]) else {**it, "foil": True} for it in items]
+
+
 def keep_numbers(items, existing):
     """`items` in the order of the set already there (export.existing_cards): a card that is in it keeps its number,
     the others follow in the order they came. The merge of the projects lists the newest project first, so its own
@@ -1287,7 +1363,9 @@ def push_all_plan(code):
     """What pushing every saved project, merged (merged_items; the cards already in the set keep their numbers), as
     the set `code` would change in the simulator's folder, worked out from its set.json without rendering anything.
     -> {setId, code, title (the set's name now), projects, repeats, incoming, existing (cards there, None: no set yet),
-    added / changed: [{id, name, lines}], removed: [{id, name}], moved (cards that get another number), unchanged,
+    added / changed: [{id, name, lines}], removed: [{id, name}] (cards no list can send again: none in a set this editor
+    wrote), kept: [{id, name}] (in the set, in no saved project: they stay), moved (cards that get another number),
+    unchanged,
     items (what to send to /api/push-set or /api/publish-set to push exactly this)}"""
     root = _sim_root()
     try:
@@ -1298,14 +1376,17 @@ def push_all_plan(code):
     if not items:
         raise UserError("no saved project has a card to push")
     set_dir = root / set_id
-    items = keep_numbers(items, export.existing_cards(set_dir))
+    listed = {it["id"] for it in items}
+    items = standard_foil(keep_unlisted(keep_numbers(items, export.existing_cards(set_dir)), set_dir))
     plan = export.plan_set(items, set_dir)
+    names = {source: name for source, name in reversed(export.existing_cards(set_dir) or []) if source}
+    kept = [{"id": it["id"], "name": names.get(it["id"], it["id"])} for it in items if it["id"] not in listed]
     return {"setId": set_id, "code": code, "title": export.existing_title(set_dir), "projects": projects,
             "repeats": repeats, "incoming": len(items), "existing": plan["existing"],
             "added": [_plan_card(it) for it in plan["added"]],
             "changed": [_plan_card(it, old, stale) for it, old, stale in plan["changed"]],
             "removed": [{"id": source, "name": name} for source, name in plan["removed"]],
-            "moved": plan["moved"], "unchanged": plan["unchanged"], "items": items}
+            "kept": kept, "moved": plan["moved"], "unchanged": plan["unchanged"], "items": items}
 
 
 class Room:
@@ -1556,6 +1637,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(out)
             elif url.path == "/api/find":
                 self._json(find_cards(body))
+            elif url.path == "/api/follow":
+                self._json(follow_type(body.get("id"), body.get("edits")))
             elif url.path == "/api/set":
                 self._json(import_set(body))
             elif url.path == "/api/suggest":

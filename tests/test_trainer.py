@@ -10,7 +10,7 @@ from unittest import mock
 
 import numpy as np
 
-from svrestyle import badges, cli, edit, gui, oldwindow, trainer, trainerframe
+from svrestyle import ace, badges, cli, edit, gui, oldwindow, trainer, trainerframe
 
 
 def tcgdex(**over):
@@ -489,10 +489,21 @@ class GuiTrainer(unittest.TestCase):
         with mock.patch.object(gui.tcg, "card", return_value={"id": "sv09-080", "category": "Pokemon", "name": "Larvitar"}):
             self.assertEqual(gui.layout_of("sv09-080"), "modern")
 
-    def test_no_holofoil_for_trainers(self):
+    def test_a_trainer_has_its_gen_9_reverse_holo_made(self):
         with mock.patch.object(gui, "read", return_value=("trainer", trainer_card())), \
-                mock.patch.object(gui.tcg, "TCGLIVE", "x"), self.assertRaises(gui.UserError):
+                mock.patch.object(gui.tcg, "TCGLIVE", "x"), \
+                mock.patch.object(gui.trainer, "compose_card", return_value=(np.zeros((1024, 733, 4), np.float32), {})), \
+                mock.patch.object(gui.foil, "build_trainer", return_value=None) as build, \
+                mock.patch.object(gui.foil, "build_ace") as ace:
             gui.render("ex1-83", holo=True)
+        build.assert_called_once()
+        ace.assert_not_called()
+
+    def test_ace_spec_holofoil_is_made(self):
+        card = ace_card()
+        with mock.patch.object(gui, "read", return_value=("trainer", card)),                 mock.patch.object(gui.tcg, "TCGLIVE", "x"),                 mock.patch.object(gui.trainer, "compose_card", return_value=(np.zeros((1024, 733, 4), np.float32), {})),                 mock.patch.object(gui.foil, "build_ace", return_value=None) as build:
+            gui.render("sv05-154", holo=True)
+        build.assert_called_once()
 
     def test_changes_note_the_restyle(self):
         with mock.patch.object(gui, "read", return_value=("trainer", trainer_card())), \
@@ -519,9 +530,69 @@ class Cli(unittest.TestCase):
         card = trainer_card(id="sm12-190", name="Dragonium Z: Dragon Claw")
         with mock.patch.object(cli.trainer, "compose_card", return_value=(None, {"card": card})), \
                 mock.patch.object(cli, "save_rgba"):
-            path = cli.render_trainer("sm12-190", Path("out"))
+            path, foil_path = cli.render_trainer("sm12-190", Path("out"))
+        self.assertIsNone(foil_path)
         self.assertEqual(path.name, "sm12-190-dragonium-z-dragon-claw-trainer.png")
         self.assertEqual(cli.file_slug(" Type: Null"), "type-null")          # the Pokemon cards' names too
+
+
+BELT = dict(id="sv05-154", localId="154", name="Maximum Belt", trainerType="Tool", rarity="ACE SPEC Rare",
+            set={"id": "sv05"}, regulationMark="H", illustrator="inose yukie",
+            effect="Attacks used by the Pokémon this card is attached to do 50 more damage.")
+SV5 = {"cardCount": {"official": 162}, "releaseDate": "2024-03-22", "abbreviation": {"official": "TEF"}}
+
+
+def ace_card(**over):
+    """sv05-154 Maximum Belt as read."""
+    return read(tcgdex(**{**BELT, **over}), SV5)
+
+
+class AceSpec(unittest.TestCase):
+    """Scarlet & Violet ACE SPEC Trainers are edited in place (ace.py); the older ones are still refused."""
+    card = staticmethod(ace_card)
+
+    def test_a_modern_ace_spec_is_read_with_its_kind(self):
+        card = self.card()
+        self.assertEqual((card["ace"], card["kind"], card["era"], card["number"], card["set_code"]),
+                         (True, "Tool", "modern", "154/162", "TEF"))
+
+    def test_other_prints_are_not_ace_specs(self):
+        self.assertFalse(read(tcgdex(id="sv04-160", rarity="Uncommon", set={"id": "sv04"}), SV5)["ace"])
+
+    def test_old_ace_specs_and_other_special_rarities_are_still_refused(self):
+        for over in (dict(id="bw7-137", rarity="ACE SPEC Rare", set={"id": "bw7"}), dict(id="xy1-1", rarity="ACE SPEC Rare"),
+                     dict(rarity="Special illustration rare", id="sv05-200", set={"id": "sv05"})):
+            with self.subTest(over), self.assertRaises(SystemExit):
+                self.card(**over)
+
+    def test_only_name_text_and_illustrator_change(self):
+        card = self.card()
+        out = edit.apply(card, {"name": "Minimum Belt", "effect": "Draw a card.", "illustrator": "Someone"})
+        self.assertEqual((out["name"], out["effect"], out["illustrator"]), ("Minimum Belt", "Draw a card.", "Someone"))
+        self.assertEqual(edit.apply(card, edit.editable(card)), card)          # the editor sends every field back
+        for edits in ({"kind": "Item"}, {"hp": "60"}, {"character": "N"},
+                      {"attacks": [{"cost": [], "name": "Hit", "damage": "10", "effect": ""}]}):
+            with self.subTest(edits), self.assertRaises(ValueError):
+                edit.apply(card, edits)
+
+    def test_the_edited_groups(self):
+        card = self.card()
+        self.assertEqual(ace.changed(card, card), ())
+        self.assertEqual(ace.changed(card, {**card, "name": "X", "illustrator": "Y"}), ("name", "illus"))
+        self.assertEqual(ace.changed(card, {**card, "effect": "Z"}), ("text",))
+
+    def test_white_print_in_the_zones_is_taken_off(self):
+        scan = np.zeros((1024, 733, 4), np.float32)
+        scan[..., :3] = (236, 0, 140)
+        scan[100:120, 60:200, :3] = 255              # the name
+        scan[700:720, 100:300, :3] = 255             # the text
+        scan[300:320, 100:300, :3] = 255             # art: not in any zone
+        mask = ace.taken_off(scan, ("name",))
+        self.assertTrue(mask[110, 100])
+        self.assertFalse(mask[710, 150] or mask[310, 150] or mask[110, 400])
+        both = ace.taken_off(scan, ("name", "text"))
+        self.assertTrue(both[110, 100] and both[710, 150])
+        self.assertFalse(both[310, 150])
 
 
 @unittest.skipUnless(os.environ.get("SVRESTYLE_FONTS"), "needs the Gill Sans faces (SVRESTYLE_FONTS)")
@@ -544,6 +615,15 @@ class GillSans(unittest.TestCase):
                          [(0, 0, False), (2, trainer.BULLET_INDENT, True), (3, trainer.BULLET_INDENT, True)])
         self.assertEqual("".join(t for t, _ in lines[1][1]).replace(trainer.ts.GLUE, " "), "Switch your Active Pokémon.")
 
+    def test_ace_spec_text_follows_a_print_that_sets_it_higher(self):
+        # sv08.5-117 Maximum Belt prints its text 20 px above sv05-154's
+        card = ace_card()
+        for dy in (0, -20, 12):
+            scan = np.zeros((1024, 733, 4), np.float32)
+            scan[..., :3] = (236, 0, 140)
+            ace._text(scan, card, dy)
+            self.assertEqual(ace.text_shift(scan, card), dy)
+
     def test_a_long_character_is_narrowed_and_leaves_the_name_room(self):
         canvas = np.zeros((1024, 733, 4), np.float32)
         with self.assertWarns(UserWarning):
@@ -551,6 +631,45 @@ class GillSans(unittest.TestCase):
         self.assertGreater(xscale, 0)
         width = trainer.ts.text_width("Professor Magnolia", trainer.CHARACTER_FACE, trainer.CHARACTER_SIZE)
         self.assertLess(width, trainer.CHARACTER_MAX_W)
+
+
+@unittest.skipUnless(os.environ.get("SVRESTYLE_TCGLIVE"), "needs a TCG Live extract (SVRESTYLE_TCGLIVE)")
+class TrainerFoil(unittest.TestCase):
+    """The Gen 9 reverse holo of a restyled Trainer (foil.build_trainer), from the extract's own plates."""
+    def canvas(self):
+        out = np.zeros((1024, 733, 4), np.float32)
+        out[..., 3] = 255
+        return out
+
+    def test_the_four_kinds_have_the_pattern_plate(self):
+        from svrestyle import foil
+        for kind, ref in foil.TRAINER_FOIL_REFS.items():
+            plate = foil.plate(foil.printings(ref)["reverse"])
+            with self.subTest(kind=kind):
+                self.assertEqual(plate.shape, (1024, 733))
+                self.assertGreater(float(((plate > 30) & (plate < 225))[640:930, 40:690].mean()), 0.9, "the Poké Ball pattern")
+                self.assertLess(float(plate[200:400, 100:600].max()), 30, "the art window is not foil")
+
+    def test_an_old_item_gets_flat_silver_on_that_plate_with_its_footer_cut(self):
+        from svrestyle import foil, layers
+        footer = np.zeros((1024, 733), np.float32)
+        footer[960:990, 60:200] = 1
+        built = foil.build_trainer("sm2-119", {"kind": "Item", "era": "sm"}, self.canvas(), {"footer": footer})
+        spec, texture, extra = built["reverse"]
+        self.assertEqual((spec, extra, built["base"]), (foil.ME_REVERSE, {}, None))
+        self.assertEqual(texture.shape, (1024, 1024))
+        card = texture[:, 145:145 + 733]
+        self.assertEqual(float(card[960:990, 60:200].max()), 0.0, "what the footer draws is cut out")
+        self.assertGreater(float(card[700:900, 100:600].mean()), 60)
+
+    def test_a_print_with_no_reverse_holo_gets_the_gen8_one_too(self):
+        from svrestyle import foil
+        pattern = np.full((1024, 733), 150, np.float32)
+        with mock.patch.object(foil, "gen8_trainer_plate", return_value=pattern) as made:
+            built = foil.build_trainer("sm2-119", {"kind": "Item", "era": "sm"}, self.canvas(), {})
+        made.assert_called_once_with("Item")
+        self.assertIsNone(built["base"])
+        self.assertEqual(float(built["reverse"][1][500, 145 + 300]), 150.0)
 
 
 if __name__ == "__main__":

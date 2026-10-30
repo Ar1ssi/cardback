@@ -119,5 +119,28 @@ class TextDetection(unittest.TestCase):
         self.assertTrue(glyphs[705:725, 80:300].any())
 
 
+class VGradient(unittest.TestCase):
+    def test_a_new_type_swaps_the_gradients_colour_and_keeps_the_art(self):
+        """swsh6-99 Galarian Slowking V (Darkness) made Fire: the teal behind its text becomes the Fire V's red, row by
+        row in the frame's share, over the same art."""
+        rng = np.random.default_rng(0)
+        under = rng.uniform(0, 255, (1024, 733, 3)).astype(np.float32)
+        share = swsh.gradient_share()[:, None, None]
+        dark, fire = swsh.gradient_colour("Darkness"), swsh.gradient_colour("Fire")
+        art = np.dstack([under * (1 - share) + dark * share, np.full((1024, 733), 255, np.float32)])
+        out = swsh.retint(art, "Darkness", "Fire")
+        np.testing.assert_allclose(out[..., :3], under * (1 - share) + fire * share, atol=1e-3)
+        np.testing.assert_array_equal(out[:700], art[:700])                       # above the gradient: as it was
+        np.testing.assert_allclose(out[1000, 300, :3], fire, atol=1e-3)            # under the row band: all Fire
+        np.testing.assert_array_equal(out[..., 3], art[..., 3])
+
+    def test_the_ramp_runs_from_the_texts_middle_to_the_row_band(self):
+        share = swsh.gradient_share(shift=0)
+        self.assertEqual(share[swsh.GRADIENT_TOP], 0)
+        self.assertEqual(share[swsh.GRADIENT_BOTTOM], 1)
+        self.assertTrue((np.diff(share) >= 0).all())
+        self.assertEqual(swsh.gradient_share()[swsh.GRADIENT_TOP + swsh.SHIFT_DOWN], 0)   # clean's art is moved down
+
+
 if __name__ == "__main__":
     unittest.main()

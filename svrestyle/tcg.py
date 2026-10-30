@@ -36,6 +36,7 @@ TCGLIVE_SETS = {
     "swshp": ("swshbsp", 0),
     "smp": ("smbsp", 0),
     "svp": ("svbsp", 0),
+    "mep": ("mebsp", 0),
     "xyp": ("xybsp", 0),
     "bwp": ("bwbsp", 0),
 }
@@ -51,8 +52,8 @@ POCKET_RARITIES = {"None", "Crown", "One Diamond", "Two Diamond", "Three Diamond
                    "Two Star", "Three Star", "One Shiny", "Two Shiny"}
 # filter name -> TCGdex card field; each filter is a list of exact values, any of which matches
 FIND_FIELDS = {"category": "category", "types": "types", "stage": "stage", "suffix": "suffix",
-               "trainerType": "trainerType", "regulationMark": "regulationMark", "rarity": "rarity", "set": "set.id"}
-FIND_CATEGORIES = ("Pokemon", "Trainer")      # Energy has no layout here
+               "trainerType": "trainerType", "energyType": "energyType", "regulationMark": "regulationMark", "rarity": "rarity", "set": "set.id"}
+FIND_CATEGORIES = ("Pokemon", "Trainer", "Energy")
 FIND_MAX = 96                                 # most cards one search answer carries
 
 
@@ -118,7 +119,7 @@ def _natural(local_id):
 def find(name="", filters=None, offset=0, limit=48):
     """Cards of a TCGdex search, newest set first: {"total": n, "cards": [one page of {id, name, localId, set, thumb}]}.
     name: part of the card's name. filters: FIND_FIELDS keys, each a list of exact values (any matches), and "hpMin" /
-    "hpMax". Pokemon and Trainer cards only, TCG Pocket's left out, and the cards whose id the editor takes (edit.CARD_ID:
+    "hpMax". Pokemon, Trainer and Energy cards only, TCG Pocket's left out, and the cards whose id the editor takes (edit.CARD_ID:
     not 30th-053, 2011bw-1)."""
     filters = filters or {}
     if not isinstance(filters, dict) or not isinstance(name or "", str):

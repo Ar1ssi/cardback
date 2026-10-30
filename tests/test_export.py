@@ -491,7 +491,7 @@ class Push(unittest.TestCase):
         self.renders.clear()
         r = self.push([{"id": "base1-91"}, {"id": "swsh3-88"}])
         self.assertEqual((r["rendered"], r["reused"], self.renders), (0, 2, []))
-        cards = self.record()["cards"]
+        cards = sorted(self.record()["cards"], key=lambda c: c["id"])        # set.json lists the cards in display order
         self.assertEqual([(c["id"], c["custom"]["source"], c["image"]) for c in cards], [
             (f"{SET_ID}-001", "base1-91", f"/src/assets/custom-sets/{SET_ID}/001"),
             (f"{SET_ID}-002", "swsh3-88", f"/src/assets/custom-sets/{SET_ID}/002")])

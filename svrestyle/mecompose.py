@@ -129,7 +129,7 @@ def read_card(card_id):
             or name.endswith(NOT_REGULAR):
         raise SystemExit(f"{card_id} is {name!r} ({c.get('stage')}): only regular Basic/Stage 1/Stage 2 Pokemon")
     types = c.get("types") or []
-    if not types or types[0] not in meframe.POOL:
+    if not types or types[0] not in meframe.TYPES:
         raise SystemExit(f"{card_id}: no Mega Evolution frame for type {types[:1]}")
     s = tcg.set_info(c["set"]["id"])
     official = (s.get("cardCount") or {}).get("official")

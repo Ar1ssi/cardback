@@ -8,9 +8,13 @@ card TCGdex lists as evolving from that Pokemon. A card id can be named instead:
 portrait, any other card the middle of its art window.
 
 Besides Basic, Stage 1 and Stage 2 there is a custom stage, Mega (MEGA): the Stage 1 pieces with the tab reading MEGA.
-Its portrait comes first from the XY "M ... EX" cards, which print the Pokemon they evolve from on a gold disc: the
-figure is keyed off the gold and set on the modern silver disc. They are also the fallback for other stages when no
-SV / ME card evolves from the Pokemon; after them the Pokemon's official artwork (PokeAPI).
+
+When no SV / ME card evolves from the Pokemon (nothing does from a Stage 2: Mega Charizard ex made to evolve from
+Charizard), the portrait is the Pokemon's Pokemon HOME render (PokeAPI): the prints' portraits are those renders, in
+the same poses (Charmeleon, Ivysaur, Riolu, Clefairy; Kadabra mirrored), inked: a dark line round the figure and
+where its shading turns sharply, colours a little richer and deeper (home_sprite). After it come the XY "M ... EX"
+cards, which print the Pokemon they evolve from on a gold disc (the figure keyed off the gold and set on the modern
+silver disc), then the Pokemon's official artwork (PokeAPI).
 """
 import functools
 import os
@@ -24,7 +28,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from . import cache, frame, layers, meframe, tcg
 from . import typeset as ts
-from .imaging import dilate, fill_holes, hsv, load_rgba, save_rgba
+from .imaging import dilate, fill_holes, hsv, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
 PORTRAIT_ERAS = ("sv", "me")      # card ids whose Stage cards print the portrait disc
@@ -36,6 +40,15 @@ XY_GOLD = (30, 62, 0.35, 0.5)     # the disc's gold: hue range (degrees), least 
 XY_FLOOD = 14                     # per-channel step the gold background is flood-filled across (it shades radially)
 XY_RIM = 4                        # px inside the disc's edge kept off the figure (the disc's own rim line)
 ARTWORK_FILL = 0.8                # an official artwork's longer side, as a share of the disc's width
+# A HOME render set as the prints set theirs (fitted on Charmeleon me02-013, Riolu me01-077, Clefairy me03-031 and
+# Kadabra me01-056: each at 0.1625-0.17 of its render's size, its figure centred): the render's square canvas
+# HOME_CANVAS of the disc's width, its figure centred; inked INK_UP times finer: the figure's edge INK_OUTLINE px in,
+# and inner lines where the shading's slope (RGB levels per fine px, the render softened INK_SOFT fine px) runs from
+# INK_LINES[0] to [1], at most INK_LINE_MAX; ink is the colour under it times INK_DARK. Then saturation times INK_SAT
+# and the levels to the power INK_GAMMA (the prints' deeper shading).
+HOME_CANVAS = 0.9
+INK_UP, INK_OUTLINE, INK_SOFT, INK_LINES, INK_LINE_MAX, INK_DARK = 4, 1.0, 1.4, (3.0, 9.0), 0.8, 0.25
+INK_SAT, INK_GAMMA = 1.2, 1.12
 DISC_RIM, DISC_SMOOTH = 2.5, 6.0  # px: the disc's own rim, kept; blur the light disc is evened out with
 
 # Parts of the stage sprite, by box (x0, y0, x1, y1); the ring is what is left. The strip's right end curls up
@@ -44,6 +57,7 @@ DISC_RIM, DISC_SMOOTH = 2.5, 6.0  # px: the disc's own rim, kept; blur the light
 TAB = meframe.STAGE_TAB
 SWOOSH = (470, 0, 600, 94)
 STRIP = (128, 86, 520, 126)
+RING_UNDER_TAB = 62               # y: the ring's top runs under the tab from here; rows above stay the card's tab
 SPECK = 40                        # px: smaller bits of a sprite are strays of its cut-out (one left of the ring)
 REGULAR = ("tab", "ring", "strip", "disc", "swoosh")
 EX = ("tab", "ring", "strip", "disc")
@@ -85,6 +99,11 @@ STRIP_PAD = 8                     # px the "Evolves from" line keeps from the st
 # Mega Evolution ex cards (me1 Mega Venusaur, me3 Mega Clefable) end the strip under the "Mega-Evolved form of"
 # badge, which starts here.
 MEGA_STRIP_END = 408
+# The strip itself on a card: the rows about the Stage sprite's (STRIP_PLAY px either way: Mega Evolution prints it on
+# rows 95-115, Scarlet & Violet a row lower and a row taller) whose pixels are silver (RGB spread under STRIP_SILVER;
+# its letters too) for at least STRIP_SILVER_SHARE of the way to MEGA_STRIP_END. The name bar above and the art below
+# are coloured; a grey stretch of art is not silver all along.
+STRIP_PLAY, STRIP_SILVER, STRIP_SILVER_SHARE = 3, 24, 0.9
 
 
 # ---------------------------------------------------------------- pieces
@@ -102,7 +121,28 @@ def _boxes():
     strip = box(STRIP) & ~swoosh & ~disc
     tab = dilate(letters(basic_tab()) | letters(meframe.stage_sprite(1)) | letters(meframe.stage_sprite(2))
                  | letters(mega_tab()), LETTER_GROW)
-    return {"tab": tab, "swoosh": swoosh, "strip": strip, "disc": disc, "ring": ~(box(TAB) | swoosh | strip | disc)}
+    return {"tab": tab, "swoosh": swoosh, "strip": strip, "disc": disc, "ring": ~(box((TAB[0], TAB[1], TAB[2], RING_UNDER_TAB)) | swoosh | strip | disc)}
+
+
+def strip_shape(image):
+    """bool HxW: the "Evolves from" strip itself, in the strip box (its own rows on this card: not the name bar above
+    it or the art below)."""
+    x0, y0, x1, y1 = STRIP
+    rows = y0 + np.flatnonzero((meframe.stage_sprite(1)[y0:y1, x0:MEGA_STRIP_END, 3] > 128).any(axis=1))
+    lo, hi = rows.min() - STRIP_PLAY, rows.max() + 1 + STRIP_PLAY
+    rgb = image[lo:hi, x0:MEGA_STRIP_END, :3]
+    silver = (rgb.max(axis=-1) - rgb.min(axis=-1) < STRIP_SILVER).mean(axis=1) >= STRIP_SILVER_SHARE
+    out = np.zeros(image.shape[:2], bool)
+    middle = (rows.min() + rows.max()) // 2 - lo
+    if not silver[middle]:
+        return out
+    top, bottom = middle, middle + 1             # the run of silver rows through the sprite strip's middle
+    while top > 0 and silver[top - 1]:
+        top -= 1
+    while bottom < len(silver) and silver[bottom]:
+        bottom += 1
+    out[lo + top:lo + bottom, x0:x1] = True
+    return out
 
 
 def under_tab(sprite):
@@ -235,7 +275,7 @@ def _lettering(image):
     return dilate(found, LETTER_COVER) & inner
 
 
-def _fill_gaps(shade, known):
+def fill_gaps(shade, known):
     """shade (n x 3) with its unknown entries taken along from the known ones."""
     if not known.any():
         return np.nan_to_num(shade)
@@ -259,8 +299,8 @@ def blank_tab(image):
     with warnings.catch_warnings():                       # rows / columns with no clean px: filled after
         warnings.simplefilter("ignore", RuntimeWarning)
         for _ in range(5):
-            by_row = _fill_gaps(np.nanmedian(seen - by_column[None], axis=1), clean.sum(1) >= MIN_CLEAN)
-            by_column = _fill_gaps(np.nanmedian(seen - by_row[:, None], axis=0), clean.sum(0) >= MIN_CLEAN_COLUMN)
+            by_row = fill_gaps(np.nanmedian(seen - by_column[None], axis=1), clean.sum(1) >= MIN_CLEAN)
+            by_column = fill_gaps(np.nanmedian(seen - by_row[:, None], axis=0), clean.sum(0) >= MIN_CLEAN_COLUMN)
             by_column = cv2.blur(by_column[None], (SHADE_SMOOTH, 1))[0]
     shade = by_row[:, None] + by_column[None]
     stray = (dilate(lettered, LETTER_GROW) & _lozenge())[y0:y1, x0:x1] \
@@ -455,9 +495,12 @@ def find_xy_mega(name):
     return _first(rank(briefs, XY_ERAS), xy_sprite)[1]
 
 
-def pokeapi_sprite(name):
-    """(rgb, alpha) of the Pokemon's official artwork (PokeAPI), fitted inside the disc, or None if PokeAPI has no
-    such Pokemon."""
+ARTWORKS = {"official-artwork": "artwork", "home": "home"}     # PokeAPI's artworks used: their cached files' prefix
+
+
+def _artwork(name, kind):
+    """RGBA float32 of the Pokemon's PokeAPI artwork of kind (ARTWORKS), its canvas whole; None if PokeAPI has no such
+    Pokemon or artwork, or the artwork is empty."""
     from . import mecompose                      # mecompose imports this module
     words = name.strip().split(" ", 1)
     region = mecompose.REGIONAL.get(words[0]) if len(words) == 2 else None
@@ -466,20 +509,58 @@ def pokeapi_sprite(name):
     slug = f"{slug}-{region}" if region else slug
     try:
         mon = cache.fetch_json(f"{mecompose.POKEAPI}/pokemon/{slug}", cache.path("pokeapi", f"pokemon-{slug}.json"))
-        url = ((mon.get("sprites") or {}).get("other") or {}).get("official-artwork", {}).get("front_default")
+        url = (((mon.get("sprites") or {}).get("other") or {}).get(kind) or {}).get("front_default")
         if not url:
             return None
-        art = np.asarray(Image.open(cache.fetch(url, cache.path("pokeapi", f"artwork-{slug}.png"))).convert("RGBA"),
-                         np.float32)
+        art = np.asarray(Image.open(cache.fetch(url, cache.path("pokeapi", f"{ARTWORKS[kind]}-{slug}.png")))
+                         .convert("RGBA"), np.float32)
     except cache.DownloadError:
         return None
+    return art if (art[..., 3] > 8).any() else None
+
+
+def _figure(art, scale, up=1):
+    """art cropped to its figure and resized by scale, up times that; and the size at scale (w, h)."""
     ys, xs = np.nonzero(art[..., 3] > 8)
     art = art[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
-    side = 2 * meframe.PORTRAIT_DISC[2] * ARTWORK_FILL
-    scale = side / max(art.shape[:2])
     size = (max(1, round(art.shape[1] * scale)), max(1, round(art.shape[0] * scale)))
-    art = cv2.resize(art, size, interpolation=cv2.INTER_AREA)
+    return cv2.resize(art, (size[0] * up, size[1] * up), interpolation=cv2.INTER_AREA), size
+
+
+def pokeapi_sprite(name):
+    """(rgb, alpha) of the Pokemon's official artwork (PokeAPI), fitted inside the disc, or None if PokeAPI has no
+    such Pokemon."""
+    art = _artwork(name, "official-artwork")
+    if art is None:
+        return None
+    ys, xs = np.nonzero(art[..., 3] > 8)
+    longer = max(np.ptp(ys), np.ptp(xs)) + 1
+    art, _ = _figure(art, 2 * meframe.PORTRAIT_DISC[2] * ARTWORK_FILL / longer)
     return art[..., :3], art[..., 3] / 255
+
+
+def home_sprite(name):
+    """(rgb, alpha) of the Pokemon's Pokemon HOME render (PokeAPI) set as the prints set their portraits (HOME_CANVAS,
+    inked), or None if PokeAPI has no such Pokemon or render."""
+    art = _artwork(name, "home")
+    if art is None:
+        return None
+    big, size = _figure(art, 2 * meframe.PORTRAIT_DISC[2] * HOME_CANVAS / art.shape[1], INK_UP)
+    alpha = big[..., 3] / 255
+    rgb = big[..., :3]
+    inside = cv2.distanceTransform(np.pad((alpha > 0.5).astype(np.uint8), 1), cv2.DIST_L2, 5)[1:-1, 1:-1] / INK_UP
+    outline = np.clip(INK_OUTLINE + 0.5 - inside, 0, 1) * (alpha > 0.01)
+    lum = cv2.GaussianBlur(luminance(rgb).astype(np.float32), (0, 0), INK_SOFT)
+    slope = np.hypot(cv2.Sobel(lum, cv2.CV_32F, 1, 0), cv2.Sobel(lum, cv2.CV_32F, 0, 1)) / 8
+    lo, hi = INK_LINES
+    ink = np.maximum(outline, np.clip((slope - lo) / (hi - lo), 0, 1) * INK_LINE_MAX)[..., None]
+    rgb = rgb * (1 - ink * (1 - INK_DARK))
+    small = cv2.resize(np.dstack([rgb * alpha[..., None], alpha]), size, interpolation=cv2.INTER_AREA)
+    alpha = small[..., 3]
+    rgb = small[..., :3] / np.maximum(alpha, 1e-4)[..., None]
+    grey = rgb.mean(axis=-1, keepdims=True)
+    rgb = 255 * (np.clip(grey + (rgb - grey) * INK_SAT, 0, 255) / 255) ** INK_GAMMA
+    return rgb.astype(np.float32), alpha.astype(np.float32)
 
 
 def from_card(card_id):
@@ -503,14 +584,14 @@ def _first(ids, sprite):
     return None, None
 
 
-def find(name, mega=False):
+def find(name):
     """(rgb, alpha) of the Pokemon called name, or None (with a warning): the SV / ME portrait of a card evolving from
-    it, else its XY Mega portrait (tried first for mega), else its official artwork (PokeAPI), else the middle of
-    one of its cards' art."""
+    it, else its HOME render, else its XY Mega portrait, else its official artwork (PokeAPI), else the middle of one
+    of its cards' art."""
     try:
         sources = [lambda: _first(rank(_search("evolveFrom", name), PORTRAIT_ERAS), disc_sprite)[1],
-                   lambda: find_xy_mega(name)]
-        for source in (sources[::-1] if mega else sources) + [lambda: pokeapi_sprite(name)]:
+                   lambda: home_sprite(name), lambda: find_xy_mega(name), lambda: pokeapi_sprite(name)]
+        for source in sources:
             pic = source()
             if pic is not None:
                 return pic
@@ -559,7 +640,7 @@ def portrait(card, own=None):
         return from_card(card["portrait"])
     if own and card["evolves_from"] == card.get("portrait_of"):
         return own()
-    return find(card["evolves_from"], mega=card["stage"] == MEGA)
+    return find(card["evolves_from"])
 
 
 # ---------------------------------------------------------------- text

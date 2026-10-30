@@ -156,7 +156,7 @@ class Portrait(unittest.TestCase):
             self.assertIs(stage.portrait(card(portrait="me01-055"), lambda: own), named)
             from_card.assert_called_once_with("me01-055")
             self.assertIs(stage.portrait(card(evolves_from="Ralts"), lambda: own), found)
-            find.assert_called_once_with("Ralts", mega=False)
+            find.assert_called_once_with("Ralts")
             self.assertIs(stage.portrait(card(), None), found)
 
     def test_named_card_stage_gives_disc_else_art(self):
@@ -172,10 +172,12 @@ class Portrait(unittest.TestCase):
             return [] if field in ("evolveFrom", "stage") else [{"id": "swsh6-54", "localId": "54", "name": name}]
         with mock.patch.object(stage, "_search", side_effect=search), \
                 mock.patch.object(stage, "_official", return_value=200), \
+                mock.patch.object(stage, "home_sprite", return_value=None), \
                 mock.patch.object(stage, "pokeapi_sprite", return_value=None), \
                 mock.patch.object(stage, "art_sprite", return_value="art"), self.assertWarns(UserWarning):
             self.assertEqual(stage.find("Galarian Slowpoke"), "art")
         with mock.patch.object(stage, "_search", return_value=[]), \
+                mock.patch.object(stage, "home_sprite", return_value=None), \
                 mock.patch.object(stage, "pokeapi_sprite", return_value=None), self.assertWarns(UserWarning):
             self.assertIsNone(stage.find("Nobody"))
 
@@ -187,16 +189,26 @@ class Portrait(unittest.TestCase):
                 return result
             return f
         with mock.patch.object(stage, "_search", return_value=[]), \
+                mock.patch.object(stage, "home_sprite", side_effect=source("home", "home")), \
                 mock.patch.object(stage, "find_xy_mega", side_effect=source("xy", "xy")), \
                 mock.patch.object(stage, "pokeapi_sprite", side_effect=source("artwork", "artwork")):
-            self.assertEqual(stage.find("Latias", mega=True), "xy")          # Mega: the XY Mega card first
-            self.assertEqual(calls, ["xy"])
-            calls.clear()
-            self.assertEqual(stage.find("Latias"), "xy")                     # others: after SV / ME evolutions
+            self.assertEqual(stage.find("Charizard"), "home")                # no SV / ME card evolves from it
+            self.assertEqual(calls, ["home"])
         with mock.patch.object(stage, "_search", return_value=[]), \
+                mock.patch.object(stage, "home_sprite", return_value=None), \
+                mock.patch.object(stage, "find_xy_mega", side_effect=source("xy", "xy")), \
+                mock.patch.object(stage, "pokeapi_sprite", side_effect=source("artwork", "artwork")):
+            self.assertEqual(stage.find("Latias"), "xy")                     # no HOME render: the XY Mega card
+        with mock.patch.object(stage, "_search", return_value=[]), \
+                mock.patch.object(stage, "home_sprite", return_value=None), \
                 mock.patch.object(stage, "find_xy_mega", return_value=None), \
                 mock.patch.object(stage, "pokeapi_sprite", return_value="artwork"):
-            self.assertEqual(stage.find("Latias", mega=True), "artwork")
+            self.assertEqual(stage.find("Latias"), "artwork")
+        with mock.patch.object(stage, "_search", return_value=[{"id": "me02-013", "localId": "013", "name": "Mega"}]), \
+                mock.patch.object(stage, "_official", return_value=130), \
+                mock.patch.object(stage, "disc_sprite", return_value="print"), \
+                mock.patch.object(stage, "home_sprite", side_effect=source("home", "home")):
+            self.assertEqual(stage.find("Charmeleon"), "print")              # a print's own portrait first
 
     def test_mega_card_names(self):
         for name in ("Latias-EX", "M Latias EX", "Latias ex", "latias", "M Latias-EX"):
@@ -234,6 +246,33 @@ class Portrait(unittest.TestCase):
             for name in ("Galarian Slowpoke", "Farfetch’d", "Mr. Mime", "Nidoran♀", "Latias-EX"):
                 self.assertIsNone(stage.pokeapi_sprite(name))
         self.assertEqual(urls, ["slowpoke-galar", "farfetchd", "mr-mime", "nidoran-f", "latias"])
+
+    def test_strip_shape_is_the_silver_rows_about_the_sprite_strip(self):
+        sprite = np.zeros((H, W, 4), np.float32)
+        sprite[95:116, 128:470, 3] = 255                             # the me1 strip
+        img = np.zeros((H, W, 4), np.float32)
+        img[..., :3] = (40, 60, 160)                                 # art
+        img[80:96, :, :3] = (230, 120, 40)                           # the name bar
+        img[96:118, :, :3] = 200                                     # a Scarlet & Violet strip: a row lower and taller
+        img[100:112, 150:300:6, :3] = 30                             # its letters
+        with mock.patch.object(stage.meframe, "stage_sprite", return_value=sprite):
+            rows = np.flatnonzero(stage.strip_shape(img).any(axis=1))
+            self.assertEqual((rows.min(), rows.max()), (96, 117))
+            img[96:118, 200:420, :3] = (200, 40, 40)                 # no strip here: art
+            self.assertFalse(stage.strip_shape(img).any())
+
+    def test_home_render_is_fitted_and_inked(self):
+        art = np.zeros((512, 512, 4), np.float32)
+        art[100:500, 156:356] = (200, 60, 40, 255)                           # a figure 400 tall on a 512 canvas
+        with mock.patch.object(stage, "_artwork", return_value=art):
+            rgb, alpha = stage.home_sprite("Charizard")
+        r = stage.meframe.PORTRAIT_DISC[2]
+        self.assertEqual(alpha.shape[0], round(400 * 2 * r * stage.HOME_CANVAS / 512))   # the canvas sets the scale
+        h, w = alpha.shape
+        self.assertLess(rgb[h // 2, 0].max(), 120)                           # its edge inked dark
+        self.assertGreater(rgb[h // 2, w // 2, 0], 190)                      # its middle keeps its colour
+        with mock.patch.object(stage, "_artwork", return_value=None):
+            self.assertIsNone(stage.home_sprite("Nobody"))
 
     def test_portrait_stays_in_the_disc(self):
         canvas = np.zeros((H, W, 4), np.float32)

@@ -5,7 +5,8 @@
   python -m svrestyle card ID [ID ...] --fonts DIR   render cards (TCGdex ids, e.g. swsh6-99)
       Pokemon V become Scarlet & Violet ex cards; regular Sun & Moon / Sword & Shield Pokemon become Mega
       Evolution regular cards; Trainers before Scarlet & Violet (Items, Supporters, Stadiums, Pokemon Tools)
-      become Scarlet & Violet Trainers (--style, --no-attacks, --foil and --debug are for Pokemon only).
+      become Scarlet & Violet Trainers; Energy before Scarlet & Violet (Basic Energy, Special Energy) becomes Mega
+      Evolution Energy (--style, --no-attacks and --debug are for Pokemon only; --foil also works on Energy).
       --style hybrid|panel   ex only. hybrid (default): art runs behind the text; panel: SV translucent panel
       --no-attacks           leave out abilities and attacks (names, text, costs, damage)
       --out DIR              where PNGs go (default ./out); --debug also writes the art-cleaning mask overlay
@@ -21,8 +22,8 @@ import sys
 import warnings
 from pathlib import Path
 
-from . import (badges, cache, foil, frame, inpaint, layers, lifted, meframe, oldwindow, refs, swsh, tcg, trainer,
-               trainerframe)
+from . import (badges, cache, energy, fairy, foil, frame, inpaint, layers, lifted, megaretype, meframe, oldwindow, refs,
+               swsh, tcg, trainer, trainerframe)
 from . import typeset as ts
 from .imaging import save_rgba
 
@@ -45,10 +46,18 @@ def cmd_prepare(a):
     print("cache:", cache.CACHE)
     print("model:", inpaint.model_file())
     frame.build_all()
-    print("ex assets built for:", ", ".join(refs.TYPES))
+    with_fairy = ["Fairy"] if fairy.available() else []
+    print("ex assets built for:", ", ".join(list(refs.TYPES) + with_fairy))
     meframe.build_all()
-    print("Mega Evolution assets built for:", ", ".join(meframe.POOL))
+    print("Mega Evolution assets built for:", ", ".join(list(meframe.POOL) + with_fairy))
+    if tcg.TCGLIVE:
+        megaretype.build_all()
+        print("Mega ex type change assets built for:", ", ".join(t for t in megaretype.TYPES
+                                                               if t in megaretype.SOURCES or with_fairy))
+    if not with_fairy:
+        print("Fairy needs the TCG Live extract (its Energy coins): not built")
     trainerframe.build_all()
+    print("Energy frames are built when first used (Team Rocket's Energy, Ignition Energy, Mega Evolution Basic Energy)")
     for layout in oldwindow.LAYOUTS:
         oldwindow.reference(layout)
     for badge, (era, _) in badges.POOL.items():
@@ -72,11 +81,43 @@ def file_slug(name):
     return re.sub(r"[^\w-]+", "-", name.strip().lower()).strip("-")
 
 
-def render_trainer(card_id, out):
-    img, report = trainer.compose_card(card_id)
-    path = out / f"{card_id}-{file_slug(report['card']['name'])}-trainer.png"
+def is_energy(card_id):
+    return tcg.card(card_id).get("category") == "Energy"
+
+
+def render_energy(card_id, out, want_foil=False):
+    """-> (PNG path, foil.json path or None)."""
+    with layers.recording() as drawn:
+        img, report = energy.compose_card(card_id)
+    card = report["card"]
+    stem = f"{card_id}-{file_slug(card['name'])}-energy"
+    path = out / f"{stem}.png"
     save_rgba(img, path)
-    return path
+    foil_path = None
+    if want_foil:
+        built = energy.build_foil(card, img, drawn)
+        if built["base"] or built["reverse"]:
+            foil_path = foil.save(built, out, stem, card_id)
+    return path, foil_path
+
+
+def render_trainer(card_id, out, want_foil=False):
+    """-> (PNG path, foil.json path or None)."""
+    with layers.recording() as drawn:
+        img, report = trainer.compose_card(card_id)
+    card = report["card"]
+    stem = f"{card_id}-{file_slug(card['name'])}-trainer"
+    path = out / f"{stem}.png"
+    save_rgba(img, path)
+    foil_path = None
+    if want_foil:
+        if card.get("ace"):
+            built = foil.build_ace(card_id, card, img, drawn, trainer.read_card(card_id))
+        else:
+            built = foil.build_trainer(card_id, card, img, drawn)
+        if built["base"] or built["reverse"]:
+            foil_path = foil.save(built, out, stem, card_id)
+    return path, foil_path
 
 
 def cmd_card(a):
@@ -90,12 +131,21 @@ def cmd_card(a):
     failed = 0
     for card_id in a.ids:
         try:
+            if is_energy(card_id):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    path, foil_path = render_energy(card_id, out, a.foil)
+                notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
+                print(f"{card_id}: {path}" + (f"\n{card_id}: foil {foil_path}" if foil_path else "")
+                      + "".join(f"\n  warning: {n}" for n in notes))
+                continue
             if is_trainer(card_id):
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
-                    path = render_trainer(card_id, out)
+                    path, foil_path = render_trainer(card_id, out, a.foil)
                 notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
-                print(f"{card_id}: {path}" + "".join(f"\n  warning: {n}" for n in notes))
+                print(f"{card_id}: {path}" + (f"\n{card_id}: foil {foil_path}" if foil_path else "")
+                      + "".join(f"\n  warning: {n}" for n in notes))
                 continue
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -135,7 +185,8 @@ def cmd_gui(a):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="svrestyle", description="Restyle older cards: V -> Scarlet & Violet ex, "
-                                                           "regular -> Mega Evolution, Trainers -> Scarlet & Violet")
+                                                           "regular -> Mega Evolution, Trainers -> Scarlet & Violet, "
+                                                           "Energy -> Mega Evolution")
     sub = p.add_subparsers(dest="cmd", required=True)
     pp = sub.add_parser("prepare", help="check dependencies, download the model, build frame assets")
     pp.add_argument("--fonts")

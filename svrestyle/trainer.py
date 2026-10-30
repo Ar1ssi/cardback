@@ -30,10 +30,12 @@ ART_VERSION = "2"           # of the cached art: bump when how it is cut or clea
 KINDS = {"Item": "Item", "Supporter": "Supporter", "Stadium": "Stadium", "Tool": "Tool",
          "Technical Machine": "Tool", "Rocket's Secret Machine": "Item", None: "Item"}
 # Full-art and gold prints have no art window to move (matched in any case: TCGdex writes "Special illustration
-# rare"); ACE SPEC cards print a rule the four Gen 9 frames have no place for.
+# rare"); ACE SPEC cards print a rule the four Gen 9 frames have no place for. A Scarlet & Violet ACE SPEC has a frame
+# of its own, so it is edited in place instead (ace.py).
 NOT_REGULAR = ("ultra", "secret", "rainbow", "illustration", "hyper", "shiny", "full art", "gold", "amazing",
                "radiant", "trainer gallery", "double rare", "ace spec")
 # Black & White's ACE SPEC cards, which TCGdex rates plain "Rare" (their red ACE SPEC band checked on the scans).
+ACE_RARITY = "ace spec"
 ACE_SPEC = {"bw7-137", "bw7-138", "bw7-139", "bw7-140", "bw8-128", "bw8-129", "bw8-130", "bw9-107", "bw9-108",
             "bw10-92", "bw10-93", "bw10-94", "bw10-95"}
 PRISM = "◇"
@@ -143,7 +145,7 @@ TCGDEX_TYPOS = (("That Pokémon my use", "That Pokémon may use"), ("Miracle Pla
 NAME_LABEL = r" Team Flare Gear$"
 # A fossil's or doll's HP when TCGdex gives none but its text does (swsh10-157, xy4-102 "a 30 HP Colorless ...").
 TEXT_HP = r"as if it were an? (\d+)[- ]HP\b"
-TYPES = "Grass|Fire|Water|Lightning|Psychic|Fighting|Darkness|Metal|Dragon|Colorless"
+TYPES = "Grass|Fire|Water|Lightning|Psychic|Fighting|Darkness|Metal|Fairy|Dragon|Colorless"
 CODE = {name: code for code, name in ts.ENERGY_CODES.items()}
 
 
@@ -271,7 +273,8 @@ def read_card(card_id):
     if set_id == CLASSIC_SET:
         raise SystemExit(f"{card_id} is {name!r}, a Classic Collection reprint: restyle the card it reprints")
     rarity = c.get("rarity") or ""
-    if any(word in rarity.lower() for word in NOT_REGULAR):
+    ace = ACE_RARITY in rarity.lower() and modern.is_modern(card_id)
+    if any(word in rarity.lower() for word in NOT_REGULAR if not (ace and word == ACE_RARITY)):
         raise SystemExit(f"{card_id} is a {rarity} print ({name!r}): only regular Trainers, with an art window")
     if card_id in ACE_SPEC:
         raise SystemExit(f"{card_id} is {name!r}, an ACE SPEC card: its rule has no place on the Gen 9 frames")
@@ -311,6 +314,7 @@ def read_card(card_id):
         "set_code": mecompose.set_code(set_id, s),
         "number": mecompose.card_number(c.get("localId", ""), official, s),
         "year": (s.get("releaseDate") or "")[:4], "rarity": mecompose.rarity_symbol(rarity), "era": era(card_id),
+        "ace": ace,
     }
 
 
@@ -352,8 +356,9 @@ def old_art(card):
 
 
 # ---------------------------------------------------------------- text
-def name_and_character(canvas, card):
-    """Name, a Supporter's character and a fossil's HP. -> the name's horizontal squeeze."""
+def name_and_character(canvas, card, name_ink=None):
+    """Name, a Supporter's character and a fossil's HP. -> the name's horizontal squeeze. name_ink: the name's ink
+    (default: the Trainers' dark one; ACE SPEC cards print white)."""
     room = NAME_RIGHT
     if card["character"] and card["kind"] == "Supporter":     # only Supporters print one
         width = ts.text_width(card["character"], CHARACTER_FACE, CHARACTER_SIZE)
@@ -382,7 +387,8 @@ def name_and_character(canvas, card):
         warnings.warn(f"name {card['name']!r} set at {size:.0f} px to fit the bar")
     with layers.kind("name"):
         ts.stamp(canvas, ts.coverage([dict(text=card["name"], face=ts.BOLD, size=size, x=NAME_X, base=base,
-                                           xscale=xscale)]), np.array(frame.DARK_INK, np.float32))
+                                           xscale=xscale)]),
+                 np.array(frame.DARK_INK, np.float32) if name_ink is None else name_ink)
     return xscale
 
 
@@ -396,9 +402,10 @@ def snap(base):
     return GRID_TOP - GRID_STEP * round((GRID_TOP - base) / GRID_STEP)
 
 
-def lay_paragraphs(paragraphs, k, blank=True, tracking=(BODY_TRACK, BODY_MIN_TRACK)):
+def lay_paragraphs(paragraphs, k, blank=True, tracking=(BODY_TRACK, BODY_MIN_TRACK), width=BODY_FULL_W):
     """-> ([(row, runs, tracking, symbol types, indent, bullet)], rows) at body scale k; a row is a line or, when
-    blank, the blank between paragraphs (not between a choice's options). tracking: (natural, tightest)."""
+    blank, the blank between paragraphs (not between a choice's options). tracking: (natural, tightest); width: the
+    text's measure."""
     size = BODY_SIZE * k
     out, row = [], 0
     for i, para in enumerate(paragraphs):
@@ -408,7 +415,7 @@ def lay_paragraphs(paragraphs, k, blank=True, tracking=(BODY_TRACK, BODY_MIN_TRA
         indent = BULLET_INDENT * k if option else 0
         text, types = ts.energy_text(ts.glue_numbers(para[len(BULLET):].lstrip() if option else para))
         marked = iter(types)
-        for n, (runs, track) in enumerate(ts.compose_paragraph(text, size, BODY_FULL_W - indent, *tracking)):
+        for n, (runs, track) in enumerate(ts.compose_paragraph(text, size, width - indent, *tracking)):
             count = sum(t.count(ts.ENERGY_MARK) for t, _ in runs)
             out.append((row, runs, track, [next(marked) for _ in range(count)], indent, option and n == 0))
             row += 1
@@ -419,23 +426,25 @@ def _drop(lines):
     return SYMBOL_DROP if lines and lines[0][0] == 0 and lines[0][3] else 0
 
 
-def draw_lines(canvas, lines, first, k):
+def draw_lines(canvas, lines, first, k, x=BODY_X, ink=None):
     size, pitch = BODY_SIZE * k, BODY_PITCH * k
     items, drawn = [], np.zeros((H, W), np.float32)
     for row, runs, tracking, types, indent, bullet in lines:
         base, marks = first + row * pitch, []
-        items += ts.line_items(runs, tracking, size, BODY_X + indent, base, marks)
+        items += ts.line_items(runs, tracking, size, x + indent, base, marks)
         if bullet:
-            items.append(dict(text=BULLET, face=BODY_FACE, size=size, x=BODY_X, base=base))
+            items.append(dict(text=BULLET, face=BODY_FACE, size=size, x=x, base=base))
         for t, cx in zip(types, marks):
             np.maximum(drawn, compose.energy_symbol(t, cx, base, size), out=drawn)
     with layers.kind("text"):
-        ts.stamp(canvas, np.maximum(ts.coverage(items), drawn), np.array(frame.DARK_INK, np.float32))
+        ts.stamp(canvas, np.maximum(ts.coverage(items), drawn),
+                 np.array(frame.DARK_INK, np.float32) if ink is None else ink)
 
 
-def body(canvas, card):
+def body(canvas, card, x=BODY_X, width=BODY_FULL_W, ink=None, dy=0):
     """Effect paragraphs (then a fossil's Ability or a Technical Machine's attacks). -> the effect text's scale (1 =
-    as printed)."""
+    as printed). x, width, ink, dy: where the plain effect text sits, its ink, and how far it is moved down, when not the
+    Trainers' (ACE SPEC)."""
     paragraphs = [p for p in card["effect"].split("\n") if p.strip()]
     if card["abilities"]:
         return blocks_body(canvas, card, paragraphs, TM_FIRST_BASE, FOSSIL_GAP, FOSSIL_NAME_TO_BODY, blank=False,
@@ -443,13 +452,13 @@ def body(canvas, card):
     if card["attacks"]:
         return blocks_body(canvas, card, paragraphs, TM_FIRST_BASE, TM_GAP, TM_NAME_TO_BODY)
     for k in SHRINK_STEPS:
-        lines, rows = lay_paragraphs(paragraphs, k)
-        first = max(snap(BLOCK_CENTRE - (rows - 1) * ROW_HALF * k), BODY_TOP_MIN) + _drop(lines)
+        lines, rows = lay_paragraphs(paragraphs, k, width=width)
+        first = max(snap(BLOCK_CENTRE - (rows - 1) * ROW_HALF * k), BODY_TOP_MIN) + _drop(lines) + dy
         if first + (rows - 1) * BODY_PITCH * k <= BODY_BOTTOM_MAX:
             break
     else:
         warnings.warn(f"{card['id']}: the effect text runs taller than the panel holds")
-    draw_lines(canvas, lines, first, k)
+    draw_lines(canvas, lines, first, k, x, ink)
     return k
 
 
@@ -498,6 +507,9 @@ def warn_missing_glyphs(card):
 def compose_card(card_id, card=None):
     """-> (RGBA float32 733x1024, report dict). card: read_card's dict, possibly edited (default: read it)."""
     card = card or read_card(card_id)
+    if card.get("ace"):          # its frame is its own: edited in place, not set on a template
+        from . import ace
+        return ace.compose_card(card_id, card, read_card(card_id))
     warn_missing_glyphs(card)
     template = trainerframe.template(card["kind"])
     art = old_art(card)

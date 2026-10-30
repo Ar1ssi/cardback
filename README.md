@@ -16,6 +16,10 @@ Give it TCGdex card ids; it picks the layout from the card:
 - **Trainers** (Item, Supporter, Stadium, Pokemon Tool; Sword & Shield back to Base Set) -> **Scarlet & Violet
   Trainer**: the old art moves into the Gen 9 window and the card is set on the Gen 9 frame of its kind (see
   Trainers below).
+- **Energy** (Basic and Special, Sun & Moon to Black & White frames) -> **Mega Evolution Energy**: a Basic Energy
+  becomes the Mega Evolution Basic Energy of its type with its own set code and number in the footer; a Special Energy
+  keeps its art in the window of a Mega Evolution Special Energy, with its text reworded as the new cards say it (see
+  Energy below).
 
 ```sh
 pip install -r requirements.txt            # torch: --index-url https://download.pytorch.org/whl/cpu
@@ -37,7 +41,7 @@ taken from a Pokemon TCG Live extract instead: the game's 1024x1024 card fronts,
 A front is the 733x1024 card at the same scale plus 145 px of bleed on each side, so it is cropped, given the printed
 card's rounded corners and used with the same layout constants; the reference cards the frames are built from come
 from it too. TCGdex ids map to TCG Live ids by rule (`swsh6-99` -> `swsh6_99`, `sv03.5-065` -> `sv3-5_65`) plus
-`tcg.TCGLIVE_SETS` (`sma-SV33` -> `sm11-5_102`, `swshp-SWSH055` -> `swshbsp_55`). A card the extract lacks falls back
+`tcg.TCGLIVE_SETS` (`sma-SV33` -> `sm11-5_102`, `swshp-SWSH055` -> `swshbsp_55`, `mep-013` -> `mebsp_13`). A card the extract lacks falls back
 to pokemontcg.io with a warning. Everything built from these scans is cached under `<cache>/tcglive/`.
 
 ### Holofoil (`--foil`)
@@ -46,8 +50,8 @@ With a TCG Live extract, `card ... --foil` also writes the card's holofoil the w
 `<card>-front.png` (the card plus bleed, the game's texture layout), white plates `<card>-wp.png` (base printing)
 and `<card>-wp-ph.png` (reverse holo), and `<card>-foil.json` naming the shader, material and pattern for each
 (`foil.py`). The foil is the new era's: ex cards get Scarlet & Violet ex foil (SunPillar, TEX_SouthernCross); Mega
-Evolution cards get SvHolo on the art window if the old card's base printing was foil, and a FlatSilver reverse holo
-if it had one. Plates start from the game's own: the old card's plate for the art (the Pokemon stays out of the
+Evolution cards get SvHolo on the art window if the old card's base printing was foil, and every one gets the Gen 8
+reverse holo (below). Plates start from the game's own: the old card's plate for the art (the Pokemon stays out of the
 foil), Absol ex's or me1 Abra's / Meganium's for the frame; the composers record every stamp and sprite by kind
 (`layers.py`), so the HP, icons, badges and footer drawn on the card are cut out of the plate exactly.
 
@@ -55,8 +59,21 @@ Every card's foil starts from its own plate in the extract. `foil.field` takes w
 figure): the same set's printings of the same kind with the same foil shapes - a Sword & Shield Darkness reverse
 holo's symbols on chevrons, a Sun & Moon Grass reverse's leaves - show the foil under this card's text, and each is
 fitted to this card's own tone around every gap. What no card shows (the art window) is bridged smoothly. A
-restyled reverse holo is that field wherever the old card had foil, shaped by the Mega Evolution template (art
-window, cut-outs); where the old card had none (a plain border) it takes the template's.
+restyled reverse holo is not: it is the Gen 8 one.
+
+The Gen 8 (Sword & Shield) reverse holo is the standard on every 1-prize Pokemon and every Trainer but ACE SPEC
+(`foil.gen8_plate`, `foil.gen8_trainer_plate`): FlatSilver on TCG Live's chevron pattern with the card's type's
+symbol in each tile (Trainers: Poké Balls), taken from a Basic of each type whose plate prints it with the fewest
+marks (`GEN8_REFS`; Ultra Ball for Trainers), its cut-outs filled from the pattern one tile (120 px) up or down. Fairy,
+which Sword & Shield does not print, is Psychic's pattern with the Fairy symbol set in each tile (`foil.gen8_swapped`).
+The pattern shows where the card's own reverse plate shows foil: a restyled card's Mega Evolution plate (me1 Abra's
+or Meganium's, this card's icons, badge and footer cut out), a Scarlet & Violet or Mega Evolution print's own plate,
+a Trainer's Gen 9 plate of its kind (sv01-168 Item, sv01-166 Supporter, sv01-167 Stadium, sv01-169 Tool: its header
+lettering and rule pill stay, the chevrons fill its pattern field). Every such card gets it, whether the old print
+had a reverse holo or not (a print with no foil at all takes its era's frame from a reference print: Sprigatito /
+Floragato, Abra / Meganium). What stays: a holo (a card whose base printing is foil keeps it; the set uses the holo),
+a print's own reverse that is not the generic FlatSilver one (`foil.generic_reverse`), ACE SPEC Trainers' AceFoil
+(`build_ace`), ex cards and Energy. A push turns holofoil on for every card that takes it (`gui.standard_foil`).
 
 ### Scarlet & Violet / Mega Evolution cards: edited in place
 
@@ -78,6 +95,36 @@ row's lines) stays cut. The etch is
 carried over, and the front keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
 layout).
 
+### Fairy
+
+Neither Scarlet & Violet nor Mega Evolution prints Fairy, so its look is made from Psychic's (`fairy.py`; needs the TCG
+Live extract). TCG Live gives every type a default Energy coin, one design in each type's colours with the symbol
+artwork the cards' icons print (`cosmetics/.../CN_TCGL_default_<type>-d`):
+- colours: Psychic's turned into Fairy's the way the Psychic coin's turn into the Fairy coin's pixel for pixel (in
+  Oklab, a lightness shift, a chroma gain and a hue turn, each fitted per step of lightness). The coin holds the
+  glossy disc's mid and dark tones: past them (a frame's pastel panel) only the hue turns, or the panel goes hot pink
+  and its mottling washes out. Greys (silver, white, the icons' black) stay; a colour turned out of sRGB loses chroma;
+- the symbol: the Fairy coin's, solid (the coin shades it in 3-D), at the scale the Psychic coin's eye lands on the
+  Psychic icons' (an icon of radius r prints the coin's art at r / 164; the same on Grass's); in effect text the bare
+  symbol sits where the lifted Psychic, Grass and Darkness symbols do (15.1 px art radius at full size);
+- icons: the Psychic Mega Evolution icon with its eye matched (the Psychic coin's eye, fitted to the print) and taken
+  off with the light ring every icon prints round its symbol, filled from the disc round it, recoloured (keeping the
+  disc's own light and shade: the coin's flatter disc would dull its gloss), and the Fairy symbol set in its place in
+  the icon's black, ringed with the light the Psychic print has round its eye (read off it: about +0.13 lightness over
+  2.5 px on the name-bar icon);
+- frames: Psychic's recoloured with Fairy's icon: the Mega Evolution regular frame (a Sun & Moon or XY-era layout
+  Fairy card restyled, a Scarlet & Violet / Mega Evolution card retyped), the Scarlet & Violet ex bar and panel, the
+  Mega ex frame (name bar, panel tint, glitter);
+- Basic Energy: the Mega Evolution Psychic Energy (`mee-005`) recoloured, its four symbols (the ball's, the name line's
+  bare one, the icons top right and in the footer) made Fairy's; its reverse plate is Psychic's (the ball prints as
+  a plain disc there);
+- Fairy as a weakness, resistance, cost, `{Y}` in text, and a Special Energy's icons, everywhere the other types go.
+  "Follow the type" gives Fairy Sun & Moon's weakness and resistance: Metal, and Darkness at the new era's -30.
+The simulator's custom-set schema (`shared/custom-sets/custom-set-schema.mjs`, `ENERGY_TYPES`) must list Fairy before
+a Fairy card goes into a set: a type it does not take makes it reject the whole set (and a published set vanishes from
+the site). Send to ptcg-sim, Publish and Push all refuse such cards, before rendering anything, while the simulator
+checkout's schema leaves the type out; deploy the schema change before publishing.
+
 ### Stage: Basic, Stage 1, Stage 2, Mega
 
 Every card in the editor (restyled ex, restyled Mega Evolution, edited in place) can be made Basic, Stage 1 or
@@ -89,10 +136,12 @@ card" to choose: a SV / ME Stage card gives its portrait, any other card the mid
 Stage 1 pieces (ring, portrait, "Evolves from") with the tab reading MEGA, set in Verdana Bold widened and slanted
 forward to match the printed BASIC / STAGE lettering (`verdanab.ttf`; without it Tahoma Bold, then Gill Sans Bold),
 letter by letter with the printed tabs' 2 px gaps and centred where they centre theirs, on the card's own tab with its
-lettering taken off. A Mega card's portrait comes first from
-the XY "M ... EX" card of the Pokemon (the figure keyed off its gold disc). Every stage then falls back, in order,
-to: an SV / ME card evolving from the Pokemon, an XY Mega card, the Pokemon's official artwork (PokeAPI), and the
-middle of one of its cards' art. A card made Basic
+lettering taken off. When no SV / ME card evolves from the Pokemon (none does from a Stage 2, so a Mega Charizard ex
+made to evolve from Charizard has none), the portrait is the Pokemon's Pokemon HOME render (PokeAPI): the prints'
+portraits are those renders in the same poses, so it is set as they are (its canvas 0.9 of the disc wide, the figure
+centred) and inked like them (a dark line round the figure and along its sharpest shading, colours a little richer
+and deeper). After it come, in order: the XY "M ... EX" card of the Pokemon (the figure keyed off its gold disc), the
+Pokemon's official artwork (PokeAPI), and the middle of one of its cards' art. A card made Basic
 gets the BASIC tab and the pieces taken off (LaMa; the plain left border is blended top to bottom). A Stage card
 keeps its own strip (Mega ex cards end it under their "Mega-Evolved form of" badge): only the old line is blended
 away along the strip's rows. The line is set like the print, which is not Gill Sans: Segoe UI Bold Italic narrowed
@@ -102,10 +151,72 @@ lettering is swapped, so each card keeps its own tab and border. On the holofoil
 SV ex frame's silver value on ex cards and are left out elsewhere; the portrait, lettering and "Evolves from" line
 are cut out.
 
-### Type (regular Pokemon)
+### Type
 
-A regular Pokemon (one Prize: no ex, V or other rule) can change type in the editor. A card restyled as a Mega
-Evolution card is simply set on the new type's frame. A Scarlet & Violet or Mega Evolution card keeps its own print
+A regular Pokemon (one Prize: no ex, V or other rule), a Pokemon V restyled as ex, a Mega Evolution ex and a Scarlet &
+Violet ex (not a Tera ex) can change type in the editor. A card restyled as a Mega Evolution card or as ex is simply set
+on the new type's frame; a Mega ex or Scarlet & Violet ex is recoloured on its own print (below). A V's art keeps the
+V frame's type gradient behind its text, so a V made another type has that gradient moved to the new type's colour
+(`swsh.retint`): the frame lays its type's colour over
+the art from none at y 721 to all of it at the weakness row's band (y 876), straight in between, measured on the 226
+regular V prints in the TCG Live extract (each type's colour is its prints' at the bottom; Fairy's is Psychic's in
+Fairy's colours).
+
+Attack costs, weakness and resistance stay as they are when the type changes. "Follow the type" (beside the type) sets
+them as the new type's cards print them (`follow.py`): the card's own type's Energy in its costs and effect text becomes
+the new type's, and it takes the weakness and resistance most of that type's cards print (the Mega ex Double Rares' for
+a Mega ex, the Mega Evolution regular cards' for the rest), its weakness keeping the card's own value. Dragon pays with
+other types' Energy: a card made Dragon keeps its costs and prints no weakness, and a Dragon card made another type
+pays that type's for every coloured Energy. Each click starts from the card as printed, so changing type again maps
+the printed costs, not the last ones.
+
+Energy and damage alone changing (costs, `{X}` in effect text, an attack's damage, whatever the reason) keep the
+print of a Scarlet & Violet or Mega Evolution card (`inplace.py`): each printed cost icon of a type that changes is
+found in the cost column and covered with the new type's at the same place and size (the old one filled from round it
+first: its rim reaches half a pixel past the sprite's, and would ring the new one); each printed symbol in the text is
+found by our symbol's shape on the print's ink, filled, and set again in the block's own ink; every attack's printed
+damage is found by its figures in the attacks' order down the card (a "30" also matches the end of a "130" below
+it), and a changed one rebuilt by LaMa round it and set again at its right edge and baseline. Setting the block again
+would wipe a full art's picture under the words. A print on which not all of it is found is set again as before. An
+outlined print's keyline (full art) is as wide as the print's own, measured ring by ring round its glyphs.
+
+**Mega ex** (`megaretype.py`; needs the TCG Live extract: the white plates tell the panel, the glitter and what lies
+over them apart). Measured on every Mega ex Double Rare of me01 to me05 and the promos printed on their frame:
+- the name bar is opaque, one gradient per type, the same on each of its cards: the bar under the card's own print is
+  moved from the card's own bar (fitted smooth from its print-free pixels) to the new type's (fitted on the type's
+  cards whose bars agree); a pixel's share of bar against the frame's silver pieces is measured per layout and, along
+  the pieces' edges, per card. The name and ex logo are yellow on every type; the HP dark, white on Darkness;
+- the text panel is the type's colour multiplied over the faded art, the same top colour on each of a type's cards: a
+  change there is a ratio per channel, the words re-inked (white on Darkness, dark elsewhere). Darkness prints no red
+  under its panel, so a Darkness card's art red is read from its green and blue (a table learnt on every other type's
+  panels; about 13 levels off the print, and no better from the card's own art above the panel, which shows other
+  colours than under it);
+- the glitter frame (the strip left of the panel, the weakness row's band, the footer, a sliver by the portrait) is
+  the type's own glitter texture: pixels in the old type's glitter colours take the new type's; the row's icons keep
+  theirs;
+- Ultra Rare and Special Illustration Rare frames (white lettering over the art) and the Mega Hyper Rare's gold carry
+  no type colour: their name-bar icon changes, and a Mega Hyper Rare's etch, which carries the icon's symbol.
+
+**Scarlet & Violet ex** (the same module; Double Rares of sv01 to sv10.5 and the non-Mega ex of me02 to me05): the
+same name bar (its name and HP dark, white on Darkness; the ex logo the same on every type) and the same panel. Below
+the panel, round the weakness row, the rule box and the footer, and in the strips beside it, is no glitter but a band:
+the type's colour, lighter or darker from place to place, with grain, and the card's own art reaching over it. It is not
+the same pixels on each of a type's cards (the sets render it up to some 20 levels apart, and art runs over it
+anywhere), so a pixel the old type's colour explains there (the median of its cards where they show band, smooth;
+within its grain) moves by the change of colour, its grain scaled down to the new type's; on Darkness's dark band any
+darker shade is band. The frame's pieces on the band (the rules, the rule box and its pill, the footer's boxes, and
+their dark outline) are found where every type's cards agree and kept, as are the row's icons, art unlike the band, and
+the footer's print: dark with a white keyline on every type (on Darkness told by the keyline, its letters being the
+band's colour). The weakness row's words are re-inked when Darkness is involved. Its Ultra Rare, Special Illustration
+Rare, Hyper Rare and Shiny Ultra Rare change their icon alone; Tera ex (their rule in a silver box under the name bar)
+are left out.
+
+The holofoil follows: the white plate cuts re-inked white words out (to Darkness) or closes them (from it). Every
+other edit then starts from the recoloured print, which is cached (`modern.cleaned` keys its LaMa cleanup on the print
+itself). The etch of an ex whose abilities, attacks or weakness row are set again follows them too: the old icons'
+etched rings and the Ability badge's pill go, the new ones get the card's own (a badge, Mega Dragonite ex's).
+
+**Regular Scarlet & Violet / Mega Evolution cards** keep their own print too
 (`retype.py`): every regular card of a type prints the same frame (`meframe.template`), so what the card prints that
 its type's frame does not (words, numbers, icons, the footer's boxes, the Stage pieces, a Trainer's medallion) is
 found against its own background and set on the new type's frame. Words take the new type's ink, each pixel at its
@@ -114,7 +225,7 @@ ground by its contrast. Energy icons are found from the card's data (its costs m
 weakness row's icons where the composers set them); the Ability badge and red Ability names by their red, the names
 in a white keyline on a dark panel and none on a light one, as the Mega Evolution layout sets them. Silver parts
 (border, Pokedex strip, the row's rules, the Stage tab) stay as printed. Attack costs, weakness and resistance are
-left as they are: change them too if the new type needs it. With holofoil on, the reverse holo follows the ink:
+left as they are ("Follow the type" changes them). With holofoil on, the reverse holo follows the ink:
 TCG Live's plates cut white lettering out (Darkness) and run the foil through dark lettering (every other type),
 so a card going to or from Darkness has its name, HP, text and the row's labels cut out, or filled with the foil
 around them (`foil.lettering_cutouts`); energy symbols, the badge, the rules and the footer stay as printed.
@@ -130,6 +241,46 @@ The Mega Evolution frame templates take the weakness row's lower rule and the pa
 the type's prints (every card's print reaches over them, and the fills blurred them away), the Pokedex strip and its
 shadow from the prints too (each pixel from the prints with no dex text there), and fill the weakness row's value
 boxes with the row's own grain from further along it; the rebuilt templates are cached as `me-v4`.
+
+### Energy
+
+Old Energy becomes Mega Evolution Energy (`energy.py`; its frames are cut from TCG Live scans, so `--tcglive` is the way to run it).
+- **Basic Energy** (Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy): the type's own Mega Evolution
+  Basic Energy (`mee-001`..`008`), whose art is the type's. Only the footer (set code, number) is set again; there is
+  nothing to edit but the frame. Fairy's is Psychic's made Fairy's (see Fairy below); Dragon and Colorless have no
+  Mega Evolution Basic Energy and are refused.
+- **Gold Basic Energy** (the editor's Frame: "Gold Hyper Rare"): the type's gold Hyper Rare Basic Energy instead
+  (Paldea Evolved's Grass `sv02-278` and Water `sv02-279`; Lightning `sv01-257`, Fighting `sv01-258`, Fire `sv03-230`,
+  Psychic `sv03.5-207`, Darkness `sv06.5-098`, Metal `sv06.5-099`), its footer set again the same way with the print's
+  three gold stars moved after the number, and the card marked Hyper Rare. Fairy's is Psychic's gold print made
+  Fairy's (`fairy.gold_energy`): its art window and the header's swoosh in Fairy's colours, the gold as printed, the
+  title line's symbol, the ball's and both icons Fairy's (the same places as on the Mega Evolution Basic Energy). Its
+  foil is the gold print's own (SvUltra, plate and etch, `energy._gold_foil`): the plate leaves the new set box out and
+  foils the stars where they now stand; the etch's lines run on under the old footer print (taken from the other gold
+  prints, whose etches share them there, and one line period along the row where all print) and round the title
+  symbol, and the new box, number, stars and Fairy's symbol are etched as the print etches its own.
+- **Special Energy**: the old art goes into the window of Team Rocket's Energy (`me02.5-217`: art, text panel), or, for
+  a full-art print (Secret Rare and up), under the text as on Ignition Energy (`me02-124`). The art window is found on
+  the old scan from its frame's edges (Sun & Moon, Sword & Shield, XY and Black & White frames; others are refused
+  with the size found); a full-art print's old text is painted out of its usual place. The text is reworded ("Double
+  Colorless Energy provides {C}{C} Energy." -> "As long as this card is attached to a Pokémon, it provides {C}{C}
+  Energy."), set tighter than the Trainers' (29 px lines, 50 px between paragraphs), and the Energy it provides are the
+  name bar's icons (up to three; set them in the editor when the text names none, e.g. "every type"). Name and icons
+  sit where the Mega Evolution Special Energy prints set them (the footer's icons at the attack cost icons' size).
+- **Typed Special Energy** (the editor's Frame: "Mega Evolution typed"): a Special Energy that provides one type takes
+  that type's Mega Evolution typed Special Energy whole (Telepathic Psychic Energy `me03-088`, Growing Grass Energy
+  `me03-086` and the other six: `energy.TYPED_TEMPLATES`): its art (the type's symbol on a glass sphere), Rare grade
+  and foil (SvHolo on the swirl round the sphere), with the card's name, text and footer. The type before "Energy" in
+  the name prints as its symbol, as on the prints ("Charming Fairy Energy" -> "Charming {Y} Energy"; `energy.typed_name`,
+  the symbol lifted off the print's own name). Fairy's is Telepathic Psychic Energy made Fairy's (`fairy.typed_energy`):
+  the eye painted out of the sphere (LaMa), Fairy's symbol inked in the eye's own gloss under the print's glare, then
+  Fairy's colours; built once and cached. Made for the Fairy one: Wonder Energy (`xy5-144`) named Charming Fairy Energy.
+- **Foil** (`energy.build_foil`): a full-art Special Energy keeps its old print's foil on the art and takes Ignition
+  Energy's round it; a regular one gets SvHolo on the art when the old print was foil and the template's reverse holo
+  (header lettering, text panel) when it had one; a Basic Energy the template's reverse holo when the old print had one.
+  TCG Live has no foil for some old Basic Energy: the card is set without, with a warning.
+- **Refused**: Scarlet & Violet and Mega Evolution Energy (already in this look), TCG Pocket cards, and an Energy whose
+  TCGdex record has no text. A custom set takes Basic and Special Energy.
 
 ### Trainers
 
@@ -151,7 +302,12 @@ print no type: the kind comes from the rule the text holds, else Item (with a wa
   print as hanging bullets; straight quotes become curly. The effect is justified by letter-spacing and broken for the
   paragraph as a whole, its first baseline on the prints' grid. Fossils and dolls get their HP in the bar and "a N-HP
   Basic {C} Pokemon" in the text; Technical Machines their attacks, set like the Mega Evolution cards'.
-- **Refused**: full-art, gold and other special prints (no art window to move), ACE SPEC and Prism Star cards, GX-attack
+- **ACE SPEC** (Scarlet & Violet, 30 Trainers): edited in place, `svrestyle/ace.py`. Their pink frame with the ACE SPEC
+  banners differs set to set, so no template: the card keeps its own scan, and only the name, text and illustrator can
+  change (not the kind). What changed is found as white print in its zone, rebuilt by LaMa and set again in white; the
+  text sits where the print has it. Their holofoil (AceFoil, `foil.build_ace`) keeps the card's own plate: the old print's cut-outs are filled from the card's foil field and the new text is cut at the value the plate gives it. The ex and V logos in text print as plain "ex" and "V". Older ACE SPEC cards (Black &
+  White, XY) are still refused.
+- **Refused**: full-art, gold and other special prints (no art window to move), older ACE SPEC and Prism Star cards, GX-attack
   Z-Crystals and Team Flare Hyper Gear (rules no Gen 9 frame prints), Chaos Tower (played either way up), Classic
   Collection reprints, TCG Pocket cards, and sets of no known layout.
 
@@ -171,8 +327,8 @@ changes every time the tunnel starts.
 
 Load a card by its TCGdex id, or import a ptcg-sim custom-set export to get every older card in it listed. "Search cards…" finds cards on TCGdex by name and filters (card type, Pokemon type, stage, rule box, Trainer type,
 regulation mark, rarity, set, HP range) and adds the ones you pick to the list, no ids needed; it offers Pokemon and
-Trainer cards the editor takes (no Energy, TCG Pocket or promo sets whose ids it cannot read). For each
-card you can change the name (and regional prefix), HP, type (regular Pokemon), stage, "Evolves from" and portrait, illustrator and flavour
+Trainer and Energy cards the editor takes (no TCG Pocket or promo sets whose ids it cannot read). For each
+card you can change the name (and regional prefix), HP, type (regular Pokemon, restyled ex, Mega ex, Scarlet & Violet ex; "Follow the type" sets the costs, weakness and resistance that go with it), stage, "Evolves from" and portrait, illustrator and flavour
 text, add, remove and
 reorder abilities and attacks, pick each attack's energy cost from the type icons, set its damage (a number with an
 optional +, × or −) and text, and set weakness (type and ×2 / +10…+40), resistance (type and −10…−40) and
@@ -183,9 +339,11 @@ reverse holo), and download the card with its foil textures as a zip (the custom
 edit, in exactly the card layout the command line produces; download one PNG, or every card of an imported set as a
 zip (your edits included). The server only listens on 127.0.0.1 and needs no packages beyond requirements.txt.
 A Trainer has its own fields: name, a Supporter's character, kind (Item, Supporter, Stadium or Tool), HP (fossils and
-dolls), illustrator and effect text (a paragraph per line), and its Abilities or attacks; holofoil is for Pokemon
-only. A Scarlet & Violet or Mega Evolution Trainer is edited too: it keeps its art and is set again, text and
+dolls), illustrator and effect text (a paragraph per line), and its Abilities or attacks; holofoil works too (below). A Scarlet & Violet or Mega Evolution Trainer is edited too: it keeps its art and is set again, text and
 all, on its kind's Gen 9 frame (an inline ex logo in its text prints as plain "ex").
+A Special Energy has its name, illustrator, text, the Energy it provides (the name bar's icons) and its frame
+(art and text panel, or full art); a Basic Energy only its frame (Mega Evolution, or gold Hyper Rare). Holofoil
+works on Energy too.
 
 The foil preview is TCG Live's own: its TPCi/Cards3D shaders (the extract's WebApp translation to WebGL,
 `WebApp/web/data/foil/`) and MAT_Cards3D_* materials, with their spectrum, shine, glitter and pattern textures
@@ -246,7 +404,7 @@ The list is also a custom set the simulator (Ar1ssi/vibecodepokemontcg2) plays. 
 digits, the code a decklist prints: `4 Tyranitar HBW 1`) above the list and click "Download for ptcg-sim (.zip)". The
 zip holds one folder, `custom<code>/` (`customhbw/`): `set.json` with every card in TCGdex's record shape (name, HP,
 type, stage, attacks, Abilities, weakness, resistance, retreat, Trainer text; your edits applied), each card as
-`<nnn>/high.webp` (733x1024) and `low.webp`, numbered in list order, and the CHANGELOG. Unzip it into the simulator's
+`<nnn>/high.webp` (733x1024) and `low.webp`, numbered in list order, and the CHANGELOG. `set.json` always lists the cards in the standard set order, whatever order they were added in (numbers and ids stay put): Pokemon by type A-Z, then evolution line A-Z (a line sits together, Basic, Stage 1, Stage 2; it takes its lowest card's type, `LINE_TYPES` overrides one, and a Basic nothing evolves from keeps its own type), then Trainers (Item, Supporter, Stadium, Tool, each A-Z; ACE SPEC last), then Energy (`export.display_order`). Unzip it into the simulator's
 `client/src/assets/custom-sets/` (the running simulator picks it up, no restart): the set shows under the deck builder's Custom pill, its cards
 import from a decklist by that code, and the rules engine reads their text like any printed card's (the simulator's
 TCGdex proxy serves the folder as TCGdex records). Each card in `set.json` also keeps the TCGdex card it was made from
@@ -289,11 +447,19 @@ then the upload, and Cancel stops the job. Nothing changes if you cancel before 
 publish stops the upload and the site keeps the copy it had (ptcg-sim already has the new one). A page reloaded
 meanwhile gets the job back by clicking the same button again.
 
-A send or publish that would take cards out of a set that is already there is refused until you say so: "HB has 299
-cards in ptcg-sim; this list has 88: 211 would be removed (Pinsir ex, ...)". Cards are matched by the card they were
-made from; a publish also compares the site's copy by size. "Keep ptcg-sim in sync" never asks: it stops and says why,
-and the Send button does the replacing. The set often holds more than the open project (it is every project merged),
-which is how a project sent alone would wipe it.
+A send or publish never takes a card out of a set that is already there: the cards the list does not name stay in the
+set (the set often holds more than the open project, since it is every project merged), each with its number, edits
+and files as it was. Deleting a card from the list does not delete it from the set; remove its folder in the
+simulator's `custom-sets` folder (and its entry in `set.json`) for that. Only a set whose cards this editor did not
+write (they name no card they were made from, so a push cannot send them again) and a site copy longer than the list
+are refused until you say so: "HB has 299 cards in ptcg-sim; this list has 88: 211 would be removed (Pinsir ex, ...)".
+"Keep ptcg-sim in sync" never asks: it stops and says why, and the Send button does the replacing.
+
+A card keeps its number (its id, `customhb-123`) whatever its place in the list: the list's order is only how it looks
+in the editor. `set.json` lists the cards in the order the simulator should show them (`export.display_order`):
+Pokemon (by type: Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Dragon, Colorless; within a type
+Basic, Stage 1, Stage 2, each A-Z), then Trainers (Item, Supporter, Stadium, Tool, each A-Z, the ACE SPEC Trainers last,
+A-Z), then Energy by number (ACE SPEC Energy among it). The simulator's set browser shows custom sets in that order.
 
 "Push all" (top right) pushes every saved project, merged like "All projects (.zip)", as one set. It asks for the set
 code, works out what would change without rendering anything and lists it: the cards that are new, the ones changed
@@ -307,8 +473,8 @@ makes, so it cannot promise a card is unchanged that the send will render); Shif
 Options: `--style hybrid` (default, art behind the text) or `panel` (SV translucent type panel) - ex only;
 `--no-attacks`; `--debug` (ex: mask overlay + JSON report); `--out DIR`.
 
-Supported types: Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Dragon, Colorless (no Fairy:
-neither target era has a Fairy frame). Tested on the ex side with swsh6-99, swsh9-040, swsh1-138, swsh4-43, swsh3-19,
+Supported types: Grass, Fire, Water, Lightning, Psychic, Fighting, Darkness, Metal, Fairy, Dragon, Colorless (Fairy,
+which neither target era prints, needs the TCG Live extract: see Fairy below). Tested on the ex side with swsh6-99, swsh9-040, swsh1-138, swsh4-43, swsh3-19,
 swsh7-110, swsh8-113, swsh1-1, swsh1-141, swsh10-078, swsh3-99, swsh12.5-065, swshp-SWSH055, swsh10-101, swsh6-58,
 swsh6-80, swsh6-97; on the Mega Evolution side with 22 Sun & Moon / Sword & Shield cards (all types but Lightning),
 and checked against real me1 cards re-set by the same code (within 1-4 px).
@@ -332,6 +498,9 @@ How it works, module by module:
 - `meframe.py` - blank Mega Evolution frames: Mega Evolution cards of one type share the same bar, panel and footer
   texture, so each printed pixel of a base card is taken from another card of the type that has nothing printed
   there (LaMa only for what every card covers); plus the silver Stage 1 / Stage 2 pieces from Kadabra and Alakazam.
+- `megaretype.py` - a Mega ex's or Scarlet & Violet ex's print recoloured on another type (see Type above); `inplace.py` - Energy that
+  changes type swapped where the print has it; `follow.py` - the costs, weakness and resistance that go with a type.
+- `fairy.py` - Fairy's colours, symbol, icons and frames, made from Psychic's (see Fairy above).
 - `retype.py` - a Scarlet & Violet / Mega Evolution regular card's print lifted off its type's frame and set on
   another's (see Type above).
 - `stage.py` - Stage pieces, evolution portrait (found on TCGdex) and "Evolves from" line, for every layout.

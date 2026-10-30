@@ -3,6 +3,7 @@
 common_frame()   border, art-window bar, weakness-row lines, rule box: the same on every type
 name_bar(type)   that type's name bar with the printed name, ex logo and HP removed (LaMa)
 profile(type)    that type's energy icon, panel gradient and text colour
+Fairy, which no Scarlet & Violet ex prints, has Psychic's bar and panel in its colours (fairy.colour).
 ex_logo()        the printed ex logo; ability_badge() the red Ability badge
 """
 import json
@@ -180,9 +181,16 @@ def common_frame():
 def name_bar(type_name):
     """RGBA: the type's name bar (BASIC tab, bar, under-bar, type icon) with name, ex logo and HP inpainted away;
     alpha marks the name-bar region."""
-    out = _asset(f"namebar-{type_name}.png")
+    from . import fairy
+    out = _asset(f"namebar-{type_name}{fairy.tag(type_name)}.png")
     if out.exists():
         return load_rgba(out)
+    if type_name in refs.DERIVED:               # Fairy: Psychic's bar in its colours (compose sets its icon)
+        from . import fairy
+        bar = name_bar(refs.DERIVED[type_name]).copy()
+        bar[..., :3] = fairy.colour(bar[..., :3])
+        save_rgba(bar, out)
+        return bar
     ref = _ref(type_name)
     scan = tcg.scan(ref.card_id, ref.sha)
     # LaMa alone leaves letter-shaped ghosts on the light bars. The bar's colour changes slowly left to right and
@@ -209,8 +217,15 @@ def name_bar(type_name):
 
 def profile(type_name):
     """{'icon': (crop, alpha, cx, cy, origin), 'icon_r', 'gradient': Nx3, 'light_text': bool, 'ink': rgb}."""
-    out = _asset(f"profile-{type_name}.npz")
+    from . import fairy
+    out = _asset(f"profile-{type_name}{fairy.tag(type_name)}.npz")
     ref = _ref(type_name)
+    if not out.exists() and type_name in refs.DERIVED:     # Fairy: Psychic's in its colours
+        from . import fairy
+        base = profile(refs.DERIVED[type_name])
+        crop, _, _, _, (x0, y0) = base["icon"]
+        np.savez(out, crop=fairy.colour(crop), origin=np.array([x0, y0]), gradient=fairy.colour(base["gradient"]),
+                 light_text=base["light_text"])
     if not out.exists():
         scan = tcg.scan(ref.card_id, ref.sha)
         cx, cy = ref.icon
@@ -269,15 +284,21 @@ def ability_badge():
 
 
 def _ref(type_name):
-    if type_name not in refs.TYPES:
+    if type_name not in refs.TYPES and type_name not in refs.DERIVED:
         raise ValueError(f"no Scarlet & Violet frame for type {type_name!r} (have: {', '.join(refs.TYPES)})")
-    return refs.TYPES[type_name]
+    return refs.TYPES[refs.DERIVED.get(type_name, type_name)]
+
+
+def type_ref(type_name):
+    """The reference card the type's frame is measured on (a derived type's: its base type's)."""
+    return _ref(type_name)
 
 
 def build_all():
     """Build and cache every asset (needs network once, then works offline)."""
     common_frame()
-    for t in refs.TYPES:
+    from . import fairy
+    for t in list(refs.TYPES) + [t for t in refs.DERIVED if fairy.available()]:
         name_bar(t)
         profile(t)
     ex_logo()

@@ -27,6 +27,8 @@ TYPES = {
     "Dragon": TypeRef("sv05-123", "Raging Bolt ex", "932d57ec587d110c", 463, (672.5, 63.5)),
     "Colorless": TypeRef("sv03.5-115", "Kangaskhan ex", "0319c0f188314a39", 467, (670.5, 61.5)),
 }
+# Types no Scarlet & Violet ex prints, made from another's frame in their own colours (fairy.py).
+DERIVED = {"Fairy": "Psychic"}
 ICON_R = 23.0    # name-bar type icon radius, rim included
 
 # Type-independent pieces.

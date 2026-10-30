@@ -92,6 +92,7 @@ def read_card(card_id):
                                                               or s.get("tcgOnline") or "").upper(),
         "number": number, "year": (s.get("releaseDate") or "")[:4],
         "stage": 0, "evolves_from": "", "portrait": "",         # V cards are Basic; the editor can make them Stage
+        "retype": True,                 # set on its type's frame: the editor can change the type (edit.retypes)
     }
 
 
@@ -166,7 +167,7 @@ def hp_coverage(hp):
 def name_icon(canvas, type_name):
     """Swap the SV bar's type icon for the Mega Evolution one. Some SV icons (Psychic) have a wide glow, so the old
     icon is first painted over with the bar colour from a ring just outside it."""
-    cx, cy = refs.TYPES[type_name].icon
+    cx, cy = frame.type_ref(type_name).icon
     yy, xx = np.mgrid[:H, :W]
     d = np.hypot(xx - cx, yy - cy)
     ring = (d > NAME_ICON_CLEAR + 2) & (d < NAME_ICON_CLEAR + 5) & (yy < 104)
@@ -191,6 +192,10 @@ def energy_symbol(type_name, cx, base, size):
     """Coverage of an energy symbol in effect text, its gap centred on cx in a line of body text at size: the print's
     own symbol (lifted.py), else inline_energy."""
     printed = lifted.symbol(type_name, cx, base, size / BODY_SIZE)
+    if printed is None and type_name in meframe.DERIVED and lifted.load("energy") is not None:
+        from . import fairy                     # never printed: its symbol where the lifted ones sit
+        shape, x, y = fairy.glyph(lifted.UP, size / BODY_SIZE)
+        printed = lifted.render([(shape, cx * lifted.UP + x, base * lifted.UP + y)])
     if printed is not None:
         return printed
     return inline_energy(type_name, cx, base - ts.cap_height(BODY_FACE, size) / 2, size * INLINE_R)
@@ -204,7 +209,8 @@ def inline_energy(type_name, cx, cy, r):
     yy, xx = np.mgrid[:crop.shape[0], :crop.shape[1]]
     inner = np.hypot(xx + ox - scx, yy + oy - scy) < base_r * INLINE_SYMBOL_R
     disc = np.median(lum[inner & (alpha > 0.9)])
-    symbol = np.clip((np.abs(lum - disc) - 25) / 40, 0, 1) * inner
+    contrast = disc - lum if type_name == "Dragon" else np.abs(lum - disc)     # Dragon: a dark symbol on a shaded disc
+    symbol = np.clip((contrast - 25) / 40, 0, 1) * inner
     shape = alpha * (1 - symbol)
     scale = r / base_r
     size = (max(1, round(shape.shape[1] * scale)), max(1, round(shape.shape[0] * scale)))
@@ -214,6 +220,23 @@ def inline_energy(type_name, cx, cy, r):
     h, w = shape.shape
     out[y0:y0 + h, x0:x0 + w] = shape[:max(0, H - y0), :max(0, W - x0)]
     return out
+
+
+def damage_figures(damage, base):
+    """Coverage of an attack's damage (120, 30+, 50×) set right at DMG_RIGHT on the attack name's baseline base: in
+    the print's own figures (lifted.py), else Gill Sans. None when it prints none."""
+    dmg = str(damage or "").replace("x", "×")
+    m = re.fullmatch(r"(\d+)([+×-]?)", dmg)
+    if not m:
+        return None
+    figures = lifted.coverage("damage", dmg, base=base)
+    if figures is not None:
+        return figures
+    digits, suffix = m.groups()
+    set_as = [dict(text=digits, face=ATK_FACE, size=DMG_SIZE, x=DMG_RIGHT, base=base, xscale=DMG_XSCALE, anchor="r")]
+    if suffix:
+        set_as.append(dict(text=suffix, face=ATK_FACE, size=DMG_SIZE, x=DMG_RIGHT + 1, base=base, xscale=DMG_XSCALE))
+    return ts.coverage(set_as)
 
 
 def sv_ex_layout(laid, pitch):
@@ -283,17 +306,7 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
             name_x = max(ATK_X, COST_X0 + COST_PITCH * (len(cost) - 1) + cost_r + 14) if cost else ATK_X
             items.append(dict(text=b["name"], face=ATK_FACE, size=ATK_SIZE, x=name_x, base=top + atk_cap,
                               xscale=ATK_XSCALE))
-            dmg = str(b.get("damage") or "").replace("x", "×")
-            m = re.fullmatch(r"(\d+)([+×-]?)", dmg)
-            figures = lifted.coverage("damage", dmg, base=top + atk_cap) if m else None
-            if figures is None and m:
-                digits, suffix = m.groups()
-                set_as = [dict(text=digits, face=ATK_FACE, size=DMG_SIZE, x=DMG_RIGHT, base=top + atk_cap,
-                               xscale=DMG_XSCALE, anchor="r")]
-                if suffix:
-                    set_as.append(dict(text=suffix, face=ATK_FACE, size=DMG_SIZE, x=DMG_RIGHT + 1, base=top + atk_cap,
-                                       xscale=DMG_XSCALE))
-                figures = ts.coverage(set_as)
+            figures = damage_figures(b.get("damage"), top + atk_cap)
             if figures is not None:
                 np.maximum(drawn, held_left(figures, dmg_limit) if dmg_limit else figures, out=drawn)
         body_top = top + name_to_body
@@ -455,6 +468,9 @@ def compose(card_id, opts, card=None):
     """-> (RGBA float32 733x1024, report dict). card: read_card's dict, possibly edited (default: read it)."""
     card = card or read_card(card_id)
     art, clean_report = clean_art(card_id)
+    printed = (tcg.card(card_id).get("types") or [card["type"]])[0]
+    if card["type"] != printed:                  # the V frame's gradient behind the text, in the new type's colour
+        art = swsh.retint(art, printed, card["type"])
     prof = frame.profile(card["type"])
     hybrid = opts.style == "hybrid"
     canvas = art.copy() if hybrid else panel(art, prof["gradient"])

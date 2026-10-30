@@ -71,7 +71,8 @@ class JobCase(unittest.TestCase):
                         mock.patch.object(gui, "read", side_effect=lambda cid: ("me", card(cid))),
                         mock.patch.object(gui, "render", side_effect=fake_render),
                         mock.patch.object(gui, "changelog", return_value="# log"),
-                        mock.patch.object(gui, "site_card_count", return_value=None)):
+                        mock.patch.object(gui, "site_card_count", return_value=None),
+                        mock.patch.object(gui, "takes_reverse", return_value=False)):
             patcher.start()
             self.addCleanup(patcher.stop)
         gui._set_jobs.clear()
@@ -213,8 +214,40 @@ class Jobs(JobCase):
 
 
 class Drops(JobCase):
-    def test_fewer_cards_than_the_set_has_are_refused_until_confirmed(self):
+    def sources(self):
+        record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
+        return [c["custom"]["source"] for c in sorted(record["cards"], key=lambda c: c["localId"])]   # set.json is in display order
+
+    def unsource(self):
+        """The set as a hand-made one: its cards name no card they were made from, so a push cannot send them again."""
+        record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
+        for c in record["cards"]:
+            c["custom"].pop("source")
+        (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_cards_the_list_does_not_name_stay_in_the_set(self):
         self.send([A, B, C])
+        done = self.send([A])                                # a list with one card: B and C are not taken out
+        self.assertEqual((done["state"], done["result"]["removed"]), ("done", []))
+        self.assertEqual(self.sources(), [A, B, C])
+        self.assertEqual(self.send([C])["state"], "done")    # reordered: each keeps its number
+        self.assertEqual(self.sources(), [A, B, C])
+        done = self.send([A, "sv1-1"])                       # a new card goes after them
+        self.assertEqual((done["state"], self.sources()), ("done", [A, B, C, "sv1-1"]))
+
+    def test_the_cards_that_stay_keep_their_edits_and_options(self):
+        job = self.start(items=[{"id": A, "edits": {"hp": "190"}}, {"id": B, "style": "panel", "attacks": False}])
+        self.wait(job["id"])
+        self.send([C])
+        record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
+        custom = {c["custom"]["source"]: c["custom"] for c in sorted(record["cards"], key=lambda c: c["localId"])}
+        self.assertEqual((custom[A]["edits"], custom[B]["style"], custom[B]["attacks"]),
+                         ({"hp": "190"}, "panel", False))
+        self.assertEqual(list(custom), [A, B, C])
+
+    def test_a_set_whose_cards_cannot_be_sent_again_is_refused_until_confirmed(self):
+        self.send([A, B, C])
+        self.unsource()
         before = self.snapshot()
         with self.assertRaises(gui.DropsCards) as caught:
             self.start(items=[{"id": A}])
@@ -226,17 +259,13 @@ class Drops(JobCase):
         done = self.send([A], allow_shrink=True)
         self.assertEqual((done["state"], done["result"]["removed"]), ("done", ["002", "003"]))
 
-    def test_the_names_are_a_few_and_swapped_cards_count(self):
+    def test_the_names_are_a_few(self):
         names = {f"sv1-{n}": f"Card {n}" for n in range(1, 9)}
         with mock.patch.dict(NAMES, names):
             self.send(list(names))
+            self.unsource()
             with self.assertRaises(gui.DropsCards) as caught:
-                self.start(items=[{"id": "sv1-1"}, {"id": "sv1-2"}, {"id": "sv1-3"}, {"id": A}, {"id": B}, {"id": C},
-                                  {"id": "sv1-7"}, {"id": "sv1-8"}])
-        self.assertEqual(caught.exception.info["message"], "HBW has 8 cards in ptcg-sim; this list has 8: 3 would be "
-                                                          "removed (Card 4, Card 5, Card 6).")
-        with mock.patch.dict(NAMES, names), self.assertRaises(gui.DropsCards) as caught:
-            self.start(items=[{"id": "sv1-1"}])
+                self.start(items=[{"id": "sv1-1"}])
         self.assertIn("(Card 2, Card 3, Card 4, Card 5, Card 6 and 2 more)", caught.exception.info["message"])
         self.assertEqual(caught.exception.info["names"], ["Card 2", "Card 3", "Card 4", "Card 5", "Card 6"])
 
@@ -259,10 +288,9 @@ class Drops(JobCase):
             self.assertEqual(info["message"], "The site has 5 cards of HBW; this list has 3: 2 would be removed.")
             counted.assert_called_once_with("r2:bucket/sets", SET_ID)
             with self.assertRaises(gui.DropsCards) as caught:
-                self.start("publish", [{"id": A}])
+                self.start("publish", [{"id": A}])                           # B and C stay in ptcg-sim: the site is the same
             self.assertEqual(caught.exception.info["message"],
-                             "HBW has 3 cards in ptcg-sim; this list has 1: 2 would be removed (Bill, Larvitar). "
-                             "The site has 5 cards of HBW: 4 would be removed there too.")
+                             "The site has 5 cards of HBW; this list has 3: 2 would be removed.")
             counted.reset_mock()
             self.assertEqual(self.send([A, B, C], "push")["state"], "done")
             self.assertEqual(self.send([A, B, C], "publish", allow_shrink=True)["state"], "done")
@@ -287,6 +315,10 @@ class Drops(JobCase):
                 with e:
                     return e.code, json.loads(e.read())
         self.send([A, B, C])
+        status, answer = post("/api/push-set", {"items": [{"id": A}], "title": "T", "code": "HBW"})
+        self.assertEqual(status, 200, "the cards the list does not name stay: nothing to ask")
+        self.wait(answer["id"])
+        self.unsource()
         status, answer = post("/api/push-set", {"items": [{"id": A}], "title": "T", "code": "HBW"})
         self.assertEqual(status, 409)
         self.assertEqual((answer["error"], answer["drops"]["copies"]), (answer["drops"]["message"],

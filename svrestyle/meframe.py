@@ -43,7 +43,9 @@ POOL = {
     "Colorless": ["me01-102", "me01-105", "me01-106", "me01-107", "me01-109", "me02-076", "me02-078",
                   "me01-103", "me01-108", "me01-110"],
 }
-TYPES = {t: ids[0] for t, ids in POOL.items()}
+# Types no Mega Evolution card prints, made from another's frame in their own colours (fairy.py).
+DERIVED = {"Fairy": "Psychic"}
+TYPES = {**{t: ids[0] for t, ids in POOL.items()}, **{t: POOL[base][0] for t, base in DERIVED.items()}}
 BASIC_PSYCHIC, STAGE_REFS = "me01-054", {1: "me01-055", 2: "me01-056"}    # Abra; Kadabra, Alakazam
 
 ART = (59, 100, 674, 484)                 # x0, y0, x1, y1 of the art window (left/top rim just outside)
@@ -91,6 +93,7 @@ STAGE_TAB = (0, 14, 142, 68)
 STAGE_SWOOSH = (440, 18, 600, 100)
 STAGE_PORTRAIT = (0, 60, 520, 190)
 EVOLVES_STRIP = (128, 92, 470, 122)
+PORTRAIT_RING = (72.0, 124.0, 60.0, 66.0)  # the ring's outer rim: centre x, y and the radii along x and y
 PORTRAIT_DISC = (73.0, 128.0, 47.0)       # light disc inside the evolution ring: centre x, y, radius      # x0, y0, x1, y1 searched for strip rows
 
 
@@ -190,11 +193,16 @@ def template(type_name):
 
     Each printed pixel of the base card is replaced from the first other card of the type that has no print
     there (same texture, so no seam); LaMa fills only what every card covers."""
-    if type_name not in POOL:
-        raise ValueError(f"no Mega Evolution frame for type {type_name!r} (have: {', '.join(POOL)})")
-    out = _asset(f"template-{type_name}.png")
+    if type_name not in TYPES:
+        raise ValueError(f"no Mega Evolution frame for type {type_name!r} (have: {', '.join(TYPES)})")
+    from . import fairy
+    out = _asset(f"template-{type_name}{fairy.tag(type_name)}.png")
     if out.exists():
         return load_rgba(out)
+    if type_name in DERIVED:                    # Fairy: Psychic's frame in its colours, with its icon
+        clean = fairy.template(template(DERIVED[type_name]))
+        save_rgba(clean, out)
+        return clean
     ids = POOL[type_name]
     base = tcg.scan(ids[0])
     clean = base.copy()
@@ -337,7 +345,7 @@ def _median_rows(ids, rows):
 def stage_sprite(stage):
     """RGBA 733x1024, alpha = the silver stage pieces only (tab, bar swoosh, portrait ring with its light disc,
     blank "Evolves from" strip)."""
-    out = _asset(f"stage{stage}.png")
+    out = _asset(f"stage{stage}-v2.png")
     if out.exists():
         return load_rgba(out)
     card = tcg.scan(STAGE_REFS[stage])
@@ -358,6 +366,11 @@ def stage_sprite(stage):
     same = np.abs(rgb - other[..., :3]).max(-1) < 24
     piece = np.zeros((H, W), bool)
     piece[y0:y1, x0:x1] = (silver & same & differs)[y0:y1, x0:x1]
+    # The ring's outer rim lies on the card's silver border and under the tab, where Abra's print is the same: the
+    # rim's oval takes every silver pixel there.
+    rx, ry, ax, ay = PORTRAIT_RING
+    yy, xx = np.mgrid[:H, :W]
+    piece |= (((xx - rx) / ax) ** 2 + ((yy - ry) / ay) ** 2 < 1) & silver & same
     piece = cv2.morphologyEx(piece.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8)) > 0
     piece = fill_holes(piece)
     x0, y0, x1, y1 = EVOLVES_STRIP
@@ -368,6 +381,12 @@ def stage_sprite(stage):
     alpha |= piece
     alpha = cv2.morphologyEx(alpha.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0
     sprite = card.copy()
+    # What closing and filling took into the ring of the border's colour (the print's purple) takes the ring's silver.
+    ring_rim = piece & ~silver & ~(np.hypot(xx - PORTRAIT_DISC[0], yy - PORTRAIT_DISC[1]) < PORTRAIT_DISC[2])
+    w = (piece & silver).astype(np.float32)
+    num = cv2.GaussianBlur(rgb * w[..., None], (0, 0), 3)
+    den = cv2.GaussianBlur(w, (0, 0), 3)[..., None]
+    sprite[ring_rim, :3] = (num / np.maximum(den, 1e-3))[ring_rim]
     # Blank strip: rows of the strip right of the ring take their median (drops "Evolves from ...").
     x0, y0, x1, y1 = EVOLVES_STRIP
     for y in range(y0, y1):
@@ -396,15 +415,21 @@ def icon(type_name, kind="cost"):
     and its radius as measured on the scan, to scale from."""
     if type_name not in TYPES:
         raise ValueError(f"no Mega Evolution energy icon for type {type_name!r}")
-    if kind == "cost" and type_name in COST_ICONS:
-        card_id, cx, cy, r = COST_ICONS[type_name]
+    base = DERIVED.get(type_name, type_name)
+    if kind == "cost" and base in COST_ICONS:
+        card_id, cx, cy, r = COST_ICONS[base]
     else:
-        card_id, (cx, cy, r) = TYPES[type_name], ICON
+        card_id, (cx, cy, r) = TYPES[base], ICON
+    if type_name in DERIVED:                    # Fairy: its icon made on the Psychic one, where that is printed
+        from . import fairy
+        return disc_sprite(fairy.icon_scan(card_id, cx, cy, r), cx, cy, r - ICON_TRIM), r
     return disc_sprite(tcg.scan(card_id), cx, cy, r - ICON_TRIM), r
 
 
 def build_all():
+    from . import fairy
     for t in TYPES:
-        template(t)
+        if t not in DERIVED or fairy.available():
+            template(t)
     for s in STAGE_REFS:
         stage_sprite(s)

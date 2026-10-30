@@ -8,9 +8,10 @@ The foil is the target era's:
   with what the V frame and text covered filled in, and Absol ex's plate for the SV frame; the HP, icons and text
   drawn on it are cut out (black), the ex logo is Absol's, the name takes the bar's value (as Absol's does).
 - Mega Evolution: SvHolo on the art window when the old card's base printing was foil (the old plate's art
-  window, Pokemon left out), and a FlatSilver reverse holo when the old card had one. The reverse plate is
-  Mega Evolution's (me1 Abra for Basics, Meganium for Stage cards) with the reference card's icons, Ability
-  badge, Ability name and footer filled in, then this card's cut out.
+  window, Pokemon left out), and on every card a FlatSilver reverse holo in Sword & Shield's (Gen 8) pattern of the
+  card's type (gen8_plate): where Mega Evolution's reverse plate (me1 Abra for Basics, Meganium for Stage cards,
+  with the reference card's icons, Ability badge, Ability name and footer filled in, then this card's cut out)
+  shows foil. 1-prize Pokemon kept as printed and Trainers take the Gen 8 reverse holo too.
 
 Stage pieces (stage.py): SV ex plates print the tab, ring and strip in the frame's silver value (Alakazam ex's), with
 the tab's letters, the portrait and the "Evolves from" line left out; on every other plate they are left out. Where
@@ -51,6 +52,36 @@ ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer") + STAGE
 # draw. Their plates are the card's own foil field where the old block's cut-outs were (block_cutout_value).
 BLOCKS = ("moves", "row")
 BLOCK_KINDS = {"moves": ("text", "icon", "badge", "ability_name"), "row": ("row_icon", "row_text")}
+# Scarlet & Violet Trainers: TCG Live's reverse holo, the Poké Ball pattern plate every Trainer of Scarlet & Violet's sets
+# (sv01 to sv08.5) shares; one print per kind (the plates differ only in the header's lettering and the rule pill).
+# Mega Evolution's Trainers print a plain plate. What a print cuts out of it is its footer (the illustrator, the boxes).
+TRAINER_FOIL_REFS = {"Item": "sv01-168", "Supporter": "sv01-166", "Stadium": "sv01-167", "Tool": "sv01-169"}
+TRAINER_REVERSE_CUT = ("footer",)
+# Gen 8 (Sword & Shield) reverse holo, the standard on every 1-prize Pokemon and every Trainer but ACE SPEC: TCG Live's
+# chevron pattern, the card's type's symbol in each tile (Trainers: Poke Balls). Per type a Basic whose plate prints
+# the pattern with the fewest marks (Ultra Ball for Trainers); its cut-outs, its weakness row and footer (from
+# GEN8_ROWS_FROM: the row's icons and the footer's marks are not all black) and GEN8_HOLES (white lettering the foil
+# runs through, a Trainer's header) are filled from the pattern GEN8_PERIOD px up or down. Fairy, which Sword & Shield
+# does not print, is Psychic's with the Fairy symbol (fairy.coin_symbol) set in each tile (gen8_swapped).
+GEN8_REFS = {"Grass": "swsh4-10", "Fire": "swsh2-31", "Water": "swsh2-39", "Lightning": "swsh4-53",
+             "Psychic": "swsh4-67", "Fighting": "swsh4-90", "Darkness": "swsh8-162", "Metal": "swsh4-123",
+             "Dragon": "swsh9-110", "Colorless": "swsh4-143", "Trainer": "swsh9-150"}
+GEN8_DERIVED = {"Fairy": "Psychic"}
+GEN8_VERSION = "1"
+GEN8_PERIOD = 120               # px: the chevrons repeat this far down each column
+GEN8_FACE = (32, 30, 702, 996)  # x0, y0, x1, y1: the part of the plate the pattern covers (not the card's rim)
+GEN8_ROWS_FROM = 876
+GEN8_HOLES = {"Darkness": ((0, 0, W, 108), (0, 630, W, 715)),   # Carvanha's name and HP, its attack
+              "Trainer": ((0, 0, W, 140),)}                     # the header: TRAINER and the kind
+GEN8_LIT = (36, 56)             # plate levels: a reverse plate shows no foil up to the first (SV's dark ground is
+                                # 20-30), all from the second on (its pattern's darkest is 59-65)
+GEN8_HEADER = 130              # px: a Gen 9 Trainer plate's header ends above this
+# Symbols set in each tile (gen8_swapped): the base's own symbol is where these types' templates differ from it
+GEN8_PEERS = ("Grass", "Fire", "Water", "Lightning", "Fighting", "Metal", "Colorless")
+GEN8_SYMBOL_DIFF = 18           # plate levels: a symbol differs from its tile by more than this
+GEN8_SYMBOL_REACH = 40          # px round a tile's centre its symbol lies in
+GEN8_PANEL = (530, 860)         # y range the tile centres are found in (the print's own pattern)
+GEN8_SV_REFS = {"basic": "sv01-001", "stage": "sv01-002"}   # Sprigatito, Floragato: the SV frame's reverse plates
 EX_STAGE_REF = "sv03.5-065"   # Alakazam ex (Stage 2): its plate gives the SV ex Stage pieces' foil value
 ME_REVERSE_REFS = {"basic": "me01-054", "stage": "me01-010"}   # Abra, Meganium: their reverse plates
 FILL_GROW = 4      # px around a reference card's own marks that are filled in when its plate becomes a template
@@ -59,6 +90,8 @@ BLOCK_REACH = 3     # px: a block's printed cut-outs may sit this far from where
 BLOCK_SHOWN = 0.3   # share of a kind's ink that must fall on cut-outs for the plate to cut that kind out
 FOOTER_ZONE = (40, 935, 330, 996)   # x0, y0, x1, y1: illustrator, regulation mark, set code, number, rarity
 ROW_REACH = 40     # px either side a filled pixel takes its row's value from
+BADGE_ETCH = "me02.5-152"   # Mega Dragonite ex: its etch edges an Ability badge's pill (a Mega ex given an Ability)
+ETCH_GROW = 4      # px round an icon or the badge whose etch is its own
 EX_FILL_GROW = 5   # Absol's plate: its HP digits are a little bolder there than as set here
 BORDER_FOIL = 255  # the SV ex border on Absol's plate where its art does not spill over: all foil
 # A card's own foil field (field()): its plate with what is printed on it taken off.
@@ -93,6 +126,9 @@ INK_CLEAR = 2        # px: the ground is read this far out from all the ink
 INK_SIGMA = 4        # px: and interpolated over this
 INK_VISIBLE = 24     # plate levels: ink this far from its ground shows on the plate (block compression: ~10)
 TAB_BIN = 8          # plate levels per histogram bin when finding the tab's own value
+# An ACE SPEC plate cuts the text out a little bolder than the print sets it: the set text's coverage is raised by
+# this, fitted on Prime Catcher's effect text (dark plate pixels in it: 10754 printed, 10142 set again)
+ACE_CUT_GAIN = 6.0
 INK_AREA = 10        # px around a kind's ink that its taking off may reach (modern REACH + MARK_GROW + rims)
 
 
@@ -474,12 +510,142 @@ def me_holo_plate(card_id, card, drawn, alpha):
     return cut(out, drawn, STAGE_CUT) * (alpha / 255)
 
 
-def me_reverse_plate(card_id, card, drawn, alpha):
-    """Mega Evolution reverse holo: where the template has foil, this card's own reverse foil (field)."""
-    template = me_reverse_template(card["stage"])
-    own_foil, own = field(printings(card_id)["reverse"])
-    mixed = own_foil * (template / 255) * own + template * (1 - own)
-    return cut(retab(mixed, drawn), drawn, ME_REVERSE_CUT) * (alpha / 255)
+def me_reverse_plate(card, drawn, alpha):
+    """Mega Evolution reverse holo: the template's plain FlatSilver plate, as every Mega Evolution card prints it,
+    whatever pattern the old card's reverse had (Sword & Shield chevrons, XY and Sun & Moon type symbols)."""
+    return cut(retab(me_reverse_template(card["stage"]), drawn), drawn, ME_REVERSE_CUT) * (alpha / 255)
+
+
+# ---------------------------------------------------------------- Gen 8 reverse holo
+def _gen8_filled(card_id, holes=()):
+    """The reference's reverse plate with its cut-outs, its weakness row and footer and `holes` ((x0, y0, x1, y1)
+    boxes) filled from the pattern GEN8_PERIOD px up or down, the nearest first: the pattern over the whole face."""
+    img = plate(printings(card_id)["reverse"])
+    x0, y0, x1, y1 = GEN8_FACE
+    face = np.zeros((H, W), bool)
+    face[y0:y1, x0:x1] = True
+    valid = face & ~dilate(img < MARK_DARK, MARK_GROW)
+    valid[GEN8_ROWS_FROM:] = False
+    for bx0, by0, bx1, by1 in holes:
+        valid[by0:by1, bx0:bx1] = False
+    out, left = img.copy(), face & ~valid
+    for k in range(1, H // GEN8_PERIOD + 1):
+        for s in (k * GEN8_PERIOD, -k * GEN8_PERIOD):
+            src, moved = np.zeros((H, W), bool), np.zeros((H, W), np.float32)
+            if s > 0:
+                src[:-s], moved[:-s] = valid[s:], img[s:]
+            else:
+                src[-s:], moved[-s:] = valid[:s], img[:s]
+            take = left & src
+            out[take] = moved[take]
+            left &= ~take
+    return fill(out, left) if left.any() else out
+
+
+def _tile_centres(own):
+    """The pattern's tile centres: found on the panel (GEN8_PANEL) where the symbols are, each column's run on
+    every GEN8_PERIOD px over the card."""
+    blur = cv2.GaussianBlur(own.astype(np.float32), (0, 0), 9)
+    peak = (blur == cv2.dilate(blur, np.ones((61, 61), np.uint8))) & (blur > 0.15)
+    peak[:GEN8_PANEL[0]] = False
+    peak[GEN8_PANEL[1]:] = False
+    ys, xs = np.nonzero(peak)
+    columns, run = [], []
+    for i in np.argsort(xs):
+        if run and xs[i] - xs[run[-1]] > 30:
+            columns.append(run)
+            run = []
+        run.append(i)
+    columns.append(run)
+    out = []
+    for run in columns:
+        if len(run) < 2:                 # a lone peak: a cut-out's rim, not a column of tiles
+            continue
+        x, phase = float(np.median(xs[run])), float(np.median(ys[run] % GEN8_PERIOD))
+        out += [(x, phase + k * GEN8_PERIOD) for k in range(-1, H // GEN8_PERIOD + 2)]
+    return out
+
+
+def gen8_swapped(base, glyph):
+    """base's Gen 8 pattern with its symbol swapped in every tile for glyph (coverage, 512x512, as
+    fairy.coin_symbol): the base's symbol is taken off (inpainted from its tile), and glyph set at its size in its
+    brightest value."""
+    own_t = gen8_pattern(base)
+    diff = np.zeros((H, W), bool)
+    for peer in GEN8_PEERS:
+        diff |= np.abs(gen8_pattern(peer) - own_t) > GEN8_SYMBOL_DIFF
+    diff = dilate(diff, 2)
+    rough = fill(own_t, diff, 4)
+    own = diff & (np.abs(own_t - rough) > GEN8_SYMBOL_DIFF)
+    centres = _tile_centres(own)
+    yy, xx = np.mgrid[:H, :W]
+    zone = np.zeros((H, W), bool)
+    for cx, cy in centres:
+        zone |= np.hypot(xx - cx, yy - cy) < GEN8_SYMBOL_REACH
+    ground = fill(own_t, zone & diff, 4)
+    sizes = []
+    for cx, cy in centres:
+        m = own & (np.hypot(xx - cx, yy - cy) < GEN8_SYMBOL_REACH)
+        if GEN8_PANEL[0] < cy < GEN8_PANEL[1] and m.sum() > 300:
+            ys, xs = np.nonzero(m)
+            sizes.append(max(np.ptp(xs), np.ptp(ys)))
+    gy, gx = np.nonzero(glyph > 0.5)
+    scale = float(np.median(sizes)) / max(np.ptp(gx), np.ptp(gy))
+    gcx, gcy = (gx.min() + gx.max()) / 2, (gy.min() + gy.max()) / 2
+    x0, y0, x1, y1 = GEN8_FACE
+    face = np.zeros((H, W), np.float32)
+    face[y0:y1, x0:x1] = 1
+    out = ground.copy()
+    for cx, cy in centres:
+        m = own & (np.hypot(xx - cx, yy - cy) < GEN8_SYMBOL_REACH)
+        if m.sum() < 100:
+            continue
+        shape = cv2.warpAffine(glyph, np.float32([[scale, 0, cx - gcx * scale], [0, scale, cy - gcy * scale]]),
+                               (W, H), flags=cv2.INTER_LINEAR) * face
+        out = out * (1 - shape) + float(np.percentile(own_t[m], 90)) * shape
+    return np.where(face > 0, out, own_t)
+
+
+@functools.lru_cache(maxsize=None)
+def gen8_pattern(kind):
+    """The Gen 8 reverse-holo pattern over the whole face for a type, or "Trainer": float32 733x1024 (a type Sword &
+    Shield has no pattern for, and no derived one, takes Colorless's)."""
+    if kind not in GEN8_REFS and kind not in GEN8_DERIVED:
+        kind = "Colorless"
+
+    def build():
+        if kind in GEN8_DERIVED:
+            from . import fairy
+            return gen8_swapped(GEN8_DERIVED[kind], fairy.coin_symbol(kind.lower()))
+        return _gen8_filled(GEN8_REFS[kind], GEN8_HOLES.get(kind, ()))
+
+    return _cached(f"gen8-v{GEN8_VERSION}-{kind.lower()}.png", build)
+
+
+def generic_reverse(record):
+    """Whether a print's reverse holo is the generic one (FlatSilver, nothing etched or cast on it) that the Gen 8
+    reverse holo replaces; a card's own foil (any other shader, an etch) stays."""
+    return (legacy_shader(record.get("_s") or "") == ME_REVERSE[0]
+            and not any(record.get(k) for k in ("_e", "_cf", "_cc")))
+
+
+def gen8_plate(kind, own):
+    """A Pokemon's Gen 8 reverse plate: the type's pattern where its own reverse plate (Mega Evolution's flat one, or
+    a Scarlet & Violet print's in its own pattern; what the card prints cut out) shows foil (GEN8_LIT)."""
+    lo, hi = GEN8_LIT
+    return gen8_pattern(kind) * np.clip((own - lo) / (hi - lo), 0, 1)
+
+
+def gen8_trainer_plate(kind):
+    """A Trainer's Gen 8 reverse plate: the Gen 9 plate of its kind (TRAINER_FOIL_REFS: the header's lettering, the
+    rule pill) with Sword & Shield's Poke Ball chevrons on its pattern's field (its largest lit shape under the
+    header)."""
+    gen9 = plate(printings(TRAINER_FOIL_REFS[kind])["reverse"])
+    lit = (gen9 > MARK_DARK).astype(np.uint8)
+    lit[:GEN8_HEADER] = 0
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(lit, connectivity=4)
+    field = labels == 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    return np.where(field, gen8_pattern("Trainer"), gen9)
 
 
 # ---------------------------------------------------------------- textures
@@ -504,7 +670,8 @@ def build(card_id, layout, canvas, drawn, card):
         base, reverse = (EX_FOIL, ex_plate(card_id, drawn, alpha)), None
     else:
         base = (ME_HOLO, me_holo_plate(card_id, card, drawn, alpha)) if is_foil(old["base"]) else None
-        reverse = (ME_REVERSE, me_reverse_plate(card_id, card, drawn, alpha)) if old["reverse"] else None
+        # every one, whether the old print had a reverse holo or not: the Gen 8 one is the standard
+        reverse = (ME_REVERSE, gen8_plate(card["type"], me_reverse_plate(card, drawn, alpha)))
     pack = lambda p: None if p is None else (p[0], plate_texture(p[1]))
     return {"front": front_texture(canvas), "base": pack(base), "reverse": pack(reverse)}
 
@@ -694,26 +861,36 @@ def build_modern(card_id, card, canvas, drawn, original):
     circles, badge) take the card's own foil field, and the new block's ink of each kind is cut at the value the
     print gives it; kinds the foil runs through stay as printed. Kinds the card does not print (Stage pieces on a
     Basic made Stage) follow the era: ex: cut out, as on SV ex plates; reverse holo: what Mega Evolution reverse
-    plates leave out. Same shape as build()."""
-    from . import modern
+    plates leave out. Same shape as build().
+
+    A Mega ex made another type (megaretype) starts from its print recoloured: its white plate cuts its re-inked words
+    out (to Darkness) or closes them (from it), a Mega Hyper Rare's etch takes the new symbol. An edit made in place
+    (inplace: Energy, damage) keeps the plates, but for print in the text block the plate cuts out (white text): it is
+    cut again. The etch
+    of an ex whose abilities, attacks or weakness row are set again follows them (etch_edits)."""
+    from . import inplace, megaretype, modern
     alpha = canvas[..., 3]
     old = printings(card_id)
-    edited = modern.changed(original, card)
+    scan, printed_as = modern.print_of(card_id, original, card, record=False)
+    mega = printed_as is not original          # an ex (Mega or Scarlet & Violet) recoloured on its new type
+    edited = modern.changed(printed_as, card)
+    swapped = any(k in drawn for k in (inplace.OFF, inplace.ON, inplace.ICON))
     groups = tuple(g for g in edited if g not in BLOCKS)
-    blocks = tuple(g for g in edited if g in BLOCKS)
-    taken_off = modern.taken_off(card_id, original, groups, card) if groups else None
+    blocks = tuple(g for g in edited if g in BLOCKS and not (g == "moves" and swapped))
+    taken_off = modern.taken_off(card_id, printed_as, groups, card, scan) if groups else None
     block_off = None
     if blocks:
-        mask, row = modern.taken_off(card_id, original, blocks, card)
+        mask, row = modern.taken_off(card_id, printed_as, blocks, card, scan)
         block_off = mask | row
-    printed = printed_ink(original, groups)
-    in_blocks = printed_blocks(original, blocks, card)
-    shed = modern.stage_off(original, card) if "stage" in groups else np.zeros((H, W), bool)
-    if original["stage"]:
+    printed = printed_ink(printed_as, groups)
+    in_blocks = printed_blocks(printed_as, blocks, card)
+    shed = modern.stage_off(printed_as, card) if "stage" in groups else np.zeros((H, W), bool)
+    if printed_as["stage"]:
         drawn.pop("stage", None)            # the card's own pieces, set again where they were: as printed
     retyped = drawn.pop(retype.WORDS, None)
-    white_now = retype.white_ink(card["type"])
-    flip = "type" in edited and retype.white_ink(original["type"]) != white_now
+    flip = ("type" in edited and printed_as["family"] == "regular"
+            and retype.white_ink(printed_as["type"]) != retype.white_ink(card["type"]))
+    white_now = flip and retype.white_ink(card["type"])
     letters_off = lettering(retyped) if flip else None
     out = {"front": modern_front(card_id, canvas), "base": None, "reverse": None}
     for key in ("base", "reverse"):
@@ -721,8 +898,14 @@ def build_modern(card_id, card, canvas, drawn, original):
         if not is_foil(record):
             continue
         img = plate(record)
+        if mega and key == "base":
+            img = megaretype.plate(img, original["type"], card["type"],
+                                   np.zeros((H, W), np.float32) if retyped is None else retyped,
+                                   megaretype.family_of(original))
         if shed.any():
             img = fill(img, shed)
+        if inplace.OFF in drawn:
+            img = reprinted(img, drawn[inplace.OFF], drawn.get(inplace.ON))
         learned = {}
         if block_off is not None:
             marks = dilate(img < MARK_DARK, MARK_GROW)
@@ -787,8 +970,161 @@ def build_modern(card_id, card, canvas, drawn, original):
         else:
             img = cut(img, rest, STAGE_CUT)
         spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)
+        if key == "reverse" and card["family"] == "regular" and generic_reverse(record):
+            img, spec = gen8_plate(card["type"], img), ME_REVERSE     # a 1-prize Pokemon: the Gen 8 reverse holo
         extra = {"etch": texture(record, record.get("_e")), "cf": texture(record, record.get("_cf"))}
+        if mega:
+            extra["etch"] = megaretype.etch(extra["etch"], original, card["type"])
+        if blocks and extra["etch"] is not None and printed_as["family"] == "ex" and card["name"].startswith("Mega "):
+            extra["etch"] = etch_edits(extra["etch"], printed_as, card, drawn, blocks)
         out[key] = (spec, plate_texture(img * (alpha / 255)), extra)
+    if card["family"] == "regular" and out["base"] is None and out["reverse"] is None:
+        # a print with no foil at all: the Gen 8 reverse holo on its era's frame (a reference print's plate, the
+        # marks on its text panel filled in: the card's own icons are not cut out)
+        frame_refs = ME_REVERSE_REFS if card_id.startswith("me") else GEN8_SV_REFS
+        img = plate(printings(frame_refs["stage" if card["stage"] else "basic"])["reverse"])
+        x0, y0, x1, y1 = mecompose.meframe.PANEL
+        i = PANEL_INSET
+        panel = img[y0 + i:y1 - i, x0 + i:x1 - i]
+        panel[panel < GEN8_LIT[1]] = 255
+        img = cut(img, drawn, ME_REVERSE_CUT)
+        out["reverse"] = (ME_REVERSE, plate_texture(gen8_plate(card["type"], img) * (alpha / 255)), {})
+    return out
+
+
+def reprinted(img, off, on):
+    """A plate after print in the text block was set again in place (inplace: symbols, damage; off what was taken
+    off, on what was set): where the plate cuts it out (white text), the old cut-outs close (filled from round them)
+    and the new print is cut at the old one's value; where the foil runs through the text, it stays as it is."""
+    gone = off > 0.5
+    around = dilate(gone, 2 * MARK_GROW) & ~dilate(gone, MARK_GROW)
+    if not gone.any() or not around.any():
+        return img
+    cut, ground = float(np.median(img[gone])), float(np.median(img[around]))
+    if ground - cut < INK_VISIBLE:
+        return img
+    img = fill(img, dilate(off > 0.05, MARK_GROW))
+    return img if on is None else img * (1 - on) + cut * on
+
+
+def _parts(cover):
+    """Connected shapes of a coverage: [(bool HxW, (x0, y0, x1, y1))]."""
+    n, lab, st, _ = cv2.connectedComponentsWithStats((cover > 0.5).astype(np.uint8))
+    return [(lab == i, (st[i, 0], st[i, 1], st[i, 0] + st[i, 2], st[i, 1] + st[i, 3])) for i in range(1, n)]
+
+
+@functools.lru_cache(maxsize=1)
+def _badge_etch():
+    """(BADGE_ETCH's etch in card space, its Ability badge's box): the badge found on its print by its red."""
+    rgb = tcg.scan(BADGE_ETCH)[..., :3]
+    badge = retype._badge(retype._print_red(rgb))
+    ys, xs = np.nonzero(badge)
+    r = retype.BADGE_RIM
+    rec = printings(BADGE_ETCH)["base"]
+    etch = _planes(texture(rec, rec["_e"]))[:, tcg.BLEED_X:tcg.BLEED_X + W, 0].astype(np.float32)
+    return etch, (xs.min() + r, ys.min() + r, xs.max() + 1 - r, ys.max() + 1 - r)
+
+
+def _planes(img):
+    """A texture as rows x columns x channels (an L-mode one as one channel)."""
+    return img[..., None] if img.ndim == 2 else img
+
+
+def etch_edits(etch, original, card, drawn, groups):
+    """A Mega ex's etch (1024x1024, TCG Live's layout) after its abilities, attacks or weakness row are set again:
+    the etch rings the print's cost and row icons and edges the Ability badge's pill, so the old ones go (filled with
+    the etch round them) and the new ones get the print's own: an icon this card prints, the badge BADGE_ETCH's."""
+    from . import modern
+    if etch.shape[0] != TEX:
+        return etch
+    out = etch.copy()
+    view = _planes(out)[:, tcg.BLEED_X:tcg.BLEED_X + W]
+    colours = min(3, view.shape[2])                      # not an alpha channel
+    e = _planes(etch)[:, tcg.BLEED_X:tcg.BLEED_X + W, 0].astype(np.float32)
+    printed_as = lambda draw, c, kinds: modern._cover(modern._drawn(draw, c, compose.WHITE), kinds)
+    kinds = []
+    if "moves" in groups:
+        icons = printed_as(modern._moves, original, ("icon",))
+        kinds += [("icon", icons, _parts(icons)), ("badge", printed_as(modern._moves, original, ("badge",)), [])]
+    if "row" in groups:
+        # only the row's changed sides are taken off and set again (modern.row_off / row_on)
+        kinds += [("row_icon", printed_as(modern._row, modern.row_off(original, card), ("row_icon",)),
+                   _parts(printed_as(modern._row, original, ("row_icon",))))]
+    for kind, gone, own in kinds:
+        for mask, _ in _parts(gone):                                # the old ones go
+            hole = dilate(mask, ETCH_GROW)
+            ring = dilate(hole, 4) & ~hole
+            view[hole, :colours] = np.median(e[ring])
+        new = drawn.get(kind)
+        donor = (e, own[0][1]) if own else _badge_etch() if kind == "badge" else None
+        if new is None or donor is None:
+            continue
+        src, (sx0, sy0, sx1, sy1) = donor
+        scx, scy = (sx0 + sx1) // 2, (sy0 + sy1) // 2
+        for mask, (x0, y0, x1, y1) in _parts(new):                  # the new ones get the print's own, centred
+            hw, hh = (x1 - x0) // 2 + ETCH_GROW, (y1 - y0) // 2 + ETCH_GROW
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+            patch = src[scy - hh:scy + hh, scx - hw:scx + hw]
+            where = dilate(mask, ETCH_GROW)[cy - hh:cy + hh, cx - hw:cx + hw]
+            region = view[cy - hh:cy + hh, cx - hw:cx + hw]
+            for ch in range(colours):
+                region[..., ch] = np.where(where, patch, region[..., ch])
+    return out
+
+
+def build_trainer(card_id, card, canvas, drawn):
+    """Foil of a Trainer set on the Scarlet & Violet frame of its kind (trainer.compose_card; not an ACE SPEC card:
+    build_ace): the Gen 8 reverse holo, FlatSilver on Sword & Shield's Poké Ball chevrons in the Gen 9 plate of its
+    kind (gen8_trainer_plate), with the card's footer cut out, whether the old print had a reverse holo or not.
+    Same shape as build()."""
+    modern_print = card.get("era") == "modern"
+    out = {"front": modern_front(card_id, canvas) if modern_print else front_texture(canvas), "base": None,
+           "reverse": None}
+    img = cut(gen8_trainer_plate(card["kind"]), drawn, TRAINER_REVERSE_CUT)
+    out["reverse"] = (ME_REVERSE, plate_texture(img * (canvas[..., 3] / 255)), {})
+    return out
+
+
+def build_ace(card_id, card, canvas, drawn, original):
+    """Foil of a Scarlet & Violet ACE SPEC Trainer edited in place (ace.compose_card): its own AceFoil printing,
+    edited. What the old name, text and illustrator print on the plate is taken off where the plate shows it (cut
+    out: the foil under it from the card's own foil field; lit: filled from the plate around it) and the new ink is
+    set at the value the print gives that kind (ink_value); ink the plate does not show leaves it as printed. A card
+    nothing is edited on keeps its own plate. Same shape as build()."""
+    from . import ace
+    alpha = canvas[..., 3]
+    record = printings(card_id)["base"]
+    out = {"front": modern_front(card_id, canvas), "base": None, "reverse": None}
+    if not is_foil(record):
+        return out
+    img = plate(record)
+    groups = ace.changed(original, card)
+    if groups:
+        scan = tcg.scan(card_id)
+        printed = ace.printed_ink(scan, original, groups)
+        around = np.zeros((H, W), bool)
+        for cover in printed.values():
+            around |= cover > 0.05
+        learned, own_field = {}, None
+        for kind, cover in printed.items():
+            value = ink_value(img, cover, around)
+            learned[kind] = value
+            if value is None:
+                continue
+            area = dilate(cover > 0.05, MARK_GROW + 1)         # the print is found whole (its cut-out's rim too)
+            if value[0] < value[1]:                           # cut out: the foil under it, from the field
+                if own_field is None:
+                    own_field = field(record)[0]
+                img = np.where(area, own_field, img)
+            else:                                              # lit ink on plainer ground
+                img = fill(img, area)
+        for kind, value in learned.items():
+            if value is not None and kind in drawn:
+                cover = np.clip(drawn[kind] * ACE_CUT_GAIN, 0, 1)
+                img = img * (1 - cover) + value[0] * cover
+    spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)
+    extra = {"etch": texture(record, record.get("_e")), "cf": texture(record, record.get("_cf"))}
+    out["base"] = (spec, plate_texture(img * (alpha / 255)), extra)
     return out
 
 

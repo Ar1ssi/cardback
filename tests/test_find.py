@@ -46,7 +46,12 @@ class Find(unittest.TestCase):
         self.assertIn("types=eq:Fire", parts)
         self.assertIn("hp=gte:100", parts)
         self.assertIn("hp=lte:200", parts)
-        self.assertIn("category=eq:Pokemon%7CTrainer", parts)                # Energy never
+        self.assertIn("category=eq:Pokemon%7CTrainer%7CEnergy", parts)
+
+    def test_energy_kind_filter(self):
+        _, url = self.run_find("", {"category": ["Energy"], "energyType": ["Special"]})
+        self.assertIn("energyType=eq:Special", url)
+        self.assertIn("category=eq:Energy", url)
 
     def test_category_picked(self):
         _, url = self.run_find("", {"category": ["Trainer"]})
@@ -54,7 +59,7 @@ class Find(unittest.TestCase):
         self.assertNotIn("Pokemon", url)
 
     def test_rejections(self):
-        for args in [("", {}), ("  ", None), ("x", {"category": ["Energy"]}), ("x", {"hpMin": "a"}),
+        for args in [("", {}), ("  ", None), ("x", {"category": ["Stadium"]}), ("x", {"hpMin": "a"}),
                      ("x", {"hpMin": True}), ("x", {"hpMax": 5000}), ("x", {"rarity": "Rare"}), ("x", {"set": [""]}),
                      ("x", [1])]:
             with self.subTest(args=args), mock.patch.object(tcg, "_fresh_json", side_effect=answer):
@@ -136,7 +141,7 @@ class Http(unittest.TestCase):
             self.assertEqual(([s["id"] for s in options["sets"]], options["rarities"]),
                              (["sv03.5", "base1"], ["Common", "Double rare"]))
         self.assertEqual(self.post({})[0], 400)
-        self.assertEqual(self.post({"name": "x", "filters": {"category": ["Energy"]}})[0], 400)
+        self.assertEqual(self.post({"name": "x", "filters": {"category": ["Stadium"]}})[0], 400)
         self.assertEqual(self.post({"name": "x", "limit": "many"})[0], 400)
         with mock.patch.object(tcg, "_fresh_json", side_effect=tcg.cache.DownloadError("TCGdex is down")):
             status, out = self.post({"name": "x"})

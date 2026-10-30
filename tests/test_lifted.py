@@ -92,6 +92,17 @@ class Fitting(unittest.TestCase):
         (_, _, a), (_, _, b) = frames
         self.assertEqual((b[0] - a[0], b[1] - a[1]), (2 * U, U))        # the moved one's glyph sits that much on
 
+    def test_two_samples_unlike_each_other_give_no_glyph(self):
+        bar = np.zeros((12 * U, 12 * U), np.float32)
+        bar[1 * U:11 * U, 6 * U:7 * U] = 1                              # the symbol
+        letter = bar.T.copy()                                           # what a gap matched to the wrong words holds
+        unlike = [(("Dragon",), 0, (bar, (0, 0))), (("Dragon",), 0, (letter, (0, 0)))]
+        alike = [(("Dragon",), 0, (bar, (0, 0))), (("Dragon",), 0, (bar.copy(), (0, 0)))]
+        self.assertNotIn("Dragon", lifted.average(unlike))              # the caller sets the disc instead
+        self.assertIn("Dragon", lifted.average(alike))
+        three = unlike + alike[:1]                                      # a majority: the odd one is dropped
+        self.assertEqual(len(lifted.average(three)["Dragon"][1]), 2)
+
 
 class Lifting(unittest.TestCase):
     def test_hp_figures_and_label_come_off_a_shaded_panel(self):

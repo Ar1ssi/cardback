@@ -56,7 +56,7 @@ class Apply(unittest.TestCase):
 
     def test_rejections(self):
         bad = [
-            {"attacks": [{"cost": ["Fairy"], "name": "A", "damage": "10"}]},
+            {"attacks": [{"cost": ["Light"], "name": "A", "damage": "10"}]},
             {"attacks": [{"cost": [], "name": "A", "damage": "+"}]},
             {"attacks": [{"cost": [], "name": "A", "damage": "ten"}]},
             {"attacks": [{"cost": [], "name": "", "damage": "10"}]},
@@ -88,12 +88,15 @@ class ImportSet(unittest.TestCase):
             {"id": "me01-114", "name": "Boss's Orders", "supertype": "Trainer"},
             {"id": "swsh1-156", "name": "Air Balloon", "supertype": "Trainer"},
             {"id": "sv01-258", "name": "Basic Grass Energy", "supertype": "Energy"},
+            {"id": "base1-99", "name": "Grass Energy", "supertype": "Energy"},
+            {"id": "sv09-300", "name": "Odd one", "supertype": "Pokémon Tool"},
             {"id": "../x", "name": "bad"}]}
         out = gui.import_set(data)["cards"]
         self.assertEqual([(c["id"], c.get("layout"), c.get("skip")) for c in out],
                          [("sv09-080", "modern", None), ("swsh6-97", "ex", None), ("swsh3-88", "me", None),
                           ("me01-114", "trainer", None), ("swsh1-156", "trainer", None),
-                          ("sv01-258", None, "not a Pokémon or Trainer")])
+                          ("sv01-258", "energy", None),
+                          ("base1-99", "energy", None), ("sv09-300", None, "not a Pokémon, Trainer or Energy card")])
         self.assertEqual([c.get("gen9") for c in out if c.get("layout") == "trainer"], [True, False])
 
     def test_opened_project_looks_at_skipped_cards_again(self):
@@ -105,9 +108,11 @@ class ImportSet(unittest.TestCase):
         category = {"me01-117": "Trainer", "me03-086": "Energy"}
         with mock.patch.object(gui.tcg, "card", side_effect=lambda i: {"id": i, "category": category[i]}):
             out = gui._current_entries(cards)
-        self.assertEqual(out, [{"id": "me01-117", "name": "Forest of Vitality", "layout": "trainer", "gen9": True},
-                               {"id": "me03-086", "name": "Growing Grass Energy", "skip": "not a Pokémon or Trainer"},
-                               {"id": "swsh1-156", "name": "Air Balloon", "layout": "trainer", "gen9": False},
+        self.assertEqual(out, [{"id": "me01-117", "name": "Forest of Vitality", "layout": "trainer", "gen9": True,
+                                "ace": False},
+                               {"id": "me03-086", "name": "Growing Grass Energy", "layout": "energy"},
+                               {"id": "swsh1-156", "name": "Air Balloon", "layout": "trainer", "gen9": False,
+                                "ace": False},
                                {"id": "me04-001", "name": "Weedle", "layout": "modern"}])
 
     def test_skipped_card_stays_when_tcgdex_fails(self):
@@ -154,7 +159,7 @@ class Http(unittest.TestCase):
 
     def test_bad_requests(self):
         self.assertEqual(self.call("/api/card?id=../../etc/passwd")[0], 400)
-        self.assertEqual(self.call("/api/icon/Fairy.png")[0], 400)
+        self.assertEqual(self.call("/api/icon/Light.png")[0], 400)
         self.assertEqual(self.call("/nope")[0], 404)
         self.assertEqual(self.call("/api/render", {"id": "swsh3-88", "style": "comic"})[0], 400)
 
@@ -479,3 +484,19 @@ class Changes(unittest.TestCase):
         self.assertIn("## Unchanged\n\n- Larvitar (sv09-080)", text)
         with self.assertRaises(gui.UserError):
             gui.changelog([])
+
+
+class StandardFoil(unittest.TestCase):
+    """The Gen 8 reverse holo is the standard: a push turns holofoil on for every 1-prize Pokemon and Trainer."""
+    CARDS = {"sm1-1": ("me", "Rowlet"), "sv01-1": ("modern", "Pineco"), "sv01-50": ("modern", "Spidops ex"),
+             "sv01-190": ("trainer", "Rare Candy"), "sv05-144": ("trainer", "Prime Catcher"),
+             "swsh1-1": ("ex", "Celebi V"), "sve-1": ("energy", "Basic Grass Energy")}
+
+    def test_holofoil_goes_on_for_1_prize_pokemon_and_trainers_but_ace_spec(self):
+        with mock.patch.object(gui, "layout_of", side_effect=lambda cid: self.CARDS[cid][0]), \
+                mock.patch.object(gui.tcg, "card", side_effect=lambda cid: {"name": self.CARDS[cid][1]}), \
+                mock.patch.object(gui, "_is_ace", side_effect=lambda cid: cid == "sv05-144"):
+            items = gui.standard_foil([{"id": cid, "foil": False} for cid in self.CARDS])
+            kept = gui.standard_foil([{"id": "swsh1-1", "foil": True}])
+        self.assertEqual({it["id"] for it in items if it["foil"]}, {"sm1-1", "sv01-1", "sv01-190"})
+        self.assertEqual(kept, [{"id": "swsh1-1", "foil": True}], "a card with holofoil on keeps it")

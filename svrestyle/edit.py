@@ -1,9 +1,11 @@
 """The part of a card the GUI lets you change, and the checks on it.
 
-A card dict comes from compose.read_card (ex layout), mecompose.read_card (Mega Evolution layout) or
-trainer.read_card (Trainers: they have a "kind" and no retreat). editable() picks the fields shown in the editor;
+A card dict comes from compose.read_card (ex layout), mecompose.read_card (Mega Evolution layout),
+trainer.read_card (Trainers: they have a "kind" and no retreat) or energy.read_card (Energy: an "energy" of "basic" or
+"special"). editable() picks the fields shown in the editor;
 apply() writes edited values back onto a copy after checking them, so the composers only ever see well-formed data.
-Regular Pokemon (family "regular": one Prize, no rule box) can change type; ex cards keep theirs.
+Regular Pokemon (family "regular": one Prize, no rule box) can change type, and so can the cards whose reader says so
+("retype": a Pokemon V restyled as ex, a Mega ex print megaretype recolours); other ex cards keep theirs.
 Effect text (abilities, attacks, Trainer text) also gets the TCG's fixed terms in their printed capitals
 (wording.fix_terms); names and flavour text are kept as typed.
 """
@@ -12,7 +14,8 @@ import re
 
 from . import wording
 
-ENERGY = ("Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal", "Dragon", "Colorless")
+ENERGY = ("Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal", "Fairy", "Dragon",
+          "Colorless")
 MAX_ABILITIES, MAX_ATTACKS, MAX_COST, MAX_RETREAT = 2, 4, 5, 5
 STAGES = (0, 1, 2, 3)                                # Basic, Stage 1, Stage 2, Mega (custom: stage.MEGA)
 MAX_NAME, MAX_EFFECT, MAX_FLAVOR = 40, 400, 220
@@ -20,7 +23,18 @@ MAX_NAME, MAX_EFFECT, MAX_FLAVOR = 40, 400, 220
 # run to 500 characters).
 TRAINER_KINDS = ("Item", "Supporter", "Stadium", "Tool")
 MAX_TRAINER_TEXT, MAX_PARAGRAPHS = 800, 6
+ACE_FIXED = ("kind", "character", "hp", "abilities", "attacks")      # what an ACE SPEC card cannot change (ace.py)
 TRAINER_SCALAR = {"name": 60, "character": MAX_NAME, "illustrator": MAX_NAME}
+# Energy: a Special Energy's name, text, illustrator, the Energy it provides (the name bar's icons) and its frame.
+ENERGY_SCALAR = {"name": 60, "illustrator": MAX_NAME}
+ENERGY_FRAMES = ("regular", "full", "typed")
+# The typed frame: the Mega Evolution typed Special Energy (Telepathic Psychic Energy and its like, energy.py) of the one
+# type the card provides, graded as they are.
+TYPED_TYPES = ("Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal", "Fairy")
+TYPED_RARITY = "Rare"
+# An older Basic Energy: the Mega Evolution Basic Energy of its type, or its type's gold Hyper Rare one (energy.py).
+BASIC_FRAMES, GOLD_RARITY = ("basic", "gold"), "Hyper rare"
+MAX_PROVIDED = 3
 
 DAMAGE = re.compile(r"(\d{1,4})?([+×x-])?")        # 120, 30+, 50×, 10-, or empty (no damage printed)
 WEAKNESS = re.compile(r"[×x+]\d{1,3}")              # ×2 (current), +20 (older cards)
@@ -51,13 +65,20 @@ def is_trainer(card):
     return "kind" in card
 
 
+def is_energy(card):
+    return "energy" in card
+
+
 def retypes(card):
-    """Whether the card's type can be changed: regular Pokemon only (an ex's frame and rule box are its own)."""
-    return card.get("family") == "regular"
+    """Whether the card's type can be changed: regular Pokemon, a Pokemon V restyled as ex (set on its new type's
+    frame) and the Mega ex prints megaretype recolours ("retype"); a Scarlet & Violet ex's frame is its own."""
+    return card.get("family") == "regular" or bool(card.get("retype"))
 
 
 def editable(card):
     """The editor's view of a card (plain JSON)."""
+    if is_energy(card):
+        return _energy_editable(card)
     if is_trainer(card):
         return _trainer_editable(card)
     out = {k: card.get(k, "") for k in SCALAR if k in card}
@@ -83,6 +104,24 @@ def _trainer_editable(card):
     out = {k: card.get(k, "") for k in TRAINER_SCALAR}
     out.update(kind=card["kind"], hp=card.get("hp", ""), effect=card.get("effect", ""))
     out["abilities"], out["attacks"] = _blocks_view(card)
+    return out
+
+
+def _energy_fixed(card):
+    """Energy with nothing to edit: a Basic Energy (the type's own, only its footer is set) and Energy that is in the
+    look already (frame "print")."""
+    return card["energy"] == "basic" or card["frame"] == "print"
+
+
+def _energy_editable(card):
+    if _energy_fixed(card):
+        out = {"energy": card["energy"], "frame": card["frame"]}
+        if "type" in card:
+            out["type"] = card["type"]
+        return out
+    out = {k: card.get(k, "") for k in ENERGY_SCALAR}
+    out.update(energy="special", effect=card.get("effect", ""), cost=list(card.get("cost") or []),
+               frame=card["frame"])
     return out
 
 
@@ -155,6 +194,7 @@ def _paragraphs(value, field):
 
 
 def _apply_trainer(out, edits):
+    card = copy.deepcopy(out)
     for key, limit in TRAINER_SCALAR.items():
         if key in edits:
             out[key] = _text(edits[key], key, limit, required=key == "name")
@@ -173,6 +213,45 @@ def _apply_trainer(out, edits):
                                                                         MAX_ABILITIES))]
     if "attacks" in edits:
         out["attacks"] = [_attack(a, i) for i, a in enumerate(_list(edits["attacks"], "attacks", MAX_ATTACKS))]
+    if out.get("ace") and any(out[k] != card[k] for k in ACE_FIXED):
+        raise ValueError("an ACE SPEC card keeps its own frame: only its name, text and illustrator can change")
+    return out
+
+
+def _apply_energy(out, edits):
+    """Edits the editor sends back include the card's "energy" and a Basic Energy's "type", as editable() gave them."""
+    if edits.get("energy", out["energy"]) != out["energy"]:
+        raise ValueError("energy: a Basic Energy cannot become a Special Energy, or the other way round")
+    if _energy_fixed(out):
+        frame = edits.get("frame", out["frame"])
+        if out["energy"] == "basic" and out["frame"] in BASIC_FRAMES and frame in BASIC_FRAMES:
+            out["frame"] = frame                    # an older Basic Energy: the Mega Evolution one or the gold one
+            if frame == "gold":                     # named and graded as the gold prints are (Basic Psychic Energy)
+                out["rarity_name"] = GOLD_RARITY
+                out["prefix"], out["name"] = "", f"Basic {out['type']} Energy"
+            edits = {k: v for k, v in edits.items() if k != "frame"}
+        if any(k not in ("energy", "type", "frame") or edits[k] != out[k] for k in edits):
+            raise ValueError("this Energy has nothing to edit: a Basic Energy prints only its set code and number (on "
+                             "the Mega Evolution or the gold frame), and Scarlet & Violet / Mega Evolution Energy keeps "
+                             "its print")
+        return out
+    for key, limit in ENERGY_SCALAR.items():
+        if key in edits:
+            out[key] = _text(edits[key], key, limit, required=key == "name")
+    if "effect" in edits:
+        out["effect"] = _paragraphs(edits["effect"], "text")
+    if "cost" in edits:
+        out["cost"] = [_energy(t, "provides") for t in _list(edits["cost"], "provides", MAX_PROVIDED)]
+    if "frame" in edits:
+        if edits["frame"] not in ENERGY_FRAMES:
+            raise ValueError(f"frame: one of {', '.join(ENERGY_FRAMES)}")
+        out["frame"] = edits["frame"]
+    if out["frame"] == "typed":
+        provided = set(out.get("cost") or [])
+        if len(provided) != 1 or not provided <= set(TYPED_TYPES):
+            raise ValueError("frame typed: the Mega Evolution typed Special Energy shows one type: set it to provide "
+                             f"one of {', '.join(TYPED_TYPES)}")
+        out["rarity_name"], out["rarity"] = TYPED_RARITY, "rare"
     return out
 
 
@@ -181,6 +260,8 @@ def apply(card, edits):
     if not isinstance(edits, dict):
         raise ValueError("edits: expected an object")
     out = copy.deepcopy(card)
+    if is_energy(card):
+        return _apply_energy(out, edits)
     if is_trainer(card):
         return _apply_trainer(out, edits)
     for key, limit in SCALAR.items():
@@ -191,7 +272,8 @@ def apply(card, edits):
             raise ValueError("hp: a multiple of 10, up to 9990")
     if "type" in edits and edits["type"] != card["type"]:
         if not retypes(card):
-            raise ValueError("type: only regular Pokémon (one Prize) can change type")
+            raise ValueError("type: this card keeps its type (regular Pokémon, Pokémon V restyled as ex and Mega "
+                             "Evolution ex can change theirs)")
         out["type"] = _energy(edits["type"], "type")
     if "abilities" in edits:
         out["abilities"] = [_ability(a, i) for i, a in enumerate(_list(edits["abilities"], "abilities",
@@ -226,7 +308,7 @@ def apply(card, edits):
 # ---------------------------------------------------------------- what changed
 STAGE_NAMES = ("Basic", "Stage 1", "Stage 2", "Mega")
 LETTER = {"Grass": "G", "Fire": "R", "Water": "W", "Lightning": "L", "Psychic": "P", "Fighting": "F",
-          "Darkness": "D", "Metal": "M", "Dragon": "N", "Colorless": "C"}     # as typed in effect text
+          "Darkness": "D", "Metal": "M", "Fairy": "Y", "Dragon": "N", "Colorless": "C"}     # as typed in effect text
 
 
 def _cost(cost):
@@ -305,9 +387,26 @@ def _trainer_changes(a, b):
     return out
 
 
+def _energy_changes(a, b):
+    out = []
+    if a.get("name") != b.get("name"):
+        out.append(_was("Name", a.get("name"), b.get("name")))
+    if a.get("effect") != b.get("effect"):
+        out.append(_was("Text", _quote(a["effect"].replace("\n", " / ")), _quote(b["effect"].replace("\n", " / "))))
+    if a.get("cost") != b.get("cost"):
+        out.append(_was("Provides", _cost(a["cost"]), _cost(b["cost"])))
+    if a.get("frame") != b.get("frame"):
+        out.append(_was("Frame", a.get("frame"), b.get("frame")))
+    if a.get("illustrator") != b.get("illustrator"):
+        out.append(_was("Illustrator", _quote(a.get("illustrator")), _quote(b.get("illustrator"))))
+    return out
+
+
 def changes(before, after):
     """What differs between two card dicts, one line per change, in the order the card prints it."""
     a, b = editable(before), editable(after)
+    if is_energy(before):
+        return _energy_changes(a, b)
     if is_trainer(before):
         return _trainer_changes(a, b)
     out = []

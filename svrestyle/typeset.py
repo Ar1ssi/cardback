@@ -153,7 +153,7 @@ def runs_of(line_words):
 # Energy symbols in effect text: TCGdex writes {G}, {R} ...; the text carries ENERGY_MARK in their place, which is
 # laid out as a gap ENERGY_ADVANCE x size wide and filled with the symbol afterwards (line_items' marks).
 ENERGY_CODES = {"G": "Grass", "R": "Fire", "W": "Water", "L": "Lightning", "P": "Psychic", "F": "Fighting",
-                "D": "Darkness", "M": "Metal", "N": "Dragon", "C": "Colorless"}
+                "D": "Darkness", "M": "Metal", "Y": "Fairy", "N": "Dragon", "C": "Colorless"}
 ENERGY_MARK = ""
 # A space no line breaks at: drawn and measured as a space, but part of the word either side (the prints keep a
 # number with the word after it, glue_numbers).

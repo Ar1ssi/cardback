@@ -6,24 +6,30 @@ was edited is taken off and set again in the same layouts the restyles use.
 - Stage, "Evolves from" and the evolution portrait: the Stage pieces sit at one place on every SV / ME card, so the
   ones that changed are pasted over (stage.py); back to Basic they are taken off and the BASIC tab set. A Stage card
   keeps its own strip (Mega ex cards end it under their badge): the old "Evolves from" line is found like the name and
-  blended away along the strip's pixel rows (fill_band).
+  rebuilt from the strip's own shading, row by row and column by column (fill_strip).
 - Abilities and attacks: ex prints do not stack their blocks by one rule, so the old block is found on the card
   instead: everything in the text zone that stands out from the panel behind it (text, cost icons, the Ability
   badge). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular cards share
   it), ex cards in the Absol ex layout, in the old block's own ink (print_ink: its fill colour, and its keyline when
   the text is outlined over full art).
-- Type (regular cards): the card's print is lifted off its type's frame and set on the new type's (retype.py), in the
-  new type's ink; what is set again takes that ink too.
-What is taken off is rebuilt by LaMa (cached per card and set of edited parts), except in the weakness row, which
-is filled along its pixel rows (fill_band). Energy written {G}, {R} ... in effect text prints as its symbol.
+- Type: a regular card's print is lifted off its type's frame and set on the new type's (retype.py), in the new type's
+  ink; what is set again takes that ink too. A Mega ex is recoloured on its own print first (megaretype.py), and that
+  print is the card as printed for every other edit.
+- Abilities and attacks whose Energy types or damages alone change (costs, {X} in effect text, a damage) keep their
+  print: the icons, symbols and figures are set again where they are printed (inplace.py).
+What is taken off is rebuilt by LaMa (cached per print and set of edited parts), except in the weakness row, which
+is filled along its pixel rows (fill_band), and on the "Evolves from" strip (fill_strip). Energy written {G}, {R} ...
+in effect text prints as its symbol.
 """
+import functools
 import hashlib
 import warnings
 
 import cv2
 import numpy as np
 
-from . import cache, compose, edit, frame, inpaint, layers, mecompose, meframe, retype, stage, tcg
+from . import (cache, compose, edit, frame, inpaint, inplace, layers, mecompose, megaretype, meframe, retype, stage,
+               tcg)
 from .imaging import dilate, fill_holes, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
@@ -50,7 +56,7 @@ GHOST_RING = (3, 9)    # px: that panel is read this far out from the blot
 GHOST_MIN = 80         # px: smaller standouts are the panel's own grain
 GHOST_MAX = 4000       # px: bigger standouts are not blots (art LaMa rebuilt)
 GHOST_GROW = 5         # px around a blot covered too: its soft edge is not caught as standing out
-CLEAN_VERSION = 21     # bump when cleaned() changes what it makes, so cached cleanups are made again
+CLEAN_VERSION = 24     # bump when cleaned() changes what it makes, so cached cleanups are made again
 ICON_SHADOW = 3        # px: a printed row icon's shadow reaches this far out (and down) from it
 # The old block's ink is read from its glyphs: shapes a glyph's size, lined up on a shared baseline.
 GLYPH_H = (5, 30)    # px: tallest and shortest glyph (accented capitals, commas aside)
@@ -58,6 +64,8 @@ GLYPH_W = 40         # px: wider shapes are art or words run together
 GLYPH_MIN = 8        # px: smaller shapes are grain
 TEXT_LINE = 8        # glyphs whose bottoms sit within a pixel of each other make a line of text
 KEYLINE_RING = 2     # px: an outline is read this far out from the glyphs
+KEYLINE_MAX = 6      # px: and measured out to this far, ring by ring (full art's run 2.4 to 3.1 px, me02-109, sv03.5-199)
+KEYLINE_NEAR = 60    # RGB off the outline's colour a ring pixel of it lies within
 INK_SNAP = 48        # RGB distance within which a measured ink is the stock ink (white, DARK_INK)
 BAND_GAP, BAND_SAMPLE = 3, 6   # px: weakness-row gaps take their colour this far out, from this many pixels
 BAND_REACH = 24      # px past BAND_GAP those pixels are looked for
@@ -67,6 +75,10 @@ BAND_SEARCH = 80     # px past the nearest place a weakness-row gap looks for cl
 BAND_PIECE = 16      # px: gaps take their grain in square pieces this size, each from its own nearest clean place
 PRINT_GROW = 2       # px: print, icons whole, grown by its soft edge, is kept out of that grain
 PRINT_DIFF = 70      # how far print stands out from the weakness row; its grain stays under (sv10.5b-046: 52)
+# The old "Evolves from" line is taken off its strip STRIP_GROW px further than it is found (its faint soft edge), and
+# the strip's shading read over STRIP_REACH px either side of it, from rows holding at least STRIP_MIN[0] pixels clear
+# of print and columns holding STRIP_MIN[1], the column shading averaged over STRIP_SMOOTH px.
+STRIP_GROW, STRIP_REACH, STRIP_MIN, STRIP_SMOOTH, STRIP_ROUNDS = 1, 60, (6, 3), 5, 5
 RING_SHADE = 4       # px: the ring's soft shadow on the card, past its cut-out
 BORDER_X = 26        # px: the plain silver card border on the left, which the Stage ring overlaps
 
@@ -87,7 +99,7 @@ def read_card(card_id):
     if not ex and name.endswith(mecompose.NOT_REGULAR):
         raise SystemExit(f"{card_id} is {name!r}: only regular Pokemon and Pokemon ex")
     types = c.get("types") or []
-    if not types or types[0] not in meframe.POOL:
+    if not types or types[0] not in meframe.TYPES:
         raise SystemExit(f"{card_id}: type {types[:1]} is not supported")
     base = name[:-3] if ex else name
     prefix = next((p for p in compose.PREFIXES if base.startswith(p + " ")), "")
@@ -95,7 +107,7 @@ def read_card(card_id):
         b["effect"] = edit.printed(b.get("effect"))
         b["name"] = edit.printed(b.get("name"))
     evolves = edit.printed(c.get("evolveFrom")) if c["stage"] != "Basic" else ""
-    return {
+    card = {
         "id": card_id, "family": "ex" if ex else "regular", "type": types[0], "prefix": prefix,
         "name": base[len(prefix):].strip(), "hp": str(c.get("hp", "")),
         "stage": {"Basic": 0, "Stage1": 1, "Stage2": 2}[c["stage"]],
@@ -107,6 +119,9 @@ def read_card(card_id):
         "illustrator": c.get("illustrator") or "", "reg_mark": c.get("regulationMark") or "",
         "rarity": mecompose.rarity_symbol(c.get("rarity")),
     }
+    if ex:              # a Mega ex can change type on its own print (edit.retypes)
+        card["retype"] = megaretype.supports(card_id, card)
+    return card
 
 
 def changed(original, card):
@@ -272,8 +287,25 @@ def print_ink(scan, box):
     core = glyphs & (strength >= np.median(strength[glyphs]))      # past the glyphs' anti-aliased edges
     fill = _stock(seen[core].mean(axis=0))
     ring = dilate(glyphs, KEYLINE_RING) & ~glyphs
-    edge = (_stock(np.median(seen[ring], axis=0)), *compose.LIGHT_KEYLINE[1:]) if outlined else None
+    edge = None
+    if outlined:
+        colour = _stock(np.median(seen[ring], axis=0))
+        edge = (colour, keyline_width(glyphs, seen, colour), compose.LIGHT_KEYLINE[2])
     return fill, edge
+
+
+def keyline_width(glyphs, seen, colour):
+    """How far the print's outline reaches past its glyphs (px): the last ring a pixel wide round them that is mostly
+    in the outline's colour, and the share of the next one that still is."""
+    shares = []
+    for r in range(1, KEYLINE_MAX + 1):
+        ring = dilate(glyphs, r) & ~dilate(glyphs, r - 1)
+        shares.append(float((np.abs(seen[ring] - colour).max(-1) < KEYLINE_NEAR).mean()) if ring.any() else 0.0)
+    full = [r for r, share in enumerate(shares, 1) if share >= 0.5]
+    if not full:
+        return compose.LIGHT_KEYLINE[1]
+    last = max(full)
+    return last + (shares[last] if last < len(shares) else 0.0)
 
 
 def ink_colour(scan, where):
@@ -327,10 +359,10 @@ def stage_off(original, card):
     return dilate(pieces | stage.under_tab(sprite), RING_SHADE)
 
 
-def taken_off(card_id, original, groups, card=None):
-    """What the edited groups take off the card. -> (bool HxW for LaMa, bool HxW filled along pixel rows: the
-    weakness row and the "Evolves from" line)"""
-    scan = tcg.scan(card_id)
+def taken_off(card_id, original, groups, card=None, scan=None):
+    """What the edited groups take off the card (scan: the print they are taken off, default the card's own). ->
+    (bool HxW for LaMa, bool HxW filled along pixel rows: the weakness row and the "Evolves from" line)"""
+    scan = tcg.scan(card_id) if scan is None else scan
     mask, row = np.zeros((H, W), bool), np.zeros((H, W), bool)
     if "stage" in groups and card is not None:
         mask |= stage_off(original, card)
@@ -345,8 +377,11 @@ def taken_off(card_id, original, groups, card=None):
         # the icons' soft drop shadow, too faint to stand out, falls on the bar below them
         icons = _cover(printed_row, ("row_icon",)) > 0.1
         row |= dilate(icons | np.roll(icons, ICON_SHADOW, axis=0), ICON_SHADOW)
-    if "stage" in groups and card is not None and original["stage"] and card["stage"]             and card["evolves_from"] != original["evolves_from"]:
-        row |= dilate(ink_near(scan, _cover(_drawn(_evolves, original), ("evolves",)), ROW_NEAR), 1)
+    if ("stage" in groups and card is not None and original["stage"] and card["stage"]
+            and card["evolves_from"] != original["evolves_from"]):
+        # on the strip, and the old line's own letters off it: what stands out round them below the strip is the art
+        old = _cover(_drawn(_evolves, original), ("evolves",))
+        row |= dilate(ink_near(scan, old, ROW_NEAR), 1) & (stage.strip_shape(scan) | dilate(old > 0.05, 1))
     return dilate(mask, MARK_GROW), row
 
 
@@ -396,6 +431,49 @@ def fill_band(img, where):
                 if d is not None and not np.isnan(blend[y, x0 + a, 0]):
                     grain = img[y, x0 + a + d:x0 + b + d, :3]
                     out[y, x0 + a:x0 + b, :3] += grain - grain.mean(axis=0)
+    return out
+
+
+def fill_strip(img, where):
+    """Fill the `where` pixels of the "Evolves from" strip (its old line taken off) with the strip's own shading. The
+    strip is lit in bands that run along it (a highlight, the body, a darker lower edge), each a little lighter or
+    darker from place to place along it: so a pixel is its row's shade plus its column's, both read off the strip
+    about the line where it is clear of print, as stage.blank_tab reads the tab's. (Blending along the rows, as
+    fill_band does, takes the ring's rim left of the line and the letters' soft edges between its words.) The fill
+    then takes on the strip's grain, each piece from the nearest clean stretch of strip, as fill_band's gaps do."""
+    out = img.copy()
+    where = dilate(where, STRIP_GROW) & stage.strip_shape(img)
+    ys, xs = np.nonzero(where)
+    if not len(ys):
+        return out
+    y0, y1 = ys.min(), ys.max() + 1
+    x0, x1 = max(stage.STRIP[0], xs.min() - STRIP_REACH), min(stage.STRIP[2], xs.max() + 1 + STRIP_REACH)
+    printed, _ = _strong_print(img, y0, y1)
+    skip = where | printed
+    seen = img[y0:y1, x0:x1, :3].astype(np.float32)
+    clean = ~skip[y0:y1, x0:x1]
+    values = np.where(clean[..., None], seen, np.nan)
+    by_column = np.zeros((x1 - x0, 3), np.float32)
+    with warnings.catch_warnings():                 # rows / columns with no clean pixels: filled after
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for _ in range(STRIP_ROUNDS):
+            by_row = stage.fill_gaps(np.nanmedian(values - by_column[None], axis=1), clean.sum(1) >= STRIP_MIN[0])
+            by_column = stage.fill_gaps(np.nanmedian(values - by_row[:, None], axis=0), clean.sum(0) >= STRIP_MIN[1])
+            by_column = cv2.blur(by_column[None], (STRIP_SMOOTH, 1))[0]
+    shade = np.full(img.shape[:2] + (3,), np.nan, np.float32)
+    shade[y0:y1, x0:x1] = by_row[:, None] + by_column[None]
+    out[where, :3] = shade[where]
+    grain = np.where(skip[..., None], np.nan, img[..., :3] - shade)
+    pieces, shifts = _band_pieces(where, skip)
+    for y in range(y0, y1):
+        for a, b in _runs_of(where[y]):
+            for p, q in _runs(pieces[y, a:b]):
+                d = shifts.get(pieces[y, a + p])
+                if d is None:
+                    continue
+                piece = grain[y, a + p + d:a + q + d]
+                if not np.isnan(piece).any():
+                    out[y, a + p:a + q, :3] += piece - piece.mean(axis=0)
     return out
 
 
@@ -537,20 +615,23 @@ def patch_blots(art, blots, mask):
     return out
 
 
-def cleaned(card_id, original, groups, card=None):
-    """The scan with the edited groups taken off (cached). -> (RGBA float32, mask taken off)"""
-    mask, row = taken_off(card_id, original, groups, card)
-    key = hashlib.sha256(mask.tobytes() + row.tobytes()).hexdigest()[:12]
+def cleaned(card_id, original, groups, card=None, scan=None):
+    """The print (scan, default the card's own) with the edited groups taken off; cached by the print and what is
+    taken off (a Mega ex recoloured is another print). -> (RGBA float32, mask taken off)"""
+    scan = tcg.scan(card_id) if scan is None else scan
+    mask, row = taken_off(card_id, original, groups, card, scan)
+    key = hashlib.sha256(np.ascontiguousarray(scan, np.float32).tobytes() + mask.tobytes()
+                         + row.tobytes()).hexdigest()[:12]
     out = cache.path("art", f"modern-v{CLEAN_VERSION}-{card_id}-{'-'.join(groups)}-{key}.png")
     if out.exists():
         return load_rgba(out), mask | row
-    scan = tcg.scan(card_id)
     art = inpaint.inpaint(scan, mask) if mask.any() else scan.copy()
     blots = ghosts(art, mask) if plain_panel(card_id, original) else None
     if blots is not None and blots.any():
         art = patch_blots(art, blots, mask)
     if row.any():
-        art = fill_band(art, row)
+        line = row & stage.strip_shape(art)               # the old "Evolves from" line, on its strip
+        art = fill_strip(fill_band(art, row & ~line), line)
     border = mask.copy()
     border[:, BORDER_X:] = False
     if border.any():                 # LaMa leaves blotches on the plain border: it shades only from top to bottom
@@ -585,21 +666,46 @@ def still_printed(original, card, groups):
     return shown
 
 
+@functools.lru_cache(maxsize=4)
+def _recoloured(card_id, type_name):
+    """A Mega ex print recoloured on another type (megaretype.recolour) -> (RGBA, the words it re-inked)."""
+    with layers.recording() as drawn:
+        out = megaretype.recolour(tcg.scan(card_id), read_card(card_id), type_name)
+    return out, drawn.get(megaretype.WORDS)
+
+
+def print_of(card_id, original, card, record=True):
+    """(the print the edits start from, the card as that print has it): the card's own scan; a Mega ex whose type
+    changes, its print recoloured on the new type (megaretype), which is then the card as printed. record: the words
+    it re-inked go to layers (megaretype.WORDS), for the plates."""
+    scan = tcg.scan(card_id)
+    if original["family"] != "ex" or not original.get("retype") or card["type"] == original["type"]:
+        return scan, original
+    out, words = _recoloured(card_id, card["type"])
+    if record and words is not None:
+        with layers.kind(megaretype.WORDS):
+            layers.record(words)
+    return out.copy(), dict(original, type=card["type"])
+
+
 def compose_card(card_id, card, original=None):
     """-> (RGBA float32 733x1024, report). card: read_card's dict, edited; original: as printed (default: read)."""
     original = original or read_card(card_id)
+    scan, printed_as = print_of(card_id, original, card)
+    retyped = ("type",) if printed_as is not original else ()
+    original = printed_as
     groups = changed(original, card)
-    scan = tcg.scan(card_id)
     if not groups:
-        return scan.copy(), {"card": card, "edited": [], "taken_off": None}
-    parts = tuple(g for g in groups if g != "type")
+        return scan.copy(), {"card": card, "edited": list(retyped), "taken_off": None}
+    plan = inplace.find(scan, original, card) if "moves" in groups else None
+    parts = tuple(g for g in groups if g != "type" and not (g == "moves" and plan))
     if parts:
-        canvas, mask = cleaned(card_id, original, parts, card)
+        canvas, mask = cleaned(card_id, original, parts, card, scan)
         canvas = canvas.copy()
     else:
         canvas, mask = scan.copy(), np.zeros((H, W), bool)
     if "type" in groups:
-        canvas = retype.recolour(canvas, still_printed(original, card, groups), card["type"])
+        canvas = retype.recolour(canvas, still_printed(original, card, parts), card["type"])
     if "stage" in groups:
         own = lambda: stage.disc_sprite(card_id)
         printed = bool(original["stage"])
@@ -607,7 +713,9 @@ def compose_card(card_id, card, original=None):
     if "name" in groups:
         logo = card_logo(scan, original) if card["family"] == "ex" else None
         _name(canvas, card, logo)
-    if "moves" in groups:
+    if plan:
+        canvas = inplace.apply(canvas, plan, original)
+    elif "moves" in groups:
         fill, edge = ((retype.ink(card["type"]), None) if "type" in groups else
                       print_ink(scan, MOVES_ZONE[original["family"]]) or (_block_colour(scan, original), None))
         shrink = _moves(canvas, card, fill, edge)
@@ -618,4 +726,4 @@ def compose_card(card_id, card, original=None):
                       print_ink(scan, ROW_LABELS) or (_row_colour(scan, original, card), None))
         _row(canvas, row_on(original, card), fill, edge)
     canvas[..., 3] = scan[..., 3]
-    return canvas, {"card": card, "edited": list(groups), "taken_off": mask}
+    return canvas, {"card": card, "edited": list(retyped + groups), "taken_off": mask}

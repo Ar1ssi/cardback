@@ -18,6 +18,15 @@ TOP_MASKED = 104          # SWSH name bar and its coloured bottom edge
 SHIFT_DOWN = 10           # the SV under-bar reaches y 117 (SWSH bar: 104): move the art down to keep its top
 TEXT_ZONE = (40, 500, 700, 868)    # x0, y0, x1, y1 the text block can occupy
 BOTTOM_MASKED = 868       # weakness row, rule box, footer, bottom border
+# The V frame's type gradient behind the text: the type's colour laid over the art, none of it above GRADIENT_TOP and
+# all of it at GRADIENT_BOTTOM (the weakness row's band), straight in between. Fitted on the 226 regular V prints in
+# the TCG Live extract: down the ramp a type's prints agree more and more (less of their art shows), within 0.03 of a
+# straight line, and the colour is theirs at the bottom, less the little art still showing. Fairy, which no V
+# prints, takes Psychic's in its colours (fairy.colour).
+GRADIENT_TOP, GRADIENT_BOTTOM = 721, 876
+GRADIENT = {"Grass": (152, 200, 57), "Fire": (240, 90, 31), "Water": (23, 176, 232), "Lightning": (255, 221, 0),
+            "Psychic": (156, 101, 169), "Fighting": (217, 133, 39), "Darkness": (24, 76, 80),
+            "Metal": (184, 193, 191), "Dragon": (170, 149, 59), "Colorless": (213, 216, 214)}
 
 # Text rows: white glyph pixels touching a black keyline. A row is text if enough of them line up across it.
 GLYPH_WHITE_L, GLYPH_WHITE_S, KEYLINE_L = 190, 0.25, 60
@@ -156,6 +165,28 @@ def clean(rgba):
     smask = np.empty_like(mask)
     smask[SHIFT_DOWN:], smask[:TOP_MASKED + SHIFT_DOWN] = mask[:-SHIFT_DOWN], True
     return inpaint.inpaint(shifted, smask), mask, report
+
+
+def gradient_colour(type_name):
+    if type_name in GRADIENT:
+        return np.array(GRADIENT[type_name], np.float32)
+    from . import fairy, refs
+    return fairy.colour(np.array(GRADIENT[refs.DERIVED[type_name]], np.float32))
+
+
+def gradient_share(shift=SHIFT_DOWN):
+    """How much of its type's colour the V frame lays over each row of the art (clean's art: moved down shift px)."""
+    y = np.arange(H, dtype=np.float32) - shift
+    return np.clip((y - GRADIENT_TOP) / (GRADIENT_BOTTOM - GRADIENT_TOP), 0, 1)
+
+
+def retint(art, old_type, new_type):
+    """clean's art (RGBA float) with its gradient in the new type's colour: in each row, the old colour's share
+    swapped for the new one's; the art under it is unchanged."""
+    out = art.copy()
+    shift = gradient_share()[:, None, None] * (gradient_colour(new_type) - gradient_colour(old_type))
+    out[..., :3] = np.clip(art[..., :3] + shift, 0, 255)
+    return out
 
 
 def overlay(rgba, mask):

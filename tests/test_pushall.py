@@ -60,7 +60,8 @@ class PushAll(unittest.TestCase):
                         mock.patch.object(gui, "render", side_effect=lambda cid, *a: gui.Render(png(cid), [], "me")),
                         mock.patch.object(gui, "changelog", return_value="# log"),
                         mock.patch.object(gui.tcg, "TCGLIVE", None),
-                        mock.patch.object(gui.tcg, "card", side_effect=lambda cid: {"name": NAMES[cid]})):
+                        mock.patch.object(gui.tcg, "card", side_effect=lambda cid: {"name": NAMES[cid]}),
+                        mock.patch.object(gui, "takes_reverse", return_value=False)):
             patcher.start()
             self.addCleanup(patcher.stop)
         gui._set_jobs.clear()
@@ -91,7 +92,7 @@ class PushAll(unittest.TestCase):
 
     def sources(self):
         record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
-        return [c["custom"]["source"] for c in record["cards"]]
+        return [c["custom"]["source"] for c in sorted(record["cards"], key=lambda c: c["localId"])]   # set.json is in display order
 
     def test_the_cards_already_in_the_set_keep_their_numbers(self):
         existing = [(A, "x"), (B, "y"), (C, "z")]
@@ -100,32 +101,42 @@ class PushAll(unittest.TestCase):
         self.assertEqual([i["id"] for i in gui.keep_numbers(items, None)], [D, C, B, M, A])
         self.assertEqual([i["id"] for i in gui.keep_numbers(items, [(None, "x"), (None, "y")])], [D, C, B, M, A])
 
-    def test_the_plan_lists_new_changed_and_removed_cards_with_what_changed(self):
+    def test_cards_no_list_names_are_put_back_where_they_are(self):
+        self.push([{"id": A, "edits": {"hp": "190"}}, {"id": B}, {"id": C}])
+        items = gui.keep_unlisted([{"id": C}, {"id": D}], self.set_dir)
+        self.assertEqual([i["id"] for i in items], [A, B, C, D], "A and B at their numbers, the new card last")
+        self.assertEqual(items[0], {"id": A, "edits": {"hp": "190"}, "style": "hybrid", "attacks": True, "foil": False})
+        self.assertEqual(gui.keep_unlisted([{"id": A}], self.set_dir.parent / "nothing"), [{"id": A}])
+        self.assertEqual(gui.keep_unlisted([{"id": A}, {"id": B}, {"id": C}], self.set_dir),
+                         [{"id": A}, {"id": B}, {"id": C}], "everything named: nothing added")
+
+    def test_the_plan_lists_new_and_changed_cards_and_the_ones_that_stay(self):
         self.push([{"id": A}, {"id": B}, {"id": C}])
         self.put("Older", "2026-10-01T10:00:00", [A, B], edits={A: {"hp": "190"}})
         self.put("Newer", "2026-10-02T10:00:00", [B, D], options={B: {"style": "hybrid", "attacks": False}})
         plan = gui.push_all_plan("HBW")
         self.assertEqual((plan["setId"], plan["code"], plan["title"], plan["projects"], plan["repeats"]),
                          ("customhbw", "HBW", "Homebrew Wave 1", 2, 1))
-        self.assertEqual([i["id"] for i in plan["items"]], [A, B, D], "the set's order, the new card last")
-        self.assertEqual((plan["incoming"], plan["existing"], plan["moved"], plan["unchanged"]), (3, 3, 0, 0))
+        self.assertEqual([i["id"] for i in plan["items"]], [A, B, C, D], "the set's order, the new card last")
+        self.assertEqual((plan["incoming"], plan["existing"], plan["moved"], plan["unchanged"]), (4, 3, 0, 1))
         self.assertEqual(plan["added"], [{"id": D, "name": "Pikachu", "lines": ["Restyled as a Mega Evolution card"]}])
         self.assertEqual(plan["changed"], [{"id": A, "name": "Tyranitar", "lines": ["HP: 180 → 190"]},
                                            {"id": B, "name": "Bill", "lines": ["Abilities and attacks: left off"]}])
-        self.assertEqual(plan["removed"], [{"id": C, "name": "Larvitar"}])
+        self.assertEqual((plan["removed"], plan["kept"]), ([], [{"id": C, "name": "Larvitar"}]),
+                         "C is in no project: it stays in the set")
         self.assertEqual(self.sources(), [A, B, C], "planning writes nothing")
-        done = self.push(plan["items"], title=plan["title"], allow_shrink=True)
-        self.assertEqual((done["state"], done["result"]["rendered"], done["result"]["removed"]), ("done", 3, []),
-                         "the new card takes the removed one's number: no folder is left over")
-        self.assertEqual(self.sources(), [A, B, D])
+        done = self.push(plan["items"], title=plan["title"])
+        self.assertEqual((done["state"], done["result"]["rendered"], done["result"]["reused"], done["result"]["removed"]),
+                         ("done", 3, 1, []))
+        self.assertEqual(self.sources(), [A, B, C, D])
         again = gui.push_all_plan("HBW")
         self.assertEqual((again["added"], again["changed"], again["removed"], again["moved"], again["unchanged"]),
-                         ([], [], [], 0, 3), "nothing left to push")
+                         ([], [], [], 0, 4), "nothing left to push")
 
     def test_the_push_renders_exactly_the_cards_the_plan_lists(self):
         self.push([{"id": A}, {"id": B}, {"id": C}, {"id": M}])
         record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
-        for card in record["cards"][:2]:                              # A and B: a set from before digests were kept
+        for card in sorted(record["cards"], key=lambda c: c["localId"])[:2]:     # A and B: a set from before digests were kept
             card["custom"].pop("files")
         (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
         (self.set_dir / "003" / "high.webp").write_bytes(b"damaged")  # C's image is not the one its record names
@@ -133,15 +144,16 @@ class PushAll(unittest.TestCase):
         plan = gui.push_all_plan("HBW")
         self.assertEqual(sorted(c["id"] for c in plan["added"]), [D])
         self.assertEqual(sorted(c["id"] for c in plan["changed"]), [B, C])
-        self.assertEqual((plan["unchanged"], [c["id"] for c in plan["removed"]]), (1, [M]), "A is kept as it is")
+        self.assertEqual((plan["unchanged"], [c["id"] for c in plan["kept"]], plan["removed"]), (2, [M], []),
+                         "A is kept as it is, and M stays in the set")
         self.assertIn("Its images in the set are not the ones its record names: rendered again",
                       next(c for c in plan["changed"] if c["id"] == C)["lines"])
         gui.render.reset_mock()
-        done = self.push(plan["items"], allow_shrink=True)
+        done = self.push(plan["items"])
         self.assertEqual(sorted(call.args[0] for call in gui.render.call_args_list), [B, C, D], "what the plan listed")
-        self.assertEqual((done["result"]["rendered"], done["result"]["reused"]), (3, 1))
+        self.assertEqual((done["result"]["rendered"], done["result"]["reused"]), (3, 2))
         after = gui.push_all_plan("HBW")
-        self.assertEqual((after["added"], after["changed"], after["removed"], after["unchanged"]), ([], [], [], 4))
+        self.assertEqual((after["added"], after["changed"], after["removed"], after["unchanged"]), ([], [], [], 5))
 
     def test_a_foil_the_set_has_from_outside_a_push_is_listed_and_made_again(self):
         def render(card_id, edits=None, style="hybrid", attacks=True, foil=False):
@@ -153,7 +165,7 @@ class PushAll(unittest.TestCase):
             self.push(first["items"])
             self.assertTrue((self.set_dir / "foil" / "001-front.webp").is_file())
             record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
-            record["cards"][0]["custom"]["files"].pop("foil")          # as import-foil.py left the first card
+            sorted(record["cards"], key=lambda c: c["localId"])[0]["custom"]["files"].pop("foil")   # as import-foil.py left the first card
             (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
             plan = gui.push_all_plan("HBW")
             self.assertEqual(plan["changed"], [{"id": A, "name": "Tyranitar", "lines": [

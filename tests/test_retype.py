@@ -203,13 +203,23 @@ class Editor(unittest.TestCase):
     def test_only_regular_cards_show_a_type(self):
         self.assertEqual(edit.editable(card())["type"], "Fire")
         self.assertNotIn("type", edit.editable(card(family="ex", name="Gengar")))
-        self.assertNotIn("type", edit.editable({k: v for k, v in card().items() if k != "family"}))   # V -> ex
+        self.assertNotIn("type", edit.editable({k: v for k, v in card().items() if k != "family"}))
+
+    def test_readers_can_allow_a_type(self):
+        # a Pokemon V restyled as ex, a Mega ex print megaretype recolours
+        self.assertEqual(edit.editable({**{k: v for k, v in card().items() if k != "family"}, "retype": True})["type"],
+                         "Fire")
+        mega = card(family="ex", name="Mega Charizard X", retype=True)
+        self.assertEqual(edit.apply(mega, {"type": "Dragon"})["type"], "Dragon")
+        with self.assertRaisesRegex(ValueError, "keeps its type"):
+            edit.apply(card(family="ex", name="Mega Gengar", retype=False), {"type": "Water"})
 
     def test_apply(self):
         self.assertEqual(edit.apply(card(), {"type": "Water"})["type"], "Water")
         with self.assertRaisesRegex(ValueError, "unknown energy type"):
-            edit.apply(card(), {"type": "Fairy"})
-        with self.assertRaisesRegex(ValueError, "only regular"):
+            edit.apply(card(), {"type": "Light"})
+        self.assertEqual(edit.apply(card(), {"type": "Fairy"})["type"], "Fairy")      # its frame: fairy.py
+        with self.assertRaisesRegex(ValueError, "keeps its type"):
             edit.apply(card(family="ex"), {"type": "Water"})
         self.assertEqual(edit.apply(card(family="ex"), {"type": "Fire"})["type"], "Fire")     # unchanged: fine
 

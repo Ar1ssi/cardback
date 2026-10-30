@@ -65,7 +65,7 @@ class ReadCard(unittest.TestCase):
 
     def test_refuses_what_it_cannot_edit(self):
         for over in ({"category": "Trainer"}, {"name": "Mewtwo V", "stage": "Basic"}, {"stage": "VSTAR"},
-                     {"types": ["Fairy"]}):
+                     {"types": ["Plasma"]}):
             with self.subTest(over), mock.patch.object(modern.tcg, "card", return_value=self.tcgdex(**over)):
                 with self.assertRaises(SystemExit):
                     modern.read_card("sv05-104")
@@ -130,6 +130,7 @@ class FindingPrint(unittest.TestCase):
         fill, edge = modern.print_ink(self.text_on(120, 30, outline=250), modern.MOVES_ZONE["ex"])
         self.assertTrue(np.array_equal(fill, frame.DARK_INK))
         self.assertIs(edge[0], compose.WHITE)
+        self.assertAlmostEqual(edge[1], 2.0, delta=0.3)             # the outline's own width: 2 px
 
     def test_print_ink_keeps_an_ink_it_does_not_know(self):
         fill, _ = modern.print_ink(self.text_on(220, (150, 20, 20)), modern.MOVES_ZONE["regular"])
@@ -162,6 +163,27 @@ class FindingPrint(unittest.TestCase):
         self.assertLess(abs(float(gap.mean()) - 150), 8)
         self.assertTrue(np.all(np.abs(out[876:879, 300:330, 0] - 220) < 1))
 
+    def test_fill_strip_rebuilds_the_strip_shading_not_the_ring(self):
+        img = np.zeros((H, W, 4), np.float32)
+        img[:95, :, :3] = (230, 120, 40)                             # the name bar
+        img[116:, :, :3] = (40, 60, 160)                             # the art
+        rows = np.linspace(255, 120, 21)[:, None, None]              # the strip's bands: light top, darker bottom
+        cols = np.linspace(0, -12, W)[None, :, None]                  # a little darker along it
+        img[95:116, :, :3] = rows + cols + np.random.default_rng(2).normal(0, 2, (21, W, 1))
+        img[95:116, 128:136, :3] = 90                                # the ring's rim, left of the line
+        where = np.zeros((H, W), bool)
+        where[99:113, 140:300] = True                                # the old line
+        img[where, :3] = 20
+        strip = np.zeros((H, W), bool)
+        strip[95:116, 128:520] = True
+        with mock.patch.object(modern.stage, "strip_shape", return_value=strip):
+            out = modern.fill_strip(img, where)
+        want = np.broadcast_to(rows + cols, (21, W, 3))[4:18, 140:300]
+        got = out[99:113, 140:300, :3]
+        self.assertLess(float(np.abs(got - want).mean()), 4)
+        self.assertLess(float(np.abs(got[:, :10] - want[:, :10]).mean()), 6)   # not the ring's grey at its left end
+        self.assertTrue(np.array_equal(out[116:], img[116:]))        # the art below untouched
+
     def test_blot_on_plain_panel_is_patched_from_the_panel(self):
         art = np.full((H, W, 4), 200, np.float32)
         mask = np.zeros((H, W), bool)
@@ -192,10 +214,10 @@ class FindingPrint(unittest.TestCase):
 
 class EnergyInText(unittest.TestCase):
     def test_codes_become_marks(self):
-        text, types = ts.energy_text("Move a Basic {G} Energy. Discard {R}{R}. Keep {Y}.")
-        self.assertEqual(types, ["Grass", "Fire", "Fire"])
-        self.assertEqual(text.count(ts.ENERGY_MARK), 3)
-        self.assertIn("{Y}", text)                    # no Fairy symbol: left as written
+        text, types = ts.energy_text("Move a Basic {G} Energy. Discard {R}{R}. Keep {Y}. Not {Z}.")
+        self.assertEqual(types, ["Grass", "Fire", "Fire", "Fairy"])
+        self.assertEqual(text.count(ts.ENERGY_MARK), 4)
+        self.assertIn("{Z}", text)                    # no such type: left as written
 
     def test_marks_take_room_and_report_where(self):
         text, _ = ts.energy_text("a {G} b")

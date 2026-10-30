@@ -134,18 +134,83 @@ class OwnFoil(unittest.TestCase):
         self.assertTrue((np.diff(row) >= -0.01).all())    # dark to light, smoothly, left to right
         self.assertTrue(((out >= 99.9) & (out <= 200.1)).all())
 
-    def test_restyled_reverse_takes_the_cards_own_foil_where_it_has_foil(self):
+    def test_restyled_reverse_is_the_plain_mega_evolution_plate(self):
+        """A restyled card's reverse holo is the Mega Evolution template, whatever its old reverse repeated (xy6-43
+        Togepi's Fairy symbols, swsh6-96 Galarian Weezing's chevrons) and whatever type it is made."""
         from unittest import mock
-        template = np.full((H, W), 255, np.float32)
+        template = np.full((H, W), 200, np.float32)
         template[100:500, 40:690] = 0               # the new art window
-        own_foil = np.full((H, W), 120, np.float32)
-        own = np.zeros((H, W), np.float32)
-        own[:, 300:] = 1                            # the old card has foil on its right half only
-        with mock.patch.object(foil, "me_reverse_template", return_value=template),                 mock.patch.object(foil, "printings", return_value={"reverse": {}}),                 mock.patch.object(foil, "field", return_value=(own_foil, own)):
-            out = foil.me_reverse_plate("x", {"stage": 0}, {}, np.full((H, W), 255, np.float32))
-        self.assertEqual(out[700, 500], 120)         # own foil
-        self.assertEqual(out[700, 100], 255)         # none there: the template's
-        self.assertEqual(out[300, 500], 0)           # art window
+        alpha = np.full((H, W), 255, np.float32)
+        with mock.patch.object(foil, "me_reverse_template", return_value=template),                 mock.patch.object(foil, "field", side_effect=AssertionError("the old reverse is not read")):
+            psychic = foil.me_reverse_plate({"stage": 0, "type": "Psychic"}, {}, alpha)
+            fairy = foil.me_reverse_plate({"stage": 0, "type": "Fairy"}, {}, alpha)
+        np.testing.assert_array_equal(psychic, template)
+        np.testing.assert_array_equal(fairy, template)
+
+
+class Gen8Reverse(unittest.TestCase):
+    """The Gen 8 reverse holo: the type's chevrons where the card's own reverse plate shows foil."""
+    @staticmethod
+    def own():
+        img = np.full((H, W), 25, np.float32)       # a Scarlet & Violet plate's dark ground
+        img[30:1000, 30:700] = 70                   # its pattern's darkest
+        img[600:900, 300:700] = 235
+        img[100:500, 40:690] = 0                    # the art window
+        img[650:670, 60:80] = 0                     # an energy icon
+        return img
+
+    def test_the_pattern_shows_where_the_own_plate_shows_foil(self):
+        from unittest import mock
+        pattern = np.full((H, W), 180, np.float32)
+        with mock.patch.object(foil, "gen8_pattern", return_value=pattern) as made:
+            out = foil.gen8_plate("Grass", self.own())
+        made.assert_called_once_with("Grass")
+        self.assertEqual(out[10, 10], 0)            # the ground: no foil
+        self.assertEqual(out[300, 300], 0)          # the art window
+        self.assertEqual(out[660, 70], 0)           # the icon
+        self.assertEqual(out[700, 200], 180)        # the pattern's darkest still all foil: its own pattern goes
+        self.assertEqual(out[700, 400], 180)
+
+    def test_only_the_generic_reverse_is_replaced(self):
+        self.assertTrue(foil.generic_reverse({"_s": "TPCi/Cards3D/HoloFoil/FlatSilver", "_f": "FlatSilver"}))
+        self.assertTrue(foil.generic_reverse({"_s": "Cards/Foil/HoloFoil_FlatSilver_J"}))
+        self.assertFalse(foil.generic_reverse({"_s": "TPCi/Cards3D/HoloFoil/SvHolo"}))
+        self.assertFalse(foil.generic_reverse({"_s": "TPCi/Cards3D/HoloFoil/FlatSilver", "_e": "sv3_e_085"}))
+
+    def test_a_restyled_card_gets_it_whether_its_old_print_had_a_reverse_or_not(self):
+        from unittest import mock
+        canvas = np.full((H, W, 4), 255, np.float32)
+        flat = np.full((H, W), 235, np.float32)
+        flat[100:500, 40:690] = 0
+        pattern = np.full((H, W), 140, np.float32)
+        with mock.patch.object(foil, "printings", return_value={"base": None, "reverse": None}), \
+                mock.patch.object(foil, "me_reverse_plate", return_value=flat), \
+                mock.patch.object(foil, "gen8_pattern", return_value=pattern):
+            out = foil.build("sm1-1", "me", canvas, {}, {"stage": 0, "type": "Grass"})
+        self.assertIsNone(out["base"])
+        spec, texture = out["reverse"]
+        self.assertEqual(spec, foil.ME_REVERSE)
+        card = foil.card_space(texture)
+        self.assertEqual(card[700, 300], 140)
+        self.assertEqual(card[300, 300], 0)
+
+    def test_a_trainer_takes_the_chevrons_on_its_gen9_field(self):
+        from unittest import mock
+        gen9 = np.full((H, W), 20, np.float32)
+        gen9[40:70, 50:150] = 230                   # the header's lettering
+        gen9[140:1000, 30:700] = 120                # the pattern's field...
+        gen9[140:530, 55:680] = 20                  # ...round the art window
+        gen9[890:990, 240:705] = 20                 # the rule pill's dark rim
+        gen9[895:985, 245:700] = 170                # the pill
+        pattern = np.full((H, W), 200, np.float32)
+        with mock.patch.object(foil, "printings", return_value={"reverse": {}}), \
+                mock.patch.object(foil, "plate", return_value=gen9), \
+                mock.patch.object(foil, "gen8_pattern", return_value=pattern):
+            out = foil.gen8_trainer_plate("Item")
+        self.assertEqual(out[50, 100], 230)         # lettering as Gen 9 prints it
+        self.assertEqual(out[300, 300], 20)         # the art window dark
+        self.assertEqual(out[700, 300], 200)        # the chevrons
+        self.assertEqual(out[940, 400], 170)        # the pill as Gen 9 prints it
 
 
 class InPlace(unittest.TestCase):
@@ -197,6 +262,42 @@ class InPlace(unittest.TestCase):
                 mock.patch.object(foil, "texture", return_value=None):
             out = foil.build_modern("me02-013", card, np.full((H, W, 4), 255, np.float32), {}, card)
         np.testing.assert_array_equal(foil.card_space(out["base"][1]), printed)
+
+
+class AceSpecFoil(unittest.TestCase):
+    """build_ace: an ACE SPEC Trainer's own AceFoil plate, the edited text's cut-outs moved."""
+    CARD = {"id": "sv05-154", "kind": "Tool", "name": "Maximum Belt", "effect": "Old text.", "illustrator": "A",
+            "character": "", "hp": "", "abilities": [], "attacks": [], "ace": True}
+
+    def build(self, edited, plate, scan, drawn):
+        from unittest import mock
+        record = {"_f": "AceFoil", "_s": "TPCi/Cards3D/HoloFoil/AceFoil"}
+        field = np.full((H, W), 110, np.float32)
+        with mock.patch.object(foil, "printings", return_value={"base": record, "reverse": None}),                 mock.patch.object(foil, "plate", return_value=plate),                 mock.patch.object(foil, "field", return_value=(field, np.ones((H, W)))),                 mock.patch.object(foil.tcg, "scan", return_value=scan),                 mock.patch.object(foil, "modern_front", return_value=None),                 mock.patch.object(foil, "texture", return_value=None):
+            return foil.build_ace("sv05-154", edited, np.full((H, W, 4), 255, np.float32), drawn, self.CARD)
+
+    def test_the_old_text_is_filled_and_the_new_cut_out(self):
+        scan = np.zeros((H, W, 4), np.float32)
+        scan[..., :3] = (236, 0, 140)
+        old = np.zeros((H, W), bool)
+        for x in range(100, 400, 12):                       # the printed text: white strokes on the pink
+            old[700:716, x:x + 5] = True
+        scan[old, :3] = 255
+        plate = np.full((H, W), 110, np.float32)
+        plate[700:716, 100:400][old[700:716, 100:400]] = 27                       # cut out of the foil
+        new = np.zeros((H, W), np.float32)
+        new[760:776, 100:400] = 1                           # the new text, a block of cover
+        out = self.build(dict(self.CARD, effect="New text."), plate, scan, {"text": new})
+        got = foil.card_space(out["base"][1]).astype(np.float32)
+        self.assertEqual(got[708, 102], 110)                # the old cut-out: foil again
+        self.assertLess(got[768, 200], 40)                  # the new text: cut at the printed value
+        self.assertEqual(got[600, 300], 110)                # elsewhere as printed
+        self.assertEqual(out["base"][0], ("TPCi/Cards3D/HoloFoil/AceFoil", "MAT_Cards3D_AceFoil", None))
+
+    def test_an_unedited_card_keeps_its_plate(self):
+        plate = np.random.default_rng(1).uniform(0, 255, (H, W)).astype(np.float32)
+        out = self.build(dict(self.CARD), plate, np.zeros((H, W, 4), np.float32), {})
+        np.testing.assert_array_equal(foil.card_space(out["base"][1]), plate.astype(np.uint8))
 
 
 if __name__ == "__main__":

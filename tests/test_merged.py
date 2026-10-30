@@ -36,7 +36,7 @@ class Merged(unittest.TestCase):
         for p in (mock.patch.object(gui.cache, "CACHE", Path(self.tmp.name)),
                   mock.patch.object(gui, "changelog", return_value="# log"),
                   mock.patch.object(gui.tcg, "TCGLIVE", "x"),
-                  mock.patch.object(gui.tcg, "card", return_value={"category": "Energy"})):   # for the skipped entries
+                  mock.patch.object(gui.tcg, "card", return_value={"category": "Stadium"})):   # for the skipped entries: a kind with no layout
             p.start()
             self.addCleanup(p.stop)
         gui._exports.clear()
@@ -76,13 +76,13 @@ class Merged(unittest.TestCase):
         self.two_projects()
         items, projects, repeats = gui.merged_items()
         self.assertEqual((projects, repeats), (2, 1))
-        self.assertEqual([i["id"] for i in items], ["swsh6-99", "sv03.5-065", "sma-SV33", "swsh3-88"])   # no Energy
+        self.assertEqual([i["id"] for i in items], ["swsh6-99", "sv03.5-065", "sma-SV33", "swsh3-88"])   # no skipped card
         by = {i["id"]: i for i in items}
         self.assertEqual(by["swsh6-99"], {"id": "swsh6-99", "edits": {"hp": "2"}, "style": "panel", "attacks": False,
                                           "foil": True})                       # the newer project's copy
         self.assertEqual(by["swsh3-88"], {"id": "swsh3-88", "edits": {"hp": "1"}, "style": "hybrid", "attacks": True,
                                           "foil": False})
-        self.assertFalse(by["sma-SV33"]["foil"])                               # a Trainer has no foil
+        self.assertTrue(by["sma-SV33"]["foil"])                                # a Trainer has the Gen 9 reverse holo
         with mock.patch.object(gui.tcg, "TCGLIVE", None):                      # no extract: no foil asked for
             self.assertFalse(any(i["foil"] for i in gui.merged_items()[0]))
 
@@ -108,8 +108,9 @@ class Merged(unittest.TestCase):
         self.assertEqual((done["state"], done["done"], done["failed"]), ("done", 4, [
             {"id": "sv03.5-065", "why": "TCGdex has no scan"}]))
         with zipfile.ZipFile(gui.merged_file(job["id"])) as z:
-            self.assertEqual(sorted(z.namelist()), ["CHANGELOG.md", "NOT-INCLUDED.txt", "sma-SV33-me.png",
-                                                    "swsh3-88-me.png", "swsh6-99-foil.json", "swsh6-99-me.png"])
+            self.assertEqual(sorted(z.namelist()), ["CHANGELOG.md", "NOT-INCLUDED.txt", "sma-SV33-foil.json",
+                                                    "sma-SV33-me.png", "swsh3-88-me.png", "swsh6-99-foil.json",
+                                                    "swsh6-99-me.png"])
             self.assertEqual(z.read("swsh6-99-me.png"), b"png-swsh6-99-{'hp': '2'}-panel")
             self.assertIn("sv03.5-065: TCGdex has no scan", z.read("NOT-INCLUDED.txt").decode())
 

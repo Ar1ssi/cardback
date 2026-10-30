@@ -29,7 +29,7 @@ from . import cache, tcg
 from .imaging import luminance
 
 W, H = 733, 1024
-VERSION = 1
+VERSION = 2                     # 2: a glyph of two samples unlike each other left out (v1's Dragon held an "a")
 UP = 4                          # glyphs are kept at 4x, the supersampling typeset sets text at
 BACKGROUND = 61                 # px: median window giving the panel behind the print
 INK_SHARE = 85                  # percentile of how far the print stands out that is its full ink
@@ -382,12 +382,13 @@ def name_baseline(scan, damage_left, top, bottom):
 def average(samples):
     """{glyph: (shape, [(sequence, index, UP x top-left of the shape's frame)])}: each glyph's samples aligned on
     their running mean and averaged; halfway, samples unlike the mean (a symbol's gap matched to the wrong words)
-    are dropped."""
+    are dropped. A glyph of two samples unlike each other is left out: neither can be told the right one."""
     by_glyph = {}
     for seq, j, (shape, corner) in samples:
         by_glyph.setdefault(seq[j], []).append((seq, j, shape, corner))
     out = {}
     for ch, items in by_glyph.items():
+        n, unlike = len(items), 0
         h = max(s.shape[0] for _, _, s, _ in items) + 16 * UP
         w = max(s.shape[1] for _, _, s, _ in items) + 16 * UP
         mean = np.zeros((h, w), np.float32)
@@ -399,13 +400,17 @@ def average(samples):
                 _, _, _, (lx, ly) = cv2.minMaxLoc(cv2.matchTemplate(mean, shape, cv2.TM_CCORR))
                 under = mean[ly:ly + shape.shape[0], lx:lx + shape.shape[1]]
                 agree = float((under * shape).sum() / (np.sqrt((under ** 2).sum() * (shape ** 2).sum()) + 1e-6))
-                if round_ == ALIGN_ROUNDS // 2 and agree < AGREE and len(items) > 2:
-                    continue
+                if round_ == ALIGN_ROUNDS // 2 and agree < AGREE:
+                    unlike += 1
+                    if n > 2:
+                        continue
                 kept.append((seq, j, shape, (cx, cy)))
                 total[ly:ly + shape.shape[0], lx:lx + shape.shape[1]] += shape
                 frames.append((seq, j, (cx - lx, cy - ly)))
             items = kept
             mean = total / len(items)
+        if unlike and n == 2:
+            continue
         out[ch] = (mean, frames)
     return out
 
