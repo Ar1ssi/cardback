@@ -429,7 +429,7 @@ def changes(before, after):
     if b.get("stage") and a.get("portrait") != b.get("portrait"):
         out.append(f"Portrait: from {b['portrait']}" if b.get("portrait") else "Portrait: found by name")
     if a.get("mega_rule") != b.get("mega_rule"):
-        out.append("Mega Evolution rule (XY): " + ("added" if b.get("mega_rule") else "taken off"))
+        out.append("Mega Evolution rule: " + ("added" if b.get("mega_rule") else "taken off"))
     out += _blocks("Ability", a["abilities"], b["abilities"], _ability_diff, lambda x: f"{x['name']}: {_quote(x['effect'])}")
     out += _blocks("Attack", a["attacks"], b["attacks"], _attack_diff, _attack_line)
     for side in ("weakness", "resistance"):

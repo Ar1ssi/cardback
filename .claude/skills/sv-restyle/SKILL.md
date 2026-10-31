@@ -64,10 +64,9 @@ headless session). The same edits go through `svrestyle.edit.apply` if you scrip
 `mecompose.compose_card(id, card=edit.apply(mecompose.read_card(id), edits))` (Mega Evolution) or
 `trainer.compose_card(id, card=edit.apply(trainer.read_card(id), edits))` (Trainers: name, character, kind, hp,
 illustrator, effect, abilities, attacks).
-`{"mega_rule": true}` (the editor's "Mega Evolution rule") puts the XY Mega Evolution rule box under any Pokemon's art
-(`svrestyle/xyrule.py`, lifted from the XY "M ... EX" prints); abilities and attacks move under it, and a warning says
-when they had to be set smaller to fit. On a Mega ex print they are set again in the ex layout, whose spacing can wrap
-a line the print fits on one: say so when showing one.
+`{"mega_rule": true}` (the editor's "Mega Evolution rule") sets XY's Mega Evolution rule the Gen 9 way
+(`svrestyle/megarule.py`): a Tera-style panel under the "Evolves from" strip, labelled by the Mega badge (a Mega ex
+print's own, else one rebuilt from the Mega ex prints with the Pokemon's name). Abilities and attacks are not moved.
 
 ## 3c. Energy
 `python -m svrestyle card <id>` takes Energy ids (`sm3.5-69`, `sm2-166`, `base1-99`); output names end `-energy.png`

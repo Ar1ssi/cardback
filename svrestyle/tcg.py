@@ -262,15 +262,6 @@ def _tcglive_scan(card_id, dest):
     return True
 
 
-def web_scan(card_id):
-    """The card's pokemontcg.io scan as float32 RGBA at 733x1024, with or without a TCG Live extract (eras the game
-    does not carry, such as XY)."""
-    dest = cache.path("web-scans", f"{card_id}.png")
-    if not dest.exists():
-        _web_scan(card_id, dest)
-    return np.asarray(_open(dest)).astype(np.float32)
-
-
 def scan(card_id, expect_sha=None):
     """The card scan as float32 RGBA at 733x1024."""
     dest = cache.path("scans", f"{card_id}.png")

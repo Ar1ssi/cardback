@@ -44,7 +44,7 @@ ME_REVERSE = ("TPCi/Cards3D/HoloFoil/FlatSilver", "MAT_Cards3D_FlatSilver", None
 NON_FOIL = "NonFoil"      # in the material name of a non-foil printing (old bundles: Standard_NonFoil_J)
 
 # Drawn kinds left out of the foil (black on the plate).
-STAGE_CUT = ("stage", "stage_text", "portrait", "evolves", "mega_rule")     # mega_rule: the XY box (xyrule.KIND)
+STAGE_CUT = ("stage", "stage_text", "portrait", "evolves", "mega_rule")     # mega_rule: megarule.KIND
 EX_CUT = ("hp", "type_icon", "icon", "row_icon", "badge", "ability_name", "text", "row_text", "footer",
           "stage_text", "portrait", "evolves", "mega_rule")
 ME_REVERSE_CUT = ("icon", "row_icon", "badge", "ability_name", "footer") + STAGE_CUT
