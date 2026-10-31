@@ -389,6 +389,23 @@ class BlocksMoved(unittest.TestCase):
         self.assertEqual(got[764, 72], 0)                             # the new icon
         self.assertEqual(got[588, 100], 255)                          # no art carried under the new badge
 
+    def test_words_are_cut_out_of_the_art_s_etch(self):
+        """The etch cuts the print's words out of the art's etch they run over (me03-055's "Shuffle"): the old words'
+        holes close, the new words are cut out."""
+        etch = np.full((TEX, TEX), 255, np.uint8)
+        view = etch[:, tcg.BLEED_X:tcg.BLEED_X + W]
+        view[600:650, 300:520] = 0                                    # a shard of the art's etch
+        old = glyphs(612, 624, 320, 400)
+        view[old > 0] = 255                                           # the old words cut out of it
+        new = glyphs(630, 642, 420, 480)
+        edited = dict(self.MEGA, attacks=[{"cost": ["Water"], "name": "Ryuno Glide", "damage": "160", "effect": "N"}])
+        out = foil.etch_edits(etch, self.MEGA, edited, {"text": new}, ("moves",), {"text": old})
+        got = out[:, tcg.BLEED_X:tcg.BLEED_X + W]
+        self.assertEqual(got[618, 320], 0)                            # the old letters: etch again
+        self.assertEqual(got[636, 420], 255)                          # the new ones cut out
+        self.assertEqual(got[636, 423], 0)                            # between them, the art's etch
+        self.assertEqual(got[700, 400], 255)                          # plain etch stays
+
 
 TEX = foil.TEX
 

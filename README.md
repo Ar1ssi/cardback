@@ -249,7 +249,9 @@ The holofoil follows: the white plate cuts re-inked white words out (to Darkness
 other edit then starts from the recoloured print, which is cached (`modern.cleaned` keys its LaMa cleanup on the print
 itself). The etch of an ex whose abilities, attacks or weakness row are set again follows them too: the old icons'
 etched rings and the Ability badge's pill go from where the print has them, the new ones get the card's own etch of
-them (or Mega Dragonite ex's badge), on plain etch: not the art's etch that runs up to them.
+them (or Mega Dragonite ex's badge), on plain etch: not the art's etch that runs up to them. Words are never etched:
+the etch cuts them out of the art's etch they run over, so the old words' holes in it close (where solid etch lies
+either side of them) and the new words are cut out.
 
 **Regular Scarlet & Violet / Mega Evolution cards** keep their own print too
 (`retype.py`): every regular card of a type prints the same frame (`meframe.template`), so what the card prints that

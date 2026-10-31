@@ -102,6 +102,11 @@ LIT_BADGES = (ME_ULTRA, EX_FOIL[0])
 ETCH_GROW = 4      # px round a new icon or badge kept clear of other etch
 ETCH_OWN = {"icon": 2, "row_icon": 2, "badge": -1}   # px round an icon or badge its own etch reaches (negative:
 ETCH_OFF = {"icon": 2, "row_icon": 2, "badge": 1}    # inside it), and what taking it off takes (etched)
+WORDS = ("text", "ability_name")   # kinds of print the etch cuts out of the art's etch (etch_words)
+ETCHED = 128       # etch value under which a pixel is etched
+WORD_REACH = 2     # px round the old words' letters (moved onto the print) their holes in the etch may reach
+WORD_GAP = 6       # px: a hole closes with solid etch this near on both sides of it (across or up and down),
+WORD_PASSES = 4    # and closed holes count as solid for the next pass
 EX_FILL_GROW = 5   # Absol's plate: its HP digits are a little bolder there than as set here
 BORDER_FOIL = 255  # the SV ex border on Absol's plate where its art does not spill over: all foil
 # A card's own foil field (field()): its plate with what is printed on it taken off.
@@ -1151,6 +1156,33 @@ def _planes(img):
     return img[..., None] if img.ndim == 2 else img
 
 
+def etch_words(view, colours, e, old, new):
+    """The words of abilities and attacks are never etched: where they run over the art's etch, it is cut out round
+    their letters (me03-055's "Shuffle", me04-048's "attack"). The old words' holes close where solid etch lies
+    either side of them (not hatching: it opens away), and the new words are cut out. view: the etch being edited
+    (card space), e: as printed; old, new: the words' coverage."""
+    body = cv2.morphologyEx((e < ETCHED).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0
+    holes = dilate(old > 0.3, WORD_REACH) & (e >= ETCHED)
+    if holes.any() and body.any():
+        dark, closed = float(np.median(e[body])), np.zeros_like(holes)
+        for _ in range(WORD_PASSES):            # letters closed back the ones beside them (lines over lines)
+            between = np.zeros_like(holes)
+            for axis in (0, 1):
+                before, after = np.zeros_like(holes), np.zeros_like(holes)
+                for k in range(1, WORD_GAP + 1):
+                    before |= np.roll(body, k, axis=axis)
+                    after |= np.roll(body, -k, axis=axis)
+                between |= before & after
+            more = holes & between & ~closed
+            if not more.any():
+                break
+            closed |= more
+            body |= more
+        view[closed, :colours] = dark
+    c = np.clip(new, 0, 1)[..., None]
+    view[..., :colours] = np.round(view[..., :colours] * (1 - c) + 255 * c).astype(view.dtype)
+
+
 def etch_edits(etch, original, card, drawn, groups, printed=None):
     """A Mega ex's etch (1024x1024, TCG Live's layout) after its abilities, attacks or weakness row are set again:
     the etch rings the print's cost and row icons and edges the Ability badge's pill, so the old ones go (filled with
@@ -1168,6 +1200,7 @@ def etch_edits(etch, original, card, drawn, groups, printed=None):
     kinds = []
     if "moves" in groups:
         moves = printed if printed is not None else modern._drawn(modern._moves, original, compose.WHITE)
+        etch_words(view, colours, e, modern._cover(moves, WORDS), modern._cover(drawn, WORDS))
         icons, badge = modern._cover(moves, ("icon",)), modern._cover(moves, ("badge",))
         kinds += [("icon", icons, _parts(icons)), ("badge", badge, _parts(badge))]
     if "row" in groups:
@@ -1180,8 +1213,8 @@ def etch_edits(etch, original, card, drawn, groups, printed=None):
             ring = dilate(hole, 6) & ~dilate(hole, 2)               # the etch round it, past its own edge
             view[hole, :colours] = np.median(e[ring])
         new = drawn.get(kind)
-        donor = (e, own[0][0]) if own else _badge_etch() if kind == "badge" else None
-        if new is None or donor is None:
+        donor = None if new is None else (e, own[0][0]) if own else _badge_etch() if kind == "badge" else None
+        if donor is None:
             continue
         src, smask = donor
         shape = etched(smask, kind)
