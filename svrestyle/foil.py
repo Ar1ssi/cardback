@@ -41,6 +41,7 @@ ASSET_VERSION = "2"
 EX_FOIL = ("TPCi/Cards3D/HoloFoil/SunPillar", "MAT_Cards3D_SunPillar", "TEX_SouthernCross")
 ME_HOLO = ("TPCi/Cards3D/HoloFoil/SvHolo", "MAT_Cards3D_SvHolo", None)
 ME_REVERSE = ("TPCi/Cards3D/HoloFoil/FlatSilver", "MAT_Cards3D_FlatSilver", None)
+ME_ULTRA = "TPCi/Cards3D/HoloFoil/SvUltra"      # a Mega ex Double Rare's shader
 NON_FOIL = "NonFoil"      # in the material name of a non-foil printing (old bundles: Standard_NonFoil_J)
 
 # Drawn kinds left out of the foil (black on the plate).
@@ -88,10 +89,19 @@ FILL_GROW = 4      # px around a reference card's own marks that are filled in w
 PANEL_INSET = 6    # the Mega Evolution text panel (meframe.PANEL) less its rim: all foil but the marks on it
 BLOCK_REACH = 3     # px: a block's printed cut-outs may sit this far from where the composers set its ink
 BLOCK_SHOWN = 0.3   # share of a kind's ink that must fall on cut-outs for the plate to cut that kind out
+BLOCK_RIM = 6       # px round an old block's ink (moved onto its print) that its print on the plate may reach
+BLOCK_ON = 0.7      # share of a cut-out shape on that rim for the whole shape to be the block's (a badge, an icon)
+BLOCK_SIGMA = 12    # px the plate round a block's ink is read over (ink_value): into the middle of a Mega ex's white
+                    # badge, whose silver rim prints as the plate round it
 FOOTER_ZONE = (40, 935, 330, 996)   # x0, y0, x1, y1: illustrator, regulation mark, set code, number, rarity
 ROW_REACH = 40     # px either side a filled pixel takes its row's value from
 BADGE_ETCH = "me02.5-152"   # Mega Dragonite ex: its etch edges an Ability badge's pill (a Mega ex given an Ability)
-ETCH_GROW = 4      # px round an icon or the badge whose etch is its own
+# ex plates that light the Ability badge (a white pill, its word cut out): Mega ex (me02.5-152, me04-022, me01-003)
+# and Scarlet & Violet ex (sv05-104, sv03.5-003). An ex given an Ability takes BADGE_ETCH's badge on these.
+LIT_BADGES = (ME_ULTRA, EX_FOIL[0])
+ETCH_GROW = 4      # px round a new icon or badge kept clear of other etch
+ETCH_OWN = {"icon": 2, "row_icon": 2, "badge": -1}   # px round an icon or badge its own etch reaches (negative:
+ETCH_OFF = {"icon": 2, "row_icon": 2, "badge": 1}    # inside it), and what taking it off takes (etched)
 EX_FILL_GROW = 5   # Absol's plate: its HP digits are a little bolder there than as set here
 BORDER_FOIL = 255  # the SV ex border on Absol's plate where its art does not spill over: all foil
 # A card's own foil field (field()): its plate with what is printed on it taken off.
@@ -741,14 +751,14 @@ def printed_ink(original, groups):
     return out
 
 
-def ink_value(img, cover, around):
+def ink_value(img, cover, around, sigma=INK_SIGMA):
     """The plate value a printed kind of ink has where it is printed (cover), against the plate interpolated from
-    just around each stroke (outside `around`, all the ink): (value, ground), or None where the plate does not
-    show it (the foil runs through, as on most reverse holos' names)."""
+    just around each stroke (outside `around`, all the ink; over sigma px): (value, ground), or None where the plate
+    does not show it (the foil runs through, as on most reverse holos' names)."""
     core = cover > 0.5
     if core.sum() < INK_MIN:
         return None
-    ground, weight = _smooth(img, ~dilate(around, INK_CLEAR), INK_SIGMA)
+    ground, weight = _smooth(img, ~dilate(around, INK_CLEAR), sigma)
     judged = core & (weight > 0.05)
     if judged.sum() < INK_MIN:
         return None
@@ -757,16 +767,127 @@ def ink_value(img, cover, around):
     return float(np.median(img[judged])), float(np.median(ground[judged]))
 
 
-def printed_blocks(original, groups, card=None):
-    """What the card prints in the edited text blocks, by kind, as the composers set it (coverage 0..1); in the
-    weakness row, only what the edit to card takes off."""
+def printed_blocks(original, groups, card=None, scan=None):
+    """What the card prints in the edited text blocks, by kind, as the composers set it (coverage 0..1): its
+    abilities and attacks moved onto the print (scan: modern.moves_as_printed), the weakness row where the composers
+    set it (they match it), only what the edit to card takes off."""
     from . import modern
     out = {}
     if "moves" in groups:
-        out.update(modern._drawn(modern._moves, original, compose.WHITE))
+        out.update(modern.moves_as_printed(scan, original) if scan is not None
+                   else modern._drawn(modern._moves, original, compose.WHITE))
     if "row" in groups:
         out.update(modern._drawn(modern._row, modern.row_off(original, card) if card else original, compose.WHITE))
     return out
+
+
+def block_cutouts(img, cover):
+    """The plate's cut-outs of an old block's print (cover: its ink, moved onto the print), rims and all: every
+    cut-out shape that touches the ink and is no bigger than lettering, or lies mostly on it (an icon, a cut-out
+    Ability badge). Other dark shapes stay whole: the art and the frame's glitter the print runs into, a panel the
+    plate leaves dark all over (SvHolo prints: foil on the art only), where the print is no cut-out."""
+    cut_px = img < MARK_DARK
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cut_px.astype(np.uint8), connectivity=8)
+    area = stats[:, cv2.CC_STAT_AREA]
+    on = np.bincount(labels[dilate(cover > 0.05, BLOCK_RIM) & cut_px], minlength=n)
+    whole = (on > 0) & ((area <= LETTER_MAX) | (on >= BLOCK_ON * area))
+    whole[0] = False
+    return dilate(whole[labels], MARK_GROW)
+
+
+def take_off_blocks(img, record, printed, moves_off, row_off):
+    """The edited blocks' old print off a plate -> (plate, {kind: (value, ground) | (value, None) | None}): how the
+    plate printed each kind (cut out: block_cutout_value; else lit or dark on its ground: ink_value; None: the foil
+    runs through it). printed: the blocks' ink by kind (printed_blocks); moves_off, row_off: what the edit takes off
+    the card (modern.taken_off). Abilities and attacks: their cut-outs take the card's own foil field, their lit or
+    dark print the plate round it. The weakness row: its cut-outs take the foil field where the card's own foil is
+    known (what every printing cuts, the row's lines, stays)."""
+    marks = dilate(img < MARK_DARK, MARK_GROW)
+    around = np.zeros((H, W), bool)
+    for cover in printed.values():
+        around |= cover > 0.05
+    moves = [k for k in BLOCK_KINDS["moves"] if k in printed]
+    learned = {}
+    for kind, cover in printed.items():
+        if kind in moves:
+            shown = ink_value(img, cover, around, BLOCK_SIGMA)
+            if shown is not None and shown[0] >= MARK_DARK:      # lit, or dark but not cut out (a white badge's
+                learned[kind] = shown                            # word is cut out, the badge is not)
+                continue
+        value = block_cutout_value(img, cover, marks)
+        learned[kind] = None if value is None else (value, None)
+    old = np.zeros((H, W), np.float32)
+    for kind in moves:
+        np.maximum(old, printed[kind], out=old)
+    gone = moves_off & block_cutouts(img, old)
+    if gone.any() or (row_off & marks).any():
+        own_field, own = field(record)
+        gone |= row_off & marks & (own > OWN_KNOWN)      # what every printing cuts (the row's lines) stays
+        out = np.where(gone, own_field, img)
+        # the filled cut-out's edge, softened so no rim shows where it was (cut-outs kept stay sharp)
+        inner = cv2.erode(gone.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+        seam = dilate(gone, 2) & ~inner & ~(marks & ~gone)
+        out[seam] = cv2.GaussianBlur(out, (0, 0), 1.5)[seam]
+        img = out
+    shown = np.zeros((H, W), bool)       # lit or dark print, not cut out (a Mega ex's white badge, its names)
+    for kind in moves:
+        value = learned[kind]
+        if value is not None and value[1] is not None:
+            shown |= dilate(printed[kind] > 0.05, BLOCK_RIM)
+    shown &= moves_off
+    if shown.any():
+        source = ~dilate(shown | (img < MARK_DARK), MARK_GROW)
+        img = np.where(shown, fill_from(img, source) + grain_like(img, source & dilate(shown, GRAIN_NEAR)), img)
+    return img, learned
+
+
+def lit(value):
+    """Whether a learned value is ink the plate lights (brighter than the plate round it)."""
+    return value is not None and value[1] is not None and value[0] > value[1]
+
+
+@functools.lru_cache(maxsize=1)
+def _badge_plate():
+    """(BADGE_ETCH's white plate, its Ability badge's box, its Ability name's plate value): the badge and name of a
+    Mega ex's plate, for one whose print has no Ability. Both are found on the print by their red."""
+    rgb = tcg.scan(BADGE_ETCH)[..., :3]
+    red = retype._print_red(rgb)
+    badge = retype._badge(red)
+    ys, xs = np.nonzero(badge)
+    img = plate(printings(BADGE_ETCH)["base"])
+    rows = np.zeros((H, W), bool)
+    rows[ys.min():ys.max() + 1, xs.max():] = True
+    name = cv2.erode((red & rows).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    return img, (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1), float(np.median(img[name]))
+
+
+def badge_source(learned, printed, as_printed, record, original):
+    """Where an Ability badge the plate lights is taken from -> (plate, the badge's box on it), or None (the plate
+    cuts the badge out, or prints none): the print's own (an ex's white pill, its word cut out), or on an ex whose
+    print has no Ability, BADGE_ETCH's (its name's value is learned with it) when its kind of plate lights badges."""
+    value = learned.get("badge")
+    if value is not None:
+        if not lit(value):
+            return None
+        ys, xs = np.nonzero(printed > 0.5)
+        return as_printed, (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1)
+    if not (original["family"] == "ex" and "badge" not in learned
+            and legacy_shader(record.get("_s") or "") in LIT_BADGES):
+        return None
+    img, box, name = _badge_plate()
+    learned["ability_name"] = (name, None)
+    return img, box
+
+
+def put_badge(img, cover, src, box):
+    """src's badge (inside box) set where cover is, centred on each part of it."""
+    sx0, sy0, sx1, sy1 = box
+    for part, (x0, y0, x1, y1) in _parts(cover):
+        dx, dy = round((x0 + x1 - sx0 - sx1) / 2), round((y0 + y1 - sy0 - sy1) / 2)
+        moved = np.roll(src, (dy, dx), axis=(0, 1))
+        c = cover * dilate(part, 2)
+        img = img * (1 - c) + moved * c
+    return img
 
 
 def block_cutout_value(img, cover, marks):
@@ -779,7 +900,8 @@ def block_cutout_value(img, cover, marks):
     hit = dilate(core, BLOCK_REACH) & marks
     if hit.sum() < BLOCK_SHOWN * core.sum():
         return None
-    return float(np.median(img[hit]))
+    cut_px = hit & (img < MARK_DARK)           # not the rims round them: thin text would be set as grey as its rims
+    return float(np.median(img[cut_px if cut_px.any() else hit]))
 
 
 @functools.lru_cache(maxsize=1)
@@ -878,12 +1000,9 @@ def build_modern(card_id, card, canvas, drawn, original):
     groups = tuple(g for g in edited if g not in BLOCKS)
     blocks = tuple(g for g in edited if g in BLOCKS and not (g == "moves" and swapped))
     taken_off = modern.taken_off(card_id, printed_as, groups, card, scan) if groups else None
-    block_off = None
-    if blocks:
-        mask, row = modern.taken_off(card_id, printed_as, blocks, card, scan)
-        block_off = mask | row
+    block_off = modern.taken_off(card_id, printed_as, blocks, card, scan) if blocks else None
     printed = printed_ink(printed_as, groups)
-    in_blocks = printed_blocks(printed_as, blocks, card)
+    in_blocks = printed_blocks(printed_as, blocks, card, scan)
     shed = modern.stage_off(printed_as, card) if "stage" in groups else np.zeros((H, W), bool)
     if printed_as["stage"]:
         drawn.pop("stage", None)            # the card's own pieces, set again where they were: as printed
@@ -906,21 +1025,9 @@ def build_modern(card_id, card, canvas, drawn, original):
             img = fill(img, shed)
         if inplace.OFF in drawn:
             img = reprinted(img, drawn[inplace.OFF], drawn.get(inplace.ON))
-        learned = {}
+        learned, as_printed = {}, img
         if block_off is not None:
-            marks = dilate(img < MARK_DARK, MARK_GROW)
-            for kind, cover in in_blocks.items():
-                value = block_cutout_value(img, cover, marks)
-                learned[kind] = None if value is None else (value, None)
-            gone = block_off & marks
-            if gone.any():
-                own_field, own = field(record)
-                gone &= own > OWN_KNOWN       # what every printing cuts (the row's lines) stays cut, not bridged
-                img = np.where(gone, own_field, img)
-                # the filled cut-out's edge, softened so no rim shows where it was (cut-outs kept stay sharp)
-                inner = cv2.erode(gone.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
-                seam = dilate(gone, 2) & ~inner & ~(marks & ~gone)
-                img[seam] = cv2.GaussianBlur(img, (0, 0), 1.5)[seam]
+            img, learned = take_off_blocks(img, record, in_blocks, *block_off)
         if taken_off is not None:
             mask, row = taken_off
             off = mask | row
@@ -952,9 +1059,15 @@ def build_modern(card_id, card, canvas, drawn, original):
         img = retab(img, drawn)
         if letters is not None and "stage_text" in drawn:
             learned["stage_text"] = (letters, None)
+        badge = (badge_source(learned, in_blocks.get("badge"), as_printed, record, printed_as)
+                 if "badge" in drawn and "moves" in blocks else None)
+        if badge is not None:
+            img = put_badge(img, drawn["badge"], *badge)
         for kind, value in learned.items():
-            if value is not None and kind in drawn and kind != "logo":
+            if value is not None and kind in drawn and kind != "logo" and not (kind == "badge" and badge):
                 img = img * (1 - drawn[kind]) + value[0] * drawn[kind]
+        if badge is not None:
+            learned.setdefault("badge", None)         # set: not cut out below
         if card["family"] == "ex" and key == "base" and "logo" in drawn and learned.get("logo"):
             before = printed["logo"]
             cols = lambda a: np.flatnonzero(a.max(axis=0) > 0.5)
@@ -976,7 +1089,7 @@ def build_modern(card_id, card, canvas, drawn, original):
         if mega:
             extra["etch"] = megaretype.etch(extra["etch"], original, card["type"])
         if blocks and extra["etch"] is not None and printed_as["family"] == "ex" and card["name"].startswith("Mega "):
-            extra["etch"] = etch_edits(extra["etch"], printed_as, card, drawn, blocks)
+            extra["etch"] = etch_edits(extra["etch"], printed_as, card, drawn, blocks, in_blocks)
         out[key] = (spec, plate_texture(img * (alpha / 255)), extra)
     if card["family"] == "regular" and out["base"] is None and out["reverse"] is None:
         # a print with no foil at all: the Gen 8 reverse holo on its era's frame (a reference print's plate, the
@@ -1015,14 +1128,22 @@ def _parts(cover):
 
 @functools.lru_cache(maxsize=1)
 def _badge_etch():
-    """(BADGE_ETCH's etch in card space, its Ability badge's box): the badge found on its print by its red."""
+    """(BADGE_ETCH's etch in card space, its Ability badge): the badge found on its print by its red."""
     rgb = tcg.scan(BADGE_ETCH)[..., :3]
     badge = retype._badge(retype._print_red(rgb))
-    ys, xs = np.nonzero(badge)
-    r = retype.BADGE_RIM
     rec = printings(BADGE_ETCH)["base"]
     etch = _planes(texture(rec, rec["_e"]))[:, tcg.BLEED_X:tcg.BLEED_X + W, 0].astype(np.float32)
-    return etch, (xs.min() + r, ys.min() + r, xs.max() + 1 - r, ys.max() + 1 - r)
+    return etch, badge
+
+
+def etched(mask, kind, taking_off=False):
+    """Where an icon's or the badge's own etch lies (mask: where it is printed; me02.5-152, me04-022, me05-008): an
+    icon's out to ETCH_OWN px, the badge's inside its silver rim but for its dotted edge, which taking it off takes
+    too; past that is the art's etch (it may touch the badge's rim)."""
+    reach = ETCH_OFF[kind] if taking_off else ETCH_OWN[kind]
+    if reach >= 0:
+        return dilate(mask, reach)
+    return cv2.erode(mask.astype(np.uint8), np.ones((2 * -reach + 1,) * 2, np.uint8)).astype(bool)
 
 
 def _planes(img):
@@ -1030,10 +1151,12 @@ def _planes(img):
     return img[..., None] if img.ndim == 2 else img
 
 
-def etch_edits(etch, original, card, drawn, groups):
+def etch_edits(etch, original, card, drawn, groups, printed=None):
     """A Mega ex's etch (1024x1024, TCG Live's layout) after its abilities, attacks or weakness row are set again:
     the etch rings the print's cost and row icons and edges the Ability badge's pill, so the old ones go (filled with
-    the etch round them) and the new ones get the print's own: an icon this card prints, the badge BADGE_ETCH's."""
+    the etch round them) and the new ones get the print's own: an icon or badge this card prints, else the badge
+    BADGE_ETCH's. printed: the old abilities and attacks by kind where the print has them (printed_blocks; default
+    where the composers set them)."""
     from . import modern
     if etch.shape[0] != TEX:
         return etch
@@ -1044,31 +1167,32 @@ def etch_edits(etch, original, card, drawn, groups):
     printed_as = lambda draw, c, kinds: modern._cover(modern._drawn(draw, c, compose.WHITE), kinds)
     kinds = []
     if "moves" in groups:
-        icons = printed_as(modern._moves, original, ("icon",))
-        kinds += [("icon", icons, _parts(icons)), ("badge", printed_as(modern._moves, original, ("badge",)), [])]
+        moves = printed if printed is not None else modern._drawn(modern._moves, original, compose.WHITE)
+        icons, badge = modern._cover(moves, ("icon",)), modern._cover(moves, ("badge",))
+        kinds += [("icon", icons, _parts(icons)), ("badge", badge, _parts(badge))]
     if "row" in groups:
         # only the row's changed sides are taken off and set again (modern.row_off / row_on)
         kinds += [("row_icon", printed_as(modern._row, modern.row_off(original, card), ("row_icon",)),
                    _parts(printed_as(modern._row, original, ("row_icon",))))]
     for kind, gone, own in kinds:
         for mask, _ in _parts(gone):                                # the old ones go
-            hole = dilate(mask, ETCH_GROW)
-            ring = dilate(hole, 4) & ~hole
+            hole = etched(mask, kind, taking_off=True)
+            ring = dilate(hole, 6) & ~dilate(hole, 2)               # the etch round it, past its own edge
             view[hole, :colours] = np.median(e[ring])
         new = drawn.get(kind)
-        donor = (e, own[0][1]) if own else _badge_etch() if kind == "badge" else None
+        donor = (e, own[0][0]) if own else _badge_etch() if kind == "badge" else None
         if new is None or donor is None:
             continue
-        src, (sx0, sy0, sx1, sy1) = donor
-        scx, scy = (sx0 + sx1) // 2, (sy0 + sy1) // 2
+        src, smask = donor
+        shape = etched(smask, kind)
+        clean = np.where(shape, src, 255)                           # its own etch only, on plain etch round it
+        ys, xs = np.nonzero(smask)
+        scx, scy = (xs.min() + xs.max() + 1) / 2, (ys.min() + ys.max() + 1) / 2
         for mask, (x0, y0, x1, y1) in _parts(new):                  # the new ones get the print's own, centred
-            hw, hh = (x1 - x0) // 2 + ETCH_GROW, (y1 - y0) // 2 + ETCH_GROW
-            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-            patch = src[scy - hh:scy + hh, scx - hw:scx + hw]
-            where = dilate(mask, ETCH_GROW)[cy - hh:cy + hh, cx - hw:cx + hw]
-            region = view[cy - hh:cy + hh, cx - hw:cx + hw]
-            for ch in range(colours):
-                region[..., ch] = np.where(where, patch, region[..., ch])
+            dx, dy = round((x0 + x1) / 2 - scx), round((y0 + y1) / 2 - scy)
+            where = np.roll(shape, (dy, dx), axis=(0, 1)) | dilate(mask, ETCH_GROW)
+            moved = np.roll(clean, (dy, dx), axis=(0, 1))
+            view[where, :colours] = moved[where][:, None]
     return out
 
 

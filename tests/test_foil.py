@@ -264,6 +264,135 @@ class InPlace(unittest.TestCase):
         np.testing.assert_array_equal(foil.card_space(out["base"][1]), printed)
 
 
+def box(y0, y1, x0, x1, value=1.0):
+    out = np.zeros((H, W), np.float32)
+    out[y0:y1, x0:x1] = value
+    return out
+
+
+def glyphs(y0, y1, x0, x1, step=6):
+    """Coverage like a word: upright strokes 2 px wide."""
+    out = np.zeros((H, W), np.float32)
+    for x in range(x0, x1 - 1, step):
+        out[y0:y1, x:x + 2] = 1
+    return out
+
+
+class BlocksMoved(unittest.TestCase):
+    """build_modern on an ex whose abilities and attacks are set again (me02.5-152 Mega Dragonite ex, as reported: the
+    old Ability's white badge stayed on the plate, the new one was not set). The old block is where the print has it
+    (printed_blocks: the composers' layout moved onto the print)."""
+    MEGA = {"id": "me02.5-152", "family": "ex", "type": "Dragon", "prefix": "", "name": "Mega Dragonite", "hp": "370",
+            "stage": 3, "evolves_from": "Dragonite", "portrait": "", "retreat": 2,
+            "abilities": [{"name": "Sky Transport", "effect": "Old."}],
+            "attacks": [{"cost": ["Water"], "name": "Ryuno Glide", "damage": "330", "effect": ""}],
+            "weakness": None, "resistance": None}
+    ULTRA = {"_f": "HoloFoil_SvUltra_J", "_s": "TPCi/Cards3D/HoloFoil/SvUltra"}
+    ZONE = box(524, 870, 30, 703) > 0
+
+    def build(self, card, plate, printed, drawn, field=None, record=None, original=None):
+        from unittest import mock
+        field = field if field is not None else (np.full((H, W), 183, np.float32), np.ones((H, W), np.float32))
+        original = original or self.MEGA
+        with mock.patch.object(foil, "printings", return_value={"base": record or self.ULTRA, "reverse": None}), \
+                mock.patch.object(foil, "plate", return_value=plate), \
+                mock.patch.object(foil, "field", return_value=field), \
+                mock.patch.object(foil, "printed_blocks", return_value=printed), \
+                mock.patch("svrestyle.modern.print_of", return_value=(np.zeros((H, W, 4), np.float32), original)), \
+                mock.patch("svrestyle.modern.taken_off", return_value=(self.ZONE, np.zeros((H, W), bool))), \
+                mock.patch.object(foil, "modern_front", return_value=None), \
+                mock.patch.object(foil, "texture", return_value=None):
+            out = foil.build_modern(card["id"], card, np.full((H, W, 4), 255, np.float32), drawn, original)
+        return foil.card_space(out["base"][1]).astype(np.float32)
+
+    @staticmethod
+    def lit_badge(plate, y0):
+        """A Mega ex plate's Ability badge: a white pill inside the sprite's rim, its word cut out."""
+        plate[y0 + 4:y0 + 31, 60:224] = 255
+        plate[y0 + 11:y0 + 24, 90:180][glyphs(0, 13, 0, 90)[:13, :90] > 0] = 20
+
+    def test_the_white_badge_moves_with_the_ability(self):
+        plate = np.full((H, W), 183, np.float32)
+        self.lit_badge(plate, 552)
+        plate[glyphs(560, 580, 240, 400) > 0] = 63                    # the Ability's name, dark on the plate
+        printed = {"badge": box(552, 587, 55, 229), "ability_name": glyphs(560, 580, 240, 400)}
+        edited = dict(self.MEGA, abilities=[{"name": "Multiscale", "effect": "New."}])
+        drawn = {"badge": box(591, 626, 55, 229), "ability_name": glyphs(599, 619, 240, 380)}
+        got = self.build(edited, plate, printed, drawn)
+        self.assertLess(abs(got[566, 200] - 183), 12)                 # the old badge: the plate round it again
+        self.assertLess(abs(got[570, 300] - 183), 12)                 # the old name too
+        self.assertEqual(got[600, 70], 255)                           # the new badge: the print's white pill...
+        self.assertLess(got[610, 90], 40)                             # ...its word cut out
+        self.assertLess(abs(got[609, 240] - 63), 3)                   # the new name at the print's value
+
+    def test_an_ex_given_an_ability_takes_the_white_badge(self):
+        from unittest import mock
+        donor = np.full((H, W), 183, np.float32)
+        self.lit_badge(donor, 552)
+        plate = np.full((H, W), 183, np.float32)
+        printed = {"icon": box(708, 742, 55, 89)}
+        plate[printed["icon"] > 0] = 10
+        edited = dict(self.MEGA, abilities=[{"name": "Multiscale", "effect": "New."}])
+        drawn = {"badge": box(591, 626, 55, 229), "ability_name": glyphs(599, 619, 240, 380),
+                 "icon": box(747, 781, 55, 89)}
+        original = dict(self.MEGA, abilities=[])
+        with mock.patch.object(foil, "_badge_plate", return_value=(donor, (55, 552, 229, 587), 63.0)):
+            got = self.build(edited, plate, printed, drawn, original=original)
+        self.assertEqual(got[600, 70], 255)                           # lit as such prints light it, not cut out
+        self.assertLess(abs(got[609, 240] - 63), 3)
+        self.assertLess(got[760, 70], 15)                             # the new cost icon cut out
+        self.assertGreater(got[720, 70], 170)                         # the old one gone
+
+    def test_a_plate_dark_over_the_whole_panel_stays_dark(self):
+        """SvHolo prints foil the art only (sv03-141, sv10.5w-078): taking the old block off made white rings and
+        letters out of the panel."""
+        plate = np.full((H, W), 200, np.float32)
+        plate[524:870, 30:703] = 0
+        printed = {"icon": box(708, 742, 55, 89), "text": glyphs(708, 742, 160, 380)}
+        card = dict(self.MEGA, family="regular", name="Scizor", abilities=[],
+                    attacks=[{"cost": ["Metal"], "name": "Cut", "damage": "40", "effect": ""}])
+        edited = dict(card, attacks=[{"cost": ["Metal"], "name": "Cut Down", "damage": "70", "effect": ""}])
+        holo = {"_f": "HoloFoil_SvHolo_J", "_s": "TPCi/Cards3D/HoloFoil/SvHolo"}
+        got = self.build(edited, plate, printed, {"icon": box(708, 742, 55, 89), "text": glyphs(708, 742, 160, 420)},
+                         field=(np.full((H, W), 250, np.float32), np.ones((H, W), np.float32)), record=holo,
+                         original=card)
+        self.assertEqual(got[524:870, 30:703].max(), 0)
+
+    def test_cut_out_text_goes_where_the_card_s_own_foil_is_not_known(self):
+        """White text cut out of the plate (Darkness Mega ex, me05-048): the old text stayed under the new."""
+        plate = np.full((H, W), 180, np.float32)
+        old = glyphs(600, 612, 50, 400)
+        plate[old > 0] = 8
+        edited = dict(self.MEGA, attacks=[{"cost": ["Water"], "name": "Ryuno Glide", "damage": "160", "effect": "N"}])
+        got = self.build(edited, plate, {"text": old}, {"text": glyphs(640, 652, 50, 400)},
+                         field=(np.full((H, W), 180, np.float32), np.zeros((H, W), np.float32)))
+        self.assertGreater(got[600:612, 50:400].min(), 170)           # the old text: foil again
+        self.assertLess(got[646, 50], 15)                             # the new text at the cut value, not grey
+
+    def test_the_etch_follows_the_print_not_the_composers(self):
+        """The old icons and badge go where the print has them, the new ones get their own etch only (not the art's
+        that touches the badge's rim), on plain etch round them."""
+        etch = np.full((TEX, TEX), 255, np.uint8)
+        view = etch[:, tcg.BLEED_X:tcg.BLEED_X + W]
+        view[556:584, 60:224] = 0                                     # the badge's etched pill
+        view[540:553, 60:140] = 0                                     # the art's etch, touching its rim
+        view[713:737, 60:84] = 0                                      # a cost icon's etch
+        printed = {"badge": box(552, 587, 55, 229), "icon": box(708, 742, 55, 89)}
+        drawn = {"badge": box(591, 626, 55, 229), "icon": box(747, 781, 55, 89)}
+        edited = dict(self.MEGA, abilities=[{"name": "Multiscale", "effect": "New."}])
+        out = foil.etch_edits(etch, self.MEGA, edited, drawn, ("moves",), printed)
+        got = out[:, tcg.BLEED_X:tcg.BLEED_X + W]
+        self.assertEqual(got[570, 150], 255)                          # the old badge gone
+        self.assertEqual(got[725, 72], 255)                           # the old icon gone
+        self.assertEqual(got[545, 100], 0)                            # the art kept
+        self.assertEqual(got[610, 150], 0)                            # the new badge
+        self.assertEqual(got[764, 72], 0)                             # the new icon
+        self.assertEqual(got[588, 100], 255)                          # no art carried under the new badge
+
+
+TEX = foil.TEX
+
+
 class AceSpecFoil(unittest.TestCase):
     """build_ace: an ACE SPEC Trainer's own AceFoil plate, the edited text's cut-outs moved."""
     CARD = {"id": "sv05-154", "kind": "Tool", "name": "Maximum Belt", "effect": "Old text.", "illustrator": "A",

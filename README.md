@@ -88,11 +88,17 @@ was printed in, read from its lines of glyphs (dark or white, and its keyline wh
 an edited ex name keeps the card's own ex logo. With holofoil on, the card's own TCG Live printings are re-made: the
 same shaders and the card's own plates, edited the way each plate prints that kind of ink: ink the plate shows (a
 cut-out name, an ex name's lit letters, the Stage tab's letters) is taken off and set again at the printed value;
-ink the plate runs through (most reverse holos' names and "Evolves from") leaves it as printed. In abilities,
-attacks and the weakness row, the old cut-outs (energy circles, the badge) take the card's own foil field, so a
-dropped cost leaves no circle behind, and new icons are cut like the printed ones; what every printing cuts (the
-row's lines) stays cut. The etch is
-carried over, and the front keeps the game's real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
+ink the plate runs through (most reverse holos' names and "Evolves from") leaves it as printed. In abilities and
+attacks the old block is looked for where the print has it: ex prints do not stack their blocks by the composers' rule
+(Mega Dragonite ex prints its Ability 53 px above where they would set it), so the composers' layout of the old block
+is moved onto the print, move by move and then line by line (`modern.moves_as_printed`). Its cut-out shapes (energy
+circles, white text's letters, a cut-out badge) take the card's own foil field, so a dropped cost leaves no circle and
+old text no ghost behind; its lit or dark print (an ex's white Ability badge, a dark Ability name) takes the plate round
+it. New icons and text are cut like the printed ones, at the printed value; a white badge is the print's own, moved,
+or on an ex given an Ability, Mega Dragonite ex's. Dark shapes that are not the block's stay: the art, the frame's
+glitter, a panel an SvHolo print leaves dark all over. In the weakness row the old cut-outs take the foil field too,
+and what every printing cuts (the row's lines) stays cut. The etch is carried over, and the front keeps the game's
+real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
 layout).
 
 ### Fairy
@@ -242,7 +248,8 @@ are left out.
 The holofoil follows: the white plate cuts re-inked white words out (to Darkness) or closes them (from it). Every
 other edit then starts from the recoloured print, which is cached (`modern.cleaned` keys its LaMa cleanup on the print
 itself). The etch of an ex whose abilities, attacks or weakness row are set again follows them too: the old icons'
-etched rings and the Ability badge's pill go, the new ones get the card's own (a badge, Mega Dragonite ex's).
+etched rings and the Ability badge's pill go from where the print has them, the new ones get the card's own etch of
+them (or Mega Dragonite ex's badge), on plain etch: not the art's etch that runs up to them.
 
 **Regular Scarlet & Violet / Mega Evolution cards** keep their own print too
 (`retype.py`): every regular card of a type prints the same frame (`meframe.template`), so what the card prints that

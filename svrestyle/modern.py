@@ -9,9 +9,10 @@ was edited is taken off and set again in the same layouts the restyles use.
   rebuilt from the strip's own shading, row by row and column by column (fill_strip).
 - Abilities and attacks: ex prints do not stack their blocks by one rule, so the old block is found on the card
   instead: everything in the text zone that stands out from the panel behind it (text, cost icons, the Ability
-  badge). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular cards share
-  it), ex cards in the Absol ex layout, in the old block's own ink (print_ink: its fill colour, and its keyline when
-  the text is outlined over full art).
+  badge); the holofoil, which needs each kind of it apart, takes the composers' layout moved onto the print
+  (moves_as_printed). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular
+  cards share it), ex cards in the Absol ex layout, in the old block's own ink (print_ink: its fill colour, and its
+  keyline when the text is outlined over full art).
 - Type: a regular card's print is lifted off its type's frame and set on the new type's (retype.py), in the new type's
   ink; what is set again takes that ink too. A Mega ex is recoloured on its own print first (megaretype.py), and that
   print is the card as printed for every other edit.
@@ -60,6 +61,13 @@ GHOST_MAX = 4000       # px: bigger standouts are not blots (art LaMa rebuilt)
 GHOST_GROW = 5         # px around a blot covered too: its soft edge is not caught as standing out
 CLEAN_VERSION = 24     # bump when cleaned() changes what it makes, so cached cleanups are made again
 ICON_SHADOW = 3        # px: a printed row icon's shadow reaches this far out (and down) from it
+# The composers stack a block of abilities and attacks by their own rule, which ex prints do not keep: where the old
+# block is printed, its layout is moved onto the print, move by move and then line by line (moves_as_printed).
+MOVE_SHIFT = 80      # px a move may lie above or below where the composers set it (me02.5-152's Ability: 53)
+LINE_SHIFT = 3       # px a line of it may lie further (the print's line pitch is not quite the composers')
+LINE_JOIN = 2        # px: rows of ink this close are one line
+MOVE_GAP = 20        # px: a gap this tall between two lines starts another move (lines: 5-8, header to body: 16)
+HEADERS = ("badge", "icon")   # kinds only the first line of a move holds
 # The old block's ink is read from its glyphs: shapes a glyph's size, lined up on a shared baseline.
 GLYPH_H = (5, 30)    # px: tallest and shortest glyph (accented capitals, commas aside)
 GLYPH_W = 40         # px: wider shapes are art or words run together
@@ -200,6 +208,76 @@ def _cover(drawn, kinds):
 def moves_ink(scan, family):
     """The old ability/attack block: what stands out from the panel in the text zone. -> bool HxW"""
     return ink_in(scan, MOVES_ZONE[family])
+
+
+def moves_as_printed(scan, original):
+    """The composers' block of the original's abilities and attacks (_drawn of _moves: coverage by kind) moved onto
+    its print: each move up or down to where the print's ink lies under it, then each of its lines a little further.
+    Set where the composers set it, the old cost icons and badge would be looked for where the print has none
+    (me02.5-152: its Ability lies 53 px above, its attack 23)."""
+    drawn = _drawn(_moves, original, compose.WHITE)
+    cover = dilate(_cover(drawn, tuple(drawn)) > 0.3, 1)        # the print's letters are not quite the composers'
+    lines = _lines(cover)
+    if not lines:
+        return drawn
+    strokes = ink_in(scan, MOVES_ZONE[original["family"]], holes=False)
+    header = _cover(drawn, HEADERS) > 0.3
+    out = {k: np.zeros((H, W), np.float32) for k in drawn}
+    floor = -MOVE_SHIFT
+    for move in _moves_of(lines, header):
+        top, bottom = move[0][0], move[-1][1]
+        shifts = range(max(-MOVE_SHIFT, floor - top), MOVE_SHIFT + 1)       # moves stay in their order
+        dy = _best_shift(cover, strokes, top, bottom, shifts, 0)
+        for a, b in move:
+            dl = _best_shift(cover, strokes, a, b, range(dy - LINE_SHIFT, dy + LINE_SHIFT + 1), dy)
+            for kind, v in drawn.items():
+                _move_rows(out[kind], v, a, b, dl)
+        floor = bottom + dy
+    return out
+
+
+def _lines(cover):
+    """[(first row, row past the last)] of the lines of a block's coverage, top to bottom."""
+    rows = np.flatnonzero(cover.any(axis=1))
+    if not rows.size:
+        return []
+    breaks = np.flatnonzero(np.diff(rows) > LINE_JOIN + 1)
+    starts = np.concatenate([[rows[0]], rows[breaks + 1]])
+    ends = np.concatenate([rows[breaks], [rows[-1]]]) + 1
+    return list(zip(starts.tolist(), ends.tolist()))
+
+
+def _moves_of(lines, header):
+    """lines grouped into moves: a move starts at a line with a header kind (badge, cost icons) or after a gap of
+    MOVE_GAP (an attack without cost)."""
+    moves = []
+    for a, b in lines:
+        if not moves or header[a:b].any() or a - moves[-1][-1][1] >= MOVE_GAP:
+            moves.append([])
+        moves[-1].append((a, b))
+    return moves
+
+
+def _best_shift(cover, strokes, a, b, shifts, centre):
+    """The shift of cover's rows a..b that lands most of it on the print's strokes (the nearest to centre of the
+    best)."""
+    part = cover[a:b]
+    total = max(1, int(part.sum()))
+    best, score = centre, -1.0
+    for dy in sorted(shifts, key=lambda d: abs(d - centre)):
+        if a + dy < 0 or b + dy > H:
+            continue
+        s = int((part & strokes[a + dy:b + dy]).sum()) / total
+        if s > score:
+            best, score = dy, s
+    return best
+
+
+def _move_rows(out, img, a, b, dy):
+    """img's rows a..b set dy rows further down in out (kept where they overlap)."""
+    a2, b2 = max(0, a + dy), min(H, b + dy)
+    if a2 < b2:
+        np.maximum(out[a2:b2], img[a2 - dy:b2 - dy], out=out[a2:b2])
 
 
 def ink_in(scan, box, holes=True):

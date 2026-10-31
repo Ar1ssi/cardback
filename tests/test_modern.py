@@ -77,6 +77,63 @@ class ReadCard(unittest.TestCase):
         self.assertFalse(modern.is_modern(None))
 
 
+def strokes(y0, y1, x0, x1, step=5):
+    """Coverage like a line of glyphs: upright strokes 2 px wide, step px apart."""
+    out = np.zeros((H, W), np.float32)
+    for x in range(x0, x1 - 1, step):
+        out[y0:y1, x:x + 2] = 1
+    return out
+
+
+def outline(y0, y1, x0, x1, t=3):
+    out = np.zeros((H, W), np.float32)
+    out[y0:y1, x0:x1] = 1
+    out[y0 + t:y1 - t, x0 + t:x1 - t] = 0
+    return out
+
+
+class MovesAsPrinted(unittest.TestCase):
+    """The composers' layout of the old abilities and attacks moved onto the print, move by move: me02.5-152 prints
+    its Ability 53 px above where the composers set it and its attack 23 px above."""
+    LAYOUT = {"badge": outline(605, 640, 55, 229), "ability_name": strokes(612, 636, 240, 400),
+              "text": np.maximum.reduce([strokes(655, 668, 50, 650), strokes(674, 687, 50, 500),
+                                         strokes(736, 760, 160, 380), strokes(780, 793, 50, 450)]),
+              "icon": outline(731, 765, 55, 89)}
+
+    def printed(self, shifts):
+        """A plain panel with the layout printed in dark ink, the Ability (above row 700) and the attack moved."""
+        scan = np.full((H, W, 4), 230, np.float32)
+        for kind, cover in self.LAYOUT.items():
+            for (a, b), dy in zip(((0, 700), (700, H)), shifts):
+                part = np.zeros((H, W), np.float32)
+                part[a:b] = cover[a:b]
+                ys, xs = np.nonzero(part > 0.5)
+                scan[ys + dy, xs, :3] = 30
+        return scan
+
+    def moved(self, scan):
+        with mock.patch.object(modern, "_drawn", return_value={k: v.copy() for k, v in self.LAYOUT.items()}):
+            return modern.moves_as_printed(scan, card(family="ex"))
+
+    @staticmethod
+    def rows(cover):
+        ys = np.flatnonzero((cover > 0.5).any(axis=1))
+        return int(ys.min()), int(ys.max())
+
+    def test_each_move_lands_on_its_print(self):
+        out = self.moved(self.printed((-53, -23)))
+        self.assertEqual(self.rows(out["badge"]), (552, 586))
+        self.assertEqual(self.rows(out["ability_name"]), (559, 582))
+        self.assertEqual(self.rows(out["icon"]), (708, 741))
+        self.assertTrue(out["text"][602:615].any() and out["text"][757:770].any())     # body lines go with them
+        self.assertFalse(out["text"][655:668].any())
+
+    def test_a_print_set_where_the_composers_set_it_stays(self):
+        out = self.moved(self.printed((0, 0)))
+        for kind, cover in self.LAYOUT.items():
+            np.testing.assert_array_equal(out[kind], cover)
+
+
 class FindingPrint(unittest.TestCase):
     def test_ink_in_finds_text_not_panel(self):
         scan = np.full((H, W, 4), 200, np.float32)
