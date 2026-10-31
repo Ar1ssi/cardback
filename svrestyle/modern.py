@@ -9,10 +9,11 @@ was edited is taken off and set again in the same layouts the restyles use.
   rebuilt from the strip's own shading, row by row and column by column (fill_strip).
 - Abilities and attacks: ex prints do not stack their blocks by one rule, so the old block is found on the card
   instead: everything in the text zone that stands out from the panel behind it (text, cost icons, the Ability
-  badge); the holofoil, which needs each kind of it apart, takes the composers' layout moved onto the print
+  badge); on a textured panel (Ancient and Future prints), only what stands out round the old block (moves_off).
+  The holofoil, which needs each kind of it apart, takes the composers' layout moved onto the print
   (moves_as_printed). Regular cards then take the new block in the Mega Evolution layout (Scarlet & Violet regular
   cards share it), ex cards in the Absol ex layout, in the old block's own ink (print_ink: its fill colour, and its
-  keyline when the text is outlined over full art).
+  keyline when the text is outlined: over full art, on Ancient and Future Pokemon).
 - Type: a regular card's print is lifted off its type's frame and set on the new type's (retype.py), in the new type's
   ink; what is set again takes that ink too. A Mega ex is recoloured on its own print first (megaretype.py), and that
   print is the card as printed for every other edit.
@@ -68,6 +69,11 @@ LINE_SHIFT = 3       # px a line of it may lie further (the print's line pitch i
 LINE_JOIN = 2        # px: rows of ink this close are one line
 MOVE_GAP = 20        # px: a gap this tall between two lines starts another move (lines: 5-8, header to body: 16)
 HEADERS = ("badge", "icon")   # kinds only the first line of a move holds
+TEXT_REACH = 2       # px round the old text (moved onto the print) its letters may reach (old_text)
+PRINT_NEAR = 6       # px round the old block (moved onto the print) its print and outline reach (moves_off)
+LINE_RUN = 90        # px a printed line may run on past where the composers end it: a word (moves_off)
+TEXTURED = 0.09      # share of the text zone standing out away from the old block past which the panel is textured
+                     # (plain panels: its rim and specks, 0.02-0.04; Ancient and Future: 0.15-0.53)
 # The old block's ink is read from its glyphs: shapes a glyph's size, lined up on a shared baseline.
 GLYPH_H = (5, 30)    # px: tallest and shortest glyph (accented capitals, commas aside)
 GLYPH_W = 40         # px: wider shapes are art or words run together
@@ -205,6 +211,26 @@ def _cover(drawn, kinds):
 
 
 # ---------------------------------------------------------------- finding what is printed
+def moves_off(scan, original):
+    """What taking the old abilities and attacks off takes: everything in the text zone that stands out from the panel
+    (moves_ink); on a regular card whose panel is textured (Ancient and Future prints: rock, rows of lit dots), only
+    what stands out round where the old block is printed (moves_as_printed): the texture is the panel, and LaMa does
+    not draw it again over the whole zone (sv05-061's dots came back a dark smear). -> bool HxW"""
+    ink = moves_ink(scan, original["family"])
+    if original["family"] != "regular":
+        return ink
+    moved = moves_as_printed(scan, original)
+    cover = (_cover(moved, tuple(moved)) > 0.05).astype(np.uint8)
+    near = dilate(cover > 0, PRINT_NEAR)
+    x0, y0, x1, y1 = MOVES_ZONE[original["family"]]
+    if (ink & ~near).sum() < TEXTURED * (x1 - x0) * (y1 - y0):
+        return ink
+    # along each line a word further: TCGdex does not always break lines where the print does, so a printed line
+    # can run on past where the composers end it (sv05-109's "pile.", sv05-079's "Pokémon.)")
+    along = cv2.dilate(cover, np.ones((2 * PRINT_NEAR + 1, 2 * LINE_RUN + 1), np.uint8)) > 0
+    return ink & (near | along)
+
+
 def moves_ink(scan, family):
     """The old ability/attack block: what stands out from the panel in the text zone. -> bool HxW"""
     return ink_in(scan, MOVES_ZONE[family])
@@ -234,6 +260,12 @@ def moves_as_printed(scan, original):
                 _move_rows(out[kind], v, a, b, dl)
         floor = bottom + dy
     return out
+
+
+def old_text(scan, original):
+    """bool HxW: where the original's ability and attack text is printed (moves_as_printed), a little grown: the
+    print's letters are not quite the composers'."""
+    return dilate(moves_as_printed(scan, original).get("text", np.zeros((H, W), np.float32)) > 0.3, TEXT_REACH)
 
 
 def _lines(cover):
@@ -337,16 +369,19 @@ def _stock(rgb):
     return rgb.astype(np.float32)
 
 
-def _outlined(glyphs, lift, sign):
-    """Whether the glyphs (darker than their panel: sign -1) sit in an outline of the other shade."""
+def _outlined(glyphs, lift, sign, off):
+    """Whether the glyphs (darker than their panel: sign -1) sit in an outline of the other shade: one that stands
+    out from the panel in colour (off: how far each pixel is from it), as white does on a yellow one (sv05-061)."""
     ring = dilate(glyphs, KEYLINE_RING) & ~glyphs
-    return bool(ring.any()) and -sign * float(np.median(lift[ring])) > INK_DIFF
+    return (bool(ring.any()) and -sign * float(np.median(lift[ring])) > 0
+            and float(np.median(off[ring])) > INK_DIFF)
 
 
-def print_ink(scan, box):
+def print_ink(scan, box, where=None):
     """The ink text is printed in inside box: (fill RGB, keyline (RGB, radius, opacity) or None), or None when no
     lines of text are found. Dark and light print are read apart: a dark glyph's white outline (full art) would
-    otherwise join it, and the art, into one shape."""
+    otherwise join it, and the art, into one shape. where (bool HxW): only shapes there are the text (where the old
+    text is printed): a Future print's panel is lit dots in rows, which read as lines of light glyphs."""
     x0, y0, x1, y1 = box
     rgb = np.clip(scan[..., :3], 0, 255).astype(np.uint8)
     pad = MEDIAN
@@ -354,8 +389,12 @@ def print_ink(scan, box):
     background = cv2.medianBlur(crop, MEDIAN)[pad:-pad, pad:-pad].astype(np.float32)
     seen = crop[pad:-pad, pad:-pad].astype(np.float32)
     lift = luminance(seen) - luminance(background)
-    dark, light = _glyphs(lift < -INK_DIFF), _glyphs(lift > INK_DIFF)
-    dark_outlined, light_outlined = _outlined(dark, lift, -1), _outlined(light, lift, 1)
+    dark, light = lift < -INK_DIFF, lift > INK_DIFF
+    if where is not None:
+        dark, light = dark & where[y0:y1, x0:x1], light & where[y0:y1, x0:x1]
+    dark, light = _glyphs(dark), _glyphs(light)
+    off = np.abs(seen - background).max(axis=-1)
+    dark_outlined, light_outlined = _outlined(dark, lift, -1, off), _outlined(light, lift, 1, off)
     if dark_outlined != light_outlined:                     # an outline is never outlined itself: half its ring
         sign = -1 if dark_outlined else 1                   # is the panel
     else:
@@ -449,7 +488,7 @@ def taken_off(card_id, original, groups, card=None, scan=None):
     if "name" in groups:
         mask |= ink_near(scan, _cover(_drawn(_name, original), ("name", "hp", "logo")))
     if "moves" in groups:
-        mask |= moves_ink(scan, original["family"])
+        mask |= moves_off(scan, original)
     if "row" in groups:
         # tight: the weakness icon sits close to the end of its label
         printed_row = _drawn(_row, row_off(original, card) if card is not None else original, compose.WHITE)
@@ -799,7 +838,8 @@ def compose_card(card_id, card, original=None):
         canvas = inplace.apply(canvas, plan, original)
     elif "moves" in groups:
         fill, edge = ((retype.ink(card["type"]), None) if "type" in groups else
-                      print_ink(scan, MOVES_ZONE[original["family"]]) or (_block_colour(scan, original), None))
+                      print_ink(scan, MOVES_ZONE[original["family"]], old_text(scan, original))
+                      or (_block_colour(scan, original), None))
         shrink = _moves(canvas, card, fill, edge)
         if shrink is not None and shrink < 1:
             warnings.warn(f"{card_id}: ability/attack text set at {shrink:.0%} to fit")

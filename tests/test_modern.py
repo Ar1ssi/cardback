@@ -189,6 +189,56 @@ class FindingPrint(unittest.TestCase):
         self.assertIs(edge[0], compose.WHITE)
         self.assertAlmostEqual(edge[1], 2.0, delta=0.3)             # the outline's own width: 2 px
 
+    @staticmethod
+    def future_panel():
+        """A Future print's text panel (sv05-061 Iron Hands): yellow, rows of lit dots on black over its right part,
+        and two lines of dark text outlined in white."""
+        scan = np.full((H, W, 4), 255, np.float32)
+        scan[..., :3] = (240, 200, 60)
+        scan[520:870, 420:700, :3] = 15
+        for y in range(526, 866, 11):
+            for x in range(424, 696, 11):
+                scan[y:y + 7, x:x + 7, :3] = (200, 205, 230)
+        for base in (620, 660):
+            for x in range(80, 380, 20):
+                scan[base - 17:base + 3, x - 3:x + 7, :3] = 255
+                scan[base - 14:base, x:x + 4, :3] = 30
+        return scan
+
+    def test_print_ink_reads_outlined_text_on_a_textured_panel(self):
+        """Read where the old text is printed: across the zone, the dots' rows read as lines of light glyphs."""
+        scan = self.future_panel()
+        where = np.zeros((H, W), bool)
+        where[598:668, 70:400] = True
+        fill, edge = modern.print_ink(scan, modern.MOVES_ZONE["regular"], where)
+        self.assertTrue(np.array_equal(fill, frame.DARK_INK))
+        self.assertIs(edge[0], compose.WHITE)
+        self.assertAlmostEqual(edge[1], 3.0, delta=0.5)
+
+    def test_a_white_outline_on_a_light_panel_is_an_outline(self):
+        scan = self.text_on(200, 30, outline=255)
+        # sv05-061's pale yellow: white stands out from it by colour, but is barely lighter (34 levels)
+        scan[(scan[..., :3] == 200).all(axis=-1), :3] = (250, 228, 110)
+        fill, edge = modern.print_ink(scan, modern.MOVES_ZONE["regular"])
+        self.assertTrue(np.array_equal(fill, frame.DARK_INK))
+        self.assertIs(edge[0], compose.WHITE)
+
+    def test_a_textured_panel_loses_only_the_old_text(self):
+        """Ancient and Future panels: what stands out away from the old block is the panel's texture, kept, not
+        taken off for LaMa to draw again; a printed line running a word past the composers' is taken to its end."""
+        scan = self.future_panel()
+        layout = {"text": np.zeros((H, W), np.float32)}
+        layout["text"][603:620, 80:300] = 1          # the composers end the first line 70 px short of the print
+        layout["text"][643:660, 80:380] = 1
+        with mock.patch.object(modern, "moves_as_printed", return_value=layout):
+            off = modern.moves_off(scan, card())
+        self.assertTrue(off[610, 82] and off[610, 362])         # the old text, to the end of its printed line
+        self.assertFalse(off[700, 500] or off[800, 600])        # the dots
+        plain = np.full((H, W, 4), 200, np.float32)
+        plain[603:620, 80:380:20, :3] = 30
+        with mock.patch.object(modern, "moves_as_printed", return_value=layout):
+            self.assertTrue(np.array_equal(modern.moves_off(plain, card()), modern.moves_ink(plain, "regular")))
+
     def test_print_ink_keeps_an_ink_it_does_not_know(self):
         fill, _ = modern.print_ink(self.text_on(220, (150, 20, 20)), modern.MOVES_ZONE["regular"])
         self.assertTrue(np.allclose(fill, (150, 20, 20), atol=12))

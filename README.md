@@ -84,8 +84,10 @@ shape whole; abilities and attacks by what stands out from the panel in the text
 off, except the weakness row, which is blended along its pixel rows (LaMa copies the labels into it). On a plain
 panel, a blot LaMa makes up in a hole is covered with the panel beside it. New blocks follow the Mega Evolution
 layout (regular cards; Scarlet & Violet regulars share it) or the Absol ex layout (ex), in the ink the old block
-was printed in, read from its lines of glyphs (dark or white, and its keyline when outlined over full art);
-an edited ex name keeps the card's own ex logo. With holofoil on, the card's own TCG Live printings are re-made: the
+was printed in, read from its lines of glyphs where the old text is printed (dark or white, and its keyline when
+outlined: over full art, and on Ancient and Future Pokémon, whose dark text is outlined in white); an edited ex name
+keeps the card's own ex logo. Ancient and Future prints texture the text panel (rock, rows of lit dots): there only
+the old text is taken off, each line to where its print ends, so the texture stays as printed. With holofoil on, the card's own TCG Live printings are re-made: the
 same shaders and the card's own plates, edited the way each plate prints that kind of ink: ink the plate shows (a
 cut-out name, an ex name's lit letters, the Stage tab's letters) is taken off and set again at the printed value;
 ink the plate runs through (most reverse holos' names and "Evolves from") leaves it as printed. In abilities and

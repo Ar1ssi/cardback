@@ -236,7 +236,7 @@ def _block_ink(rgba, card):
     """The block's ink, (fill, keyline or None), and the print's ink coverage in its zone."""
     from . import modern
     zone = modern.MOVES_ZONE[card["family"]]
-    ink = modern.print_ink(rgba, zone)
+    ink = modern.print_ink(rgba, zone, modern.old_text(rgba, card))
     fill, edge = ink if ink else (modern._block_colour(rgba, card), None)
     cov = outlined(rgba, zone, fill, edge[0]) if edge else ink_cover(rgba, zone, fill)
     return fill, edge, cov
