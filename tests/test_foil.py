@@ -406,6 +406,23 @@ class BlocksMoved(unittest.TestCase):
         self.assertEqual(got[636, 423], 0)                            # between them, the art's etch
         self.assertEqual(got[700, 400], 255)                          # plain etch stays
 
+    def test_the_hp_is_etched_again(self):
+        """A Mega ex's etch etches its HP black on a white box (me02.5-152: "HP 370"): an edited HP is etched there
+        instead; the name, inside a solid slab, is left."""
+        etch = np.zeros((TEX, TEX), np.uint8)
+        view = etch[:, tcg.BLEED_X:tcg.BLEED_X + W]
+        view[30:90, 480:680] = 255                                    # the HP's white box
+        old_hp = glyphs(40, 80, 520, 600, step=12)
+        view[old_hp > 0] = 0
+        new_hp = glyphs(40, 80, 526, 606, step=12)
+        name = glyphs(40, 80, 150, 400)
+        out = foil.etch_reprinted(etch, {"hp": old_hp, "name": name}, {"hp": new_hp, "name": glyphs(40, 80, 150, 380)},
+                                  ("name", "hp"))
+        got = out[:, tcg.BLEED_X:tcg.BLEED_X + W]
+        self.assertEqual(got[60, 520], 255)                           # the old digits: the box again
+        self.assertEqual(got[60, 526], 0)                             # the new ones etched
+        self.assertEqual(got[60, 300], 0)                             # the slab under the name as it was
+
 
 TEX = foil.TEX
 

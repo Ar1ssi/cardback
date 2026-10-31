@@ -251,7 +251,8 @@ itself). The etch of an ex whose abilities, attacks or weakness row are set agai
 etched rings and the Ability badge's pill go from where the print has them, the new ones get the card's own etch of
 them (or Mega Dragonite ex's badge), on plain etch: not the art's etch that runs up to them. Words are never etched:
 the etch cuts them out of the art's etch they run over, so the old words' holes in it close (where solid etch lies
-either side of them) and the new words are cut out.
+either side of them) and the new words are cut out. An edited HP is etched again too: a Mega ex's etch etches it black
+on a white box, so the old figures go and the new ones are etched.
 
 **Regular Scarlet & Violet / Mega Evolution cards** keep their own print too
 (`retype.py`): every regular card of a type prints the same frame (`meframe.template`), so what the card prints that

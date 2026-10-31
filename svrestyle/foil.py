@@ -103,6 +103,7 @@ ETCH_GROW = 4      # px round a new icon or badge kept clear of other etch
 ETCH_OWN = {"icon": 2, "row_icon": 2, "badge": -1}   # px round an icon or badge its own etch reaches (negative:
 ETCH_OFF = {"icon": 2, "row_icon": 2, "badge": 1}    # inside it), and what taking it off takes (etched)
 WORDS = ("text", "ability_name")   # kinds of print the etch cuts out of the art's etch (etch_words)
+ETCH_INK_REACH = 3   # px: name-bar print (a Mega ex's HP) may be etched this far from where the composers set it
 ETCHED = 128       # etch value under which a pixel is etched
 WORD_REACH = 2     # px round the old words' letters (moved onto the print) their holes in the etch may reach
 WORD_GAP = 6       # px: a hole closes with solid etch this near on both sides of it (across or up and down),
@@ -1095,6 +1096,8 @@ def build_modern(card_id, card, canvas, drawn, original):
             extra["etch"] = megaretype.etch(extra["etch"], original, card["type"])
         if blocks and extra["etch"] is not None and printed_as["family"] == "ex" and card["name"].startswith("Mega "):
             extra["etch"] = etch_edits(extra["etch"], printed_as, card, drawn, blocks, in_blocks)
+        if "name" in groups and extra["etch"] is not None:
+            extra["etch"] = etch_reprinted(extra["etch"], printed, drawn, ("name", "hp"))
         out[key] = (spec, plate_texture(img * (alpha / 255)), extra)
     if card["family"] == "regular" and out["base"] is None and out["reverse"] is None:
         # a print with no foil at all: the Gen 8 reverse holo on its era's frame (a reference print's plate, the
@@ -1181,6 +1184,31 @@ def etch_words(view, colours, e, old, new):
         view[closed, :colours] = dark
     c = np.clip(new, 0, 1)[..., None]
     view[..., :colours] = np.round(view[..., :colours] * (1 - c) + 255 * c).astype(view.dtype)
+
+
+def etch_reprinted(etch, printed, drawn, kinds):
+    """An etch after name-bar print is set again (kinds of printed_ink: a Mega ex's HP, etched black on its white
+    box): what the etch etches as ink on plain etch is taken off (the plain etch round it) and the new ink etched as
+    the old was. Kinds the etch does not show so (the name, inside a solid slab) are left as they are."""
+    if etch.shape[0] != TEX:
+        return etch
+    out = etch.copy()
+    view = _planes(out)[:, tcg.BLEED_X:tcg.BLEED_X + W]
+    colours = min(3, view.shape[2])
+    e = _planes(etch)[:, tcg.BLEED_X:tcg.BLEED_X + W, 0].astype(np.float32)
+    for kind in kinds:
+        old, new = printed.get(kind), drawn.get(kind)
+        if old is None or new is None or (old > 0.5).sum() < INK_MIN:
+            continue
+        near = dilate(old > 0.05, ETCH_INK_REACH)
+        ring = dilate(near, 6) & ~dilate(near, 2)
+        inked, ground = float(np.median(e[old > 0.5])), float(np.median(e[ring]))
+        if not inked < ETCHED <= ground:
+            continue
+        view[near & (e < ETCHED), :colours] = ground
+        c = np.clip(new, 0, 1)[..., None]
+        view[..., :colours] = np.round(view[..., :colours] * (1 - c) + inked * c).astype(view.dtype)
+    return out
 
 
 def etch_edits(etch, original, card, drawn, groups, printed=None):
