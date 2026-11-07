@@ -9,13 +9,16 @@ set text on. The name, the effect text and the illustrator line are white on the
 edited parts. Ancient and Future prints texture the panel, so a plain "stands out from the panel" test would take
 the texture for text. The kind stays as printed: its tab and rule pill belong to the print. The text sits where the
 print has it (a Tool's pill can move it up), found by setting the printed text and measuring how far off it falls.
+
+convert_card() goes the other way: a Black & White ACE SPEC Trainer, whose own frame has no place in Scarlet & Violet,
+is set on the ACE SPEC frame of its kind (aceframe.template) like the other old Trainers are on the Gen 9 ones.
 """
 import hashlib
 
 import cv2
 import numpy as np
 
-from . import cache, compose, inpaint, layers, tcg, trainer
+from . import aceframe, cache, compose, inpaint, layers, tcg, trainer, trainerframe
 from . import typeset as ts
 from .imaging import dilate, load_rgba, save_rgba
 
@@ -128,6 +131,32 @@ def printed_ink(scan, original, groups):
     white print itself, as found on the card (where the composers would set it is not exactly where it is)."""
     kinds = {"name": "name", "text": "text", "illus": "footer"}
     return {kinds[g]: _white(scan, g).astype(np.float32) for g in groups}
+
+
+# The footer as ACE SPEC prints it on its dark band: white, but for the pink star and a darker copyright line.
+STAR_INK = np.array([239, 0, 140], np.float32)
+COPYRIGHT_INK = np.array([33, 32, 33], np.float32)
+FOOTER_STYLE = {"rarity": {"*": {**compose.FOOTER["rarity"]["*"], "ink": STAR_INK}}, "copyright_ink": COPYRIGHT_INK}
+CONVERT_TEXT_DY = 0     # px the converted text sits below where trainer.body sets it
+
+
+def convert_card(card_id, card):
+    """An old ACE SPEC Trainer (read_card's dict, "ace_convert") on the Scarlet & Violet ACE SPEC frame of its kind:
+    the old art moved into the new window, the name and text in white. -> (RGBA float32 733x1024, report dict)"""
+    trainer.warn_missing_glyphs(card)
+    template = aceframe.template(card["kind"])
+    art = trainer.old_art(card)
+    a = template[..., 3:4] / 255
+    canvas = np.zeros((H, W, 4), np.float32)
+    canvas[..., :3] = art[..., :3] * (1 - a) + template[..., :3] * a
+    canvas[..., 3] = trainerframe.corners()
+    with layers.kind("frame"):
+        layers.record(a[..., 0])
+    xscale = trainer.name_and_character(canvas, card, compose.WHITE)
+    scale = _text(canvas, card, CONVERT_TEXT_DY)
+    compose.footer(canvas, card, True, rarity=card["rarity"], shift=trainer.FOOTER_SHIFT, keyline=False,
+                   style=FOOTER_STYLE)
+    return canvas, {"card": card, "name_xscale": round(xscale, 3), "body_scale": scale}
 
 
 def compose_card(card_id, card, original):

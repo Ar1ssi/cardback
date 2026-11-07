@@ -390,7 +390,8 @@ def footer(canvas, card, white_text, rarity="double", shift=None, keyline=True, 
     ("boxes"), the card number ("number"), the rarity mark ("rarity") and the copyright line ("copyright") off where
     the Pokemon cards print them (Trainers: trainer.FOOTER_SHIFT). keyline: the illustrator, number and rarity in a
     keyline, as ex cards print them over their art; Mega Evolution regular cards and Trainers print none.
-    style: FOOTER's parts, as another layout prints them."""
+    style: FOOTER's parts, as another layout prints them (a rarity entry's "ink" and the "copyright_ink" colour those
+    marks; ACE SPEC prints a pink star and a darker line)."""
     with layers.kind("footer"):
         _footer(canvas, card, white_text, rarity, shift or {}, keyline, {**FOOTER, **(style or {})})
 
@@ -457,11 +458,11 @@ def _footer(canvas, card, white_text, rarity, shift, keyline, style):
                                        x=num_x + nx, base=number["base"] + ny, xscale=number["xscale"])]),
              ink, keyline)
     num_right = num_x + ts.text_width(card["number"], ts.HEAVY_ITALIC, number["size"], number["xscale"])
-    ts.stamp(canvas, rarity_mark(rarity, num_right + mark["gap"] + rx, mark["base"] + ry, mark["scale"]), ink,
-             keyline)
+    ts.stamp(canvas, rarity_mark(rarity, num_right + mark["gap"] + rx, mark["base"] + ry, mark["scale"]),
+             mark.get("ink", ink), keyline)
     ts.stamp(canvas, ts.coverage([dict(text=f"©{card['year']} Pokémon / Nintendo / Creatures / GAME FREAK",
                                        face=ts.REGULAR, size=12.6, x=367 + cx, base=1011 + cy, anchor="c")]),
-             COPYRIGHT_GREY)
+             style.get("copyright_ink", COPYRIGHT_GREY))
 
 
 def compose(card_id, opts, card=None):

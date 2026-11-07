@@ -559,8 +559,17 @@ class AceSpec(unittest.TestCase):
     def test_other_prints_are_not_ace_specs(self):
         self.assertFalse(read(tcgdex(id="sv04-160", rarity="Uncommon", set={"id": "sv04"}), SV5)["ace"])
 
-    def test_old_ace_specs_and_other_special_rarities_are_still_refused(self):
-        for over in (dict(id="bw7-137", rarity="ACE SPEC Rare", set={"id": "bw7"}), dict(id="xy1-1", rarity="ACE SPEC Rare"),
+    def test_black_white_ace_specs_are_converted_not_refused(self):
+        card = self.card(id="bw7-137", rarity="Rare", set={"id": "bw7"})
+        self.assertTrue(card["ace_convert"])
+        self.assertFalse(card["ace"])
+
+    def test_ace_specs_that_lend_an_attack_are_refused(self):
+        with self.assertRaises(SystemExit):
+            self.card(id="bw10-92", rarity="Rare", set={"id": "bw10"})
+
+    def test_xy_ace_specs_and_other_special_rarities_are_still_refused(self):
+        for over in (dict(id="xy1-1", rarity="ACE SPEC Rare"),
                      dict(rarity="Special illustration rare", id="sv05-200", set={"id": "sv05"})):
             with self.subTest(over), self.assertRaises(SystemExit):
                 self.card(**over)

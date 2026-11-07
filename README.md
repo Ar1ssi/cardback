@@ -345,8 +345,9 @@ print no type: the kind comes from the rule the text holds, else Item (with a wa
 - **ACE SPEC** (Scarlet & Violet, 30 Trainers): edited in place, `svrestyle/ace.py`. Their pink frame with the ACE SPEC
   banners differs set to set, so no template: the card keeps its own scan, and only the name, text and illustrator can
   change (not the kind). What changed is found as white print in its zone, rebuilt by LaMa and set again in white; the
-  text sits where the print has it. Their holofoil (AceFoil, `foil.build_ace`) keeps the card's own plate: the old print's cut-outs are filled from the card's foil field and the new text is cut at the value the plate gives it. The ex and V logos in text print as plain "ex" and "V". Older ACE SPEC cards (Black &
-  White, XY) are still refused.
+  text sits where the print has it. Their holofoil (AceFoil, `foil.build_ace`) keeps the card's own plate: the old print's cut-outs are filled from the card's foil field and the new text is cut at the value the plate gives it. The ex and V logos in text print as plain "ex" and "V". Black & White's ACE SPEC Trainers (13) are converted to this frame (`ace.convert_card`, `aceframe.py`: the frame
+  per kind built from the Scarlet & Violet prints, the old art moved into its window, name and text white); the two
+  that lend an attack (Genesect-EX's G Booster and G Scope) and XY's are refused.
 - **Refused**: full-art, gold and other special prints (no art window to move), older ACE SPEC and Prism Star cards, GX-attack
   Z-Crystals and Team Flare Hyper Gear (rules no Gen 9 frame prints), Chaos Tower (played either way up), Classic
   Collection reprints, TCG Pocket cards, and sets of no known layout.

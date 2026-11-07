@@ -104,27 +104,27 @@ def _ink(rgb):
     return dilate(mask, INK_GROW)
 
 
-def _zones():
+def _zones(zones=ZONES):
     out = np.zeros((H, W), bool)
-    for x0, y0, x1, y1 in ZONES:
+    for x0, y0, x1, y1 in zones:
         out[y0:y1, x0:x1] = True
     return out
 
 
-def _load(card_id):
-    """(rgb as uint8, ink mask) of a print."""
+def _load(card_id, ink=_ink):
+    """(rgb as uint8, ink mask) of a print; ink: what finds its ink (the ACE SPEC frames' is aceframe's)."""
     rgb = tcg.scan(card_id)[..., :3]
-    return np.clip(rgb, 0, 255).astype(np.uint8), _ink(rgb)
+    return np.clip(rgb, 0, 255).astype(np.uint8), ink(rgb)
 
 
-def _fill(img, holes):
+def _fill(img, holes, zones=ZONES):
     """Holes (cleared from `holes` as they are filled) take their row's clean silver: the frame is brushed along x,
     so each row keeps its own streak, and a hole is bridged between the clean pixels either side (averaged over
     FILL_SMOOTH px). Rows with nothing clean on them are bridged down each column instead."""
     out = img.copy()
     k = np.ones(FILL_SMOOTH, np.float32)
     _, sat, _ = hsv(img)
-    for box in ZONES:
+    for box in zones:
         x0, y0, x1, y1 = box
         left, right = FILL_REACH.get(box, (0, 0))
         s0, s1 = max(0, x0 - left), min(W, x1 + right)
@@ -201,15 +201,21 @@ def _rim(prints):
 
 def template(kind):
     """RGBA float32 733x1024: the kind's frame with nothing printed on it; alpha 0 in the art window."""
-    if kind not in POOL:
-        raise ValueError(f"no Trainer frame for {kind!r} (have: {', '.join(POOL)})")
-    out = _asset(f"template-{kind}.png")
+    return build(kind, POOL, ZONES, _ink, f"template-{kind}.png")
+
+
+def build(kind, pool, zones, ink, name):
+    """The frame of `kind` from the prints pool[kind], cached as asset `name`. zones: where the prints carry ink,
+    ink: what finds it on one print (RGB -> bool HxW)."""
+    if kind not in pool:
+        raise ValueError(f"no Trainer frame for {kind!r} (have: {', '.join(pool)})")
+    out = _asset(name)
     if out.exists():
         return load_rgba(out)
-    prints = [_load(i) for i in POOL[kind]]
-    zones = _zones()
+    prints = [_load(i, ink) for i in pool[kind]]
+    zone_mask = _zones(zones)
     clean = np.zeros((H, W, 3), np.float32)
-    for x0, y0, x1, y1 in ZONES:
+    for x0, y0, x1, y1 in zones:
         crop = np.stack([rgb[y0:y1, x0:x1] for rgb, _ in prints]).astype(np.float32)
         crop[np.stack([ink[y0:y1, x0:x1] for _, ink in prints])] = np.nan
         with warnings.catch_warnings():
@@ -221,31 +227,31 @@ def template(kind):
         shown[y0:y1, x0:x1][few] = 0
     # The silver under the name, text and footer is the same for every kind: where few prints of this kind show
     # it, the other kinds' prints are asked too.
-    thin = zones & (shown < MIN_CLEAN)
+    thin = zone_mask & (shown < MIN_CLEAN)
     for x0, y0, x1, y1 in (FOOTER, COPYRIGHT):
         thin[y0:y1, x0:x1] = False                     # the same boxes and words on every kind
     if thin.any():
-        values = [[] for _ in range(int(thin.sum()))]
-        for k, ids in POOL.items():
-            if k == kind:
-                continue
+        samples = []                                    # every print's colour at the thin pixels, NaN where inked
+        for k, ids in pool.items():
             for card_id in ids:
-                rgb, ink = _load(card_id)
-                ok = ~ink[thin]
-                for j in np.nonzero(ok)[0]:
-                    values[j].append(rgb[thin][j])
-        ys, xs = np.nonzero(thin)
-        for j, (y, x) in enumerate(zip(ys, xs)):
-            own = [p[0][y, x] for p in prints if not p[1][y, x]]
-            if len(values[j]) + len(own) >= MIN_CLEAN:
-                clean[y, x] = np.median(np.array(values[j] + own, np.float32), axis=0)
-                shown[y, x] = MIN_CLEAN
+                rgb, found = (p for p in ((_load(card_id, ink)) if k != kind else prints[pool[kind].index(card_id)]))
+                col = rgb[thin].astype(np.float32)
+                col[found[thin]] = np.nan
+                samples.append(col)
+        stack = np.stack(samples)
+        count = (~np.isnan(stack[..., 0])).sum(0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            med = np.nanmedian(stack, axis=0)
+        enough = count >= MIN_CLEAN
+        clean[thin] = np.where(enough[:, None], med, clean[thin])
+        shown[thin] = np.where(enough, MIN_CLEAN, shown[thin])
     canvas = np.zeros((H, W, 4), np.float32)
     for y in range(0, H, 64):                        # the frame itself: identical on every print, art bleed aside
         canvas[y:y + 64, :, :3] = np.median(np.stack([rgb[y:y + 64] for rgb, _ in prints]), axis=0)
-    canvas[zones, :3] = clean[zones]
-    holes = zones & (shown < MIN_CLEAN)
-    canvas[..., :3] = _fill(np.nan_to_num(canvas[..., :3]), holes)
+    canvas[zone_mask, :3] = clean[zone_mask]
+    holes = zone_mask & (shown < MIN_CLEAN)
+    canvas[..., :3] = _fill(np.nan_to_num(canvas[..., :3]), holes, zones)
     alpha, colour = _rim(prints)
     edge = (alpha > 0) & (alpha < 1)
     canvas[edge, :3] = colour[edge]

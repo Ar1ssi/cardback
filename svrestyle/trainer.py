@@ -17,7 +17,7 @@ import warnings
 import cv2
 import numpy as np
 
-from . import badges, cache, compose, edit, frame, layers, mecompose, modern, oldwindow, tcg, trainerframe
+from . import aceframe, badges, cache, compose, edit, frame, layers, mecompose, modern, oldwindow, tcg, trainerframe
 from . import typeset as ts
 from .imaging import load_rgba, save_rgba
 
@@ -38,6 +38,8 @@ NOT_REGULAR = ("ultra", "secret", "rainbow", "illustration", "hyper", "shiny", "
 ACE_RARITY = "ace spec"
 ACE_SPEC = {"bw7-137", "bw7-138", "bw7-139", "bw7-140", "bw8-128", "bw8-129", "bw8-130", "bw9-107", "bw9-108",
             "bw10-92", "bw10-93", "bw10-94", "bw10-95"}
+# The two of them that lend an attack (Genesect-EX's G Booster and G Scope).
+ATTACK_LENDERS = {"bw10-92", "bw10-93"}
 PRISM = "◇"
 # A card played either way up (xy10-94 Chaos Tower) prints its other half upside down in the art.
 TWO_WAY = "which way this card faces"
@@ -276,8 +278,6 @@ def read_card(card_id):
     ace = ACE_RARITY in rarity.lower() and modern.is_modern(card_id)
     if any(word in rarity.lower() for word in NOT_REGULAR if not (ace and word == ACE_RARITY)):
         raise SystemExit(f"{card_id} is a {rarity} print ({name!r}): only regular Trainers, with an art window")
-    if card_id in ACE_SPEC:
-        raise SystemExit(f"{card_id} is {name!r}, an ACE SPEC card: its rule has no place on the Gen 9 frames")
     if PRISM in name or "Prism Star" in name:
         raise SystemExit(f"{card_id} is {name!r}: Prism Star cards have a rule Gen 9 prints no frame for")
     if name.endswith(HYPER_GEAR):
@@ -303,6 +303,12 @@ def read_card(card_id):
     for a in c.get("abilities") or []:
         if not (a.get("name") and a.get("effect")):
             warnings.warn(f"{card_id}: TCGdex lists a {a.get('type') or 'Ability'} without its name or text: left out")
+    convert = card_id in ACE_SPEC          # Black & White's: set on the Scarlet & Violet ACE SPEC frame (ace.py)
+    if card_id in ATTACK_LENDERS:
+        raise SystemExit(f"{card_id} is {name!r}, an ACE SPEC card that lends an attack: TCGdex gives only the "
+                         "attack's text, and the Scarlet & Violet ACE SPEC frame has no attack block")
+    if convert and kind not in aceframe.KINDS:
+        raise SystemExit(f"{card_id} is {name!r}: there is no ACE SPEC {kind} frame")
     in_text = re.search(TEXT_HP, raw)
     hp = str(c.get("hp") or (in_text[1] if in_text else ""))
     official = (s.get("cardCount") or {}).get("official")
@@ -314,7 +320,7 @@ def read_card(card_id):
         "set_code": mecompose.set_code(set_id, s),
         "number": mecompose.card_number(c.get("localId", ""), official, s),
         "year": (s.get("releaseDate") or "")[:4], "rarity": mecompose.rarity_symbol(rarity), "era": era(card_id),
-        "ace": ace,
+        "ace": ace, "ace_convert": convert,
     }
 
 
@@ -510,6 +516,9 @@ def compose_card(card_id, card=None):
     if card.get("ace"):          # its frame is its own: edited in place, not set on a template
         from . import ace
         return ace.compose_card(card_id, card, read_card(card_id))
+    if card.get("ace_convert"):
+        from . import ace
+        return ace.convert_card(card_id, card)
     warn_missing_glyphs(card)
     template = trainerframe.template(card["kind"])
     art = old_art(card)
