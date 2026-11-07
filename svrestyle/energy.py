@@ -18,7 +18,10 @@ Four frames, all cut from TCG Live scans:
 What a template prints (name, cost icons, text, footer) is painted out by LaMa and set again for this card; the old
 art keeps its window, the old text on it painted out. Footers and text layout are the Trainers' (trainer.py), the
 icons the Mega Evolution ones. SV / Mega Evolution Energy is already in this look: frame "print", the card as TCG
-Live prints it (its own scan and foil), with nothing to edit; it is there to be listed and put in a set.
+Live prints it (its own scan and foil); it is there to be listed and put in a set. Its text can be edited in place
+(in_place): on a regular print (the text panel of Team Rocket's Energy, me02.5-217, which the Scarlet & Violet ones
+share) the dark text is taken off the panel and its brushed silver bridged along each row; on an ACE SPEC Energy's pink
+panel the white text is taken off as on the ACE SPEC Trainers (ace.py). Full-art and gold prints keep their text.
 """
 import re
 import warnings
@@ -26,7 +29,8 @@ import warnings
 import cv2
 import numpy as np
 
-from . import cache, compose, foil, frame, inpaint, layers, mecompose, modern, tcg, trainer
+from . import ace, cache, compose, foil, frame, inpaint, layers, meframe, mecompose, modern, tcg, trainer
+from . import trainerframe
 from . import typeset as ts
 from .imaging import dilate, load_rgba, luminance, save_rgba
 
@@ -173,7 +177,95 @@ def read_card(card_id):
         warnings.warn(f"{card_id}: no Energy it provides could be read from its text: the name bar prints no icons "
                       "(set them in the editor)")
     card["frame"] = "print" if in_look else "full" if is_full(card) else "regular"
+    if in_look:
+        card["text_edit"] = print_layout(rarity)
     return card
+
+
+# ---------------------------------------------------------------- Scarlet & Violet / Mega Evolution prints, text edited
+# The text panel of a regular print (x0, y0, x1, y1), inside its rim; the ACE SPEC Energy's pink panel between its
+# banners (its text runs from x 88 to 644, as on the ACE SPEC Trainers).
+PRINT_PANEL = (50, 668, 690, 912)
+ACE_PANEL = (80, 668, 656, 935)
+PRINT_INK, PRINT_GROW = 24, 3        # levels a panel pixel stands out from its surroundings to be ink; its soft edge
+SHIFT_MAX = 30                       # px the text sits no further from where it is set than this
+# Where a regular panel's text can be: its rim's shading (x 50-53 and 680-689, y 668-673) stands out like ink.
+PRINT_TEXT = (54, 674, 680, 908)
+ACE_WHITE = 190                      # the least min(R, G, B) of the ACE SPEC panel's white text (the pink stays < 60)
+PRINT_VERSION = 4                    # of the cached prints with their text taken off
+
+
+def print_layout(rarity):
+    """How a Scarlet & Violet / Mega Evolution Special Energy's text is edited in place: "ace" (white on the pink ACE
+    SPEC panel), "panel" (dark on the regular panel) or None (full art and gold: text over the art, kept)."""
+    r = (rarity or "").lower()
+    if "ace spec" in r:
+        return "ace"
+    return None if any(word in r for word in FULL_RARITY) else "panel"
+
+
+def printed_text(scan, layout, grow=True):
+    """bool HxW: the text a print sets on its panel, its soft edge taken with it (grow: else the ink's cores)."""
+    if layout == "ace":
+        x0, y0, x1, y1 = ACE_PANEL
+        mask = np.zeros((H, W), bool)
+        mask[y0:y1, x0:x1] = np.clip(scan[y0:y1, x0:x1, :3], 0, 255).min(axis=2) >= ACE_WHITE
+    else:
+        mask = meframe.ink(scan[..., :3], PRINT_PANEL, PRINT_INK)
+        x0, y0, x1, y1 = PRINT_TEXT                  # the panel's rim round it is not text
+        inside = np.zeros((H, W), bool)
+        inside[y0:y1, x0:x1] = True
+        mask &= inside
+    return dilate(mask, PRINT_GROW) if grow else mask
+
+
+def _text_column(layout):
+    """(x, width, ink) of the text on a print's panel."""
+    if layout == "ace":
+        return ace.TEXT_X, ace.TEXT_WIDTH, compose.WHITE
+    return trainer.BODY_X, trainer.BODY_FULL_W, None
+
+
+def _rows(mask):
+    rows = np.flatnonzero(mask.sum(axis=1) >= 3)
+    return (int(rows[0]), int(rows[-1])) if len(rows) else None
+
+
+def text_shift(scan, card, layout):
+    """How far down to move the card's text from where text() sets it so that it is centred where the print centres
+    its own (the prints do not all centre theirs alike: Jet Energy's sits 10 px lower than Reversal Energy's)."""
+    printed = _rows(printed_text(scan, layout))
+    x, width, ink = _text_column(layout)
+    with layers.recording() as drawn:
+        text(np.zeros((H, W, 4), np.float32), card, x, width, ink)
+    here = _rows(drawn["text"] > 0.5) if "text" in drawn else None
+    if not printed or not here:
+        return 0
+    dy = round((printed[0] + printed[1]) / 2 - (here[0] + here[1]) / 2)
+    return dy if abs(dy) <= SHIFT_MAX else 0
+
+
+def in_place(card_id, card, original):
+    """A Scarlet & Violet / Mega Evolution Special Energy with its text set again on its own print. -> (RGBA, mask
+    taken off)"""
+    layout = original.get("text_edit")
+    scan = tcg.scan(card_id)
+    mask = printed_text(scan, layout)
+    out = cache.path("art", f"energy-print-v{PRINT_VERSION}-{card_id}.png")
+    if out.exists():
+        canvas = load_rgba(out)
+    else:
+        canvas = scan.copy()
+        if layout == "ace":                      # flat pink: LaMa would echo the text near the panel's dark edge
+            rgb = np.clip(scan[..., :3], 0, 255).astype(np.uint8)
+            canvas[..., :3] = cv2.inpaint(rgb, mask.astype(np.uint8), 5, cv2.INPAINT_TELEA)
+        else:
+            canvas[..., :3] = trainerframe._fill(np.clip(scan[..., :3], 0, 255), mask.copy(), (PRINT_PANEL,))
+        save_rgba(canvas, out)
+    canvas = canvas.copy()
+    x, width, ink = _text_column(layout)
+    text(canvas, card, x, width, ink, text_shift(scan, card, layout))
+    return canvas, mask
 
 
 # ---------------------------------------------------------------- frame and art
@@ -409,11 +501,14 @@ def cost_icons(canvas, card):
             compose.energy(t, FOOT_COST_X - i * FOOT_STEP, FOOT_COST_Y, FOOT_COST_R, canvas, kind="cost")
 
 
-def text(canvas, card):
+def text(canvas, card, x=trainer.BODY_X, width=trainer.BODY_FULL_W, ink=None, dy=0):
+    """The text on the panel (a full art's over the art, white). x, width, ink, dy: its column, ink and how far down it
+    moves, when not the template's (a print edited in place)."""
     full = card["frame"] == "full"
     paragraphs = [p for p in card["effect"].split("\n") if p.strip()]
     for k in trainer.SHRINK_STEPS:
-        lines, rows = trainer.lay_paragraphs(paragraphs, k, tracking=(trainer.BODY_TRACK, trainer.BODY_MIN_TRACK))
+        lines, rows = trainer.lay_paragraphs(paragraphs, k, tracking=(trainer.BODY_TRACK, trainer.BODY_MIN_TRACK),
+                                             width=width)
         pitch, gap = TEXT_PITCH * k, PARA_GAP * k
         ys = [idx * pitch + (row - idx) * (gap - pitch) for idx, (row, *_) in enumerate(lines)]
         span = ys[-1] if ys else 0
@@ -421,15 +516,18 @@ def text(canvas, card):
             break
     else:
         warnings.warn(f"{card['id']}: the text runs taller than the panel holds")
-    first = TEXT_LAST_BASE - span if full else PANEL_CENTRE - span / 2
-    ink, edge = (compose.WHITE, compose.ART_EDGE) if full else (np.array(frame.DARK_INK, np.float32), None)
+    first = (TEXT_LAST_BASE - span if full else PANEL_CENTRE - span / 2) + dy
+    if ink is None:
+        ink, edge = (compose.WHITE, compose.ART_EDGE) if full else (np.array(frame.DARK_INK, np.float32), None)
+    else:
+        edge = None
     size = trainer.BODY_SIZE * k
     items, drawn = [], np.zeros((H, W), np.float32)
     for y, (row, runs, tracking, types, indent, bullet) in zip(ys, lines):
         base, marks = first + y, []
-        items += ts.line_items(runs, tracking, size, trainer.BODY_X + indent, base, marks)
+        items += ts.line_items(runs, tracking, size, x + indent, base, marks)
         if bullet:
-            items.append(dict(text=trainer.BULLET, face=trainer.BODY_FACE, size=size, x=trainer.BODY_X, base=base))
+            items.append(dict(text=trainer.BULLET, face=trainer.BODY_FACE, size=size, x=x, base=base))
         for t, cx in zip(types, marks):
             np.maximum(drawn, compose.energy_symbol(t, cx, base, size), out=drawn)
     with layers.kind("text"):
@@ -502,7 +600,11 @@ def compose_card(card_id, card=None):
     """-> (RGBA float32 733x1024, report dict). card: read_card's dict, possibly edited (default: read it)."""
     card = card or read_card(card_id)
     if card["frame"] == "print":
-        return tcg.scan(card_id).copy(), {"card": card}
+        original = read_card(card_id)
+        if card.get("effect") == original.get("effect") or not original.get("text_edit"):
+            return tcg.scan(card_id).copy(), {"card": card}
+        canvas, mask = in_place(card_id, card, original)
+        return canvas, {"card": card, "edited": ["text"], "taken_off": mask}
     canvas = _clear(card).copy()
     if card["energy"] == "basic":
         right = footer(canvas, card)
@@ -560,7 +662,7 @@ def build_foil(card, canvas, drawn):
     Basic Energy: the template's reverse holo when the old print had one.
     Nothing for a print without foil."""
     if card["frame"] == "print":
-        return _print_foil(card, canvas)
+        return _print_foil(card, canvas, drawn=drawn)
     if card["frame"] == "gold":
         return _gold_foil(card, canvas, drawn)
     if card["frame"] == "typed":
@@ -732,12 +834,16 @@ def _gold_foil(card, canvas, drawn):
     return out
 
 
-def _print_foil(card, canvas, print_id=None):
+def _print_foil(card, canvas, print_id=None, drawn=None):
     """The foil of an Energy card that is in the look already: its own TCG Live printing, as it is (shader, plate,
     etch and pattern textures), on the card's own front. print_id: the printing to take instead (a typed Special
     Energy's typed print, base printing only: the holo the Rare prints; its plate foils the swirl round the sphere and
-    the header, never what the card sets again)."""
+    the header, never what the card sets again). drawn: the composer's layers; a print whose text was set again in place
+    has its plates follow (foil.reprinted_ink: the old text off, the new set where the plate shows text)."""
     source = print_id or card["id"]
+    reprinted = None
+    if print_id is None and drawn and "text" in drawn and card.get("text_edit"):
+        reprinted = {"text": printed_text(tcg.scan(card["id"]), card["text_edit"], grow=False).astype(np.float32)}
     out = {"front": foil.modern_front(source, canvas), "base": None, "reverse": None}
     try:
         old = foil.printings(source)
@@ -752,5 +858,8 @@ def _print_foil(card, canvas, print_id=None):
         spec = (foil.legacy_shader(record.get("_s") or ""), foil.material_name(record.get("_f") or ""),
                 record.get("_cc") or None)
         extra = {"etch": foil.texture(record, record.get("_e")), "cf": foil.texture(record, record.get("_cf"))}
-        out[key] = (spec, foil.plate_texture(foil.plate(record) * alpha), extra)
+        img = foil.plate(record)
+        if reprinted:
+            img = foil.reprinted_ink(img, record, reprinted, drawn, flat=True)
+        out[key] = (spec, foil.plate_texture(img * alpha), extra)
     return out

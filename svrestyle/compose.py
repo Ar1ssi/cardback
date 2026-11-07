@@ -265,8 +265,9 @@ def held_left(coverage, limit):
 
 def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_TO_BODY, fit_tracking=None,
                red_edge=None, cost_r=COST_R, cost_dy=COST_DY, symbol=None, body_size=BODY_SIZE, dmg_limit=None,
-               min_tracking=None):
+               min_tracking=None, dx=0, width=BODY_FULL_W):
     """Abilities then attacks, placed by layout(laid, pitch); body text shrinks until the layout fits.
+    dx, width: the block moved right by dx and its text set width wide (an ACE SPEC panel, between its banners).
     min_tracking: break each text as a paragraph (typeset.compose_paragraph, no line tighter than this), a number
     staying with the word after it; default: line by line (typeset.justify, words joining while they fit_tracking).
     red_edge: keyline under the red Ability names (default: a white one when the text has an edge).
@@ -280,8 +281,8 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
     effects = [ts.energy_text(glued(b.get("effect") or "")) for _, b in blocks]   # (text with marks, symbol types)
     for k in SHRINK_STEPS:
         size, pitch = body_size * k, round(BODY_PITCH * k)
-        laid = [(kind, b, (ts.justify(text, size, BODY_FULL_W, BODY_TRACK, fit_tracking) if min_tracking is None else
-                           ts.compose_paragraph(text, size, BODY_FULL_W, BODY_TRACK, min_tracking)) if text else [])
+        laid = [(kind, b, (ts.justify(text, size, width, BODY_TRACK, fit_tracking) if min_tracking is None else
+                           ts.compose_paragraph(text, size, width, BODY_TRACK, min_tracking)) if text else [])
                 for (kind, b), (text, _) in zip(blocks, effects)]
         tops, fits = layout(laid, pitch)
         if fits:
@@ -302,8 +303,8 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
         else:
             cost = b.get("cost") or []
             for i, t in enumerate(cost):
-                icons.append((t, COST_X0 + COST_PITCH * i, top + cost_dy))
-            name_x = max(ATK_X, COST_X0 + COST_PITCH * (len(cost) - 1) + cost_r + 14) if cost else ATK_X
+                icons.append((t, COST_X0 + dx + COST_PITCH * i, top + cost_dy))
+            name_x = dx + (max(ATK_X, COST_X0 + COST_PITCH * (len(cost) - 1) + cost_r + 14) if cost else ATK_X)
             items.append(dict(text=b["name"], face=ATK_FACE, size=ATK_SIZE, x=name_x, base=top + atk_cap,
                               xscale=ATK_XSCALE))
             figures = damage_figures(b.get("damage"), top + atk_cap)
@@ -313,7 +314,7 @@ def text_block(canvas, card, fill, edge, layout=sv_ex_layout, name_to_body=NAME_
         marked = iter(types)
         for i, (runs, tracking) in enumerate(lines):
             base, marks = body_top + i * pitch + body_cap, []
-            items += ts.line_items(runs, tracking, size, BODY_X, base, marks)
+            items += ts.line_items(runs, tracking, size, BODY_X + dx, base, marks)
             for cx in marks:
                 np.maximum(drawn, symbol(next(marked), cx, base, size), out=drawn)
     with layers.kind("text"):

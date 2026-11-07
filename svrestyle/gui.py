@@ -292,6 +292,7 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
         elif layout == "trainer":
             img, _ = trainer.compose_card(card_id, card=card)
             built = (foil.build_ace(card_id, card, img, drawn, original) if ace
+                     else foil.build_ace_convert(card, img, drawn) if original.get("ace_convert")
                      else foil.build_trainer(card_id, card, img, drawn)) if holo else None
         elif layout == "modern":
             img, report = modern.compose_card(card_id, card, original)

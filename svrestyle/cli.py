@@ -115,6 +115,8 @@ def render_trainer(card_id, out, want_foil=False):
     if want_foil:
         if card.get("ace"):
             built = foil.build_ace(card_id, card, img, drawn, trainer.read_card(card_id))
+        elif card.get("ace_convert"):
+            built = foil.build_ace_convert(card, img, drawn)
         else:
             built = foil.build_trainer(card_id, card, img, drawn)
         if built["base"] or built["reverse"]:

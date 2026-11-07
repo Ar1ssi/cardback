@@ -319,8 +319,14 @@ Old Energy becomes Mega Evolution Energy (`energy.py`; its frames are cut from T
   Energy's round it; a regular one gets SvHolo on the art when the old print was foil and the template's reverse holo
   (header lettering, text panel) when it had one; a Basic Energy the template's reverse holo when the old print had one.
   TCG Live has no foil for some old Basic Energy: the card is set without, with a warning.
-- **Refused**: Scarlet & Violet and Mega Evolution Energy (already in this look), TCG Pocket cards, and an Energy whose
-  TCGdex record has no text. A custom set takes Basic and Special Energy.
+- **Scarlet & Violet and Mega Evolution Special Energy** keep their print, but their text can be edited
+  (`energy.in_place`): on a regular print (the panel of Team Rocket's Energy, which the Scarlet & Violet ones share) the
+  dark text is taken off and the brushed silver bridged along each row; on an ACE SPEC Energy's pink panel the white
+  text is taken off as on the ACE SPEC Trainers. The new text is centred where the print centres its own. The print's
+  foil follows (`foil.reprinted_ink`): where its plate cuts the text out (ACE SPEC), the old cut-outs are filled from
+  round them and the new text cut. Full-art and gold prints keep their text.
+- **Refused**: TCG Pocket cards, and an Energy whose TCGdex record has no text. A custom set takes Basic and Special
+  Energy.
 
 ### Trainers
 
@@ -346,8 +352,13 @@ print no type: the kind comes from the rule the text holds, else Item (with a wa
   banners differs set to set, so no template: the card keeps its own scan, and only the name, text and illustrator can
   change (not the kind). What changed is found as white print in its zone, rebuilt by LaMa and set again in white; the
   text sits where the print has it. Their holofoil (AceFoil, `foil.build_ace`) keeps the card's own plate: the old print's cut-outs are filled from the card's foil field and the new text is cut at the value the plate gives it. The ex and V logos in text print as plain "ex" and "V". Black & White's ACE SPEC Trainers (13) are converted to this frame (`ace.convert_card`, `aceframe.py`: the frame
-  per kind built from the Scarlet & Violet prints, the old art moved into its window, name and text white); the two
-  that lend an attack (Genesect-EX's G Booster and G Scope) and XY's are refused.
+  per kind built from the Scarlet & Violet prints, the old art moved into its window, name and text white). The two
+  that lend Genesect-EX an attack (G Booster, G Scope) print it as the Technical Machines do, between the banners;
+  TCGdex gives only the attack's text, so card text, cost and damage are read off their scans (`trainer.LENT_ATTACKS`).
+  Their holofoil (`foil.build_ace_convert`) is AceFoil as the prints of their kind carry it: the frame's plate (the
+  kind's prints' median, the words taken off the name bar and panel), the art window foiled the more the darker the
+  art (`ACE_GROUND`, fitted on 10 prints) with the item itself left bare (found by GrabCut; a Stadium's art has none),
+  and the new name and text cut out at the prints' values. XY's ACE SPEC cards are refused.
 - **Refused**: full-art, gold and other special prints (no art window to move), older ACE SPEC and Prism Star cards, GX-attack
   Z-Crystals and Team Flare Hyper Gear (rules no Gen 9 frame prints), Chaos Tower (played either way up), Classic
   Collection reprints, TCG Pocket cards, and sets of no known layout.
@@ -383,8 +394,8 @@ A Trainer has its own fields: name, a Supporter's character, kind (Item, Support
 dolls), illustrator and effect text (a paragraph per line), and its Abilities or attacks; holofoil works too (below). A Scarlet & Violet or Mega Evolution Trainer is edited too: it keeps its art and is set again, text and
 all, on its kind's Gen 9 frame (an inline ex logo in its text prints as plain "ex").
 A Special Energy has its name, illustrator, text, the Energy it provides (the name bar's icons) and its frame
-(art and text panel, or full art); a Basic Energy only its frame (Mega Evolution, or gold Hyper Rare). Holofoil
-works on Energy too.
+(art and text panel, or full art); a Scarlet & Violet or Mega Evolution one only its text (not on full-art or gold
+prints); a Basic Energy only its frame (Mega Evolution, or gold Hyper Rare). Holofoil works on Energy too.
 
 The foil preview is TCG Live's own: its TPCi/Cards3D shaders (the extract's WebApp translation to WebGL,
 `WebApp/web/data/foil/`) and MAT_Cards3D_* materials, with their spectrum, shine, glitter and pattern textures

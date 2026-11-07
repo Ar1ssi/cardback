@@ -38,8 +38,18 @@ NOT_REGULAR = ("ultra", "secret", "rainbow", "illustration", "hyper", "shiny", "
 ACE_RARITY = "ace spec"
 ACE_SPEC = {"bw7-137", "bw7-138", "bw7-139", "bw7-140", "bw8-128", "bw8-129", "bw8-130", "bw9-107", "bw9-108",
             "bw10-92", "bw10-93", "bw10-94", "bw10-95"}
-# The two of them that lend an attack (Genesect-EX's G Booster and G Scope).
-ATTACK_LENDERS = {"bw10-92", "bw10-93"}
+# The two of them that lend Genesect-EX an attack: TCGdex gives only the attack's text as the card's, so the card's
+# text and attack are as printed (read off the bw10-92 and bw10-93 scans).
+LENT_RULE = ("The Genesect-EX this card is attached to can also use the attack on this card. (You still need the "
+             "necessary Energy to use this attack.)")
+LENT_ATTACKS = {
+    "bw10-92": {"cost": ["Grass", "Grass", "Colorless"], "name": "G Booster", "damage": "200",
+                "effect": "Discard 2 Energy attached to this Pokémon. This attack’s damage isn’t affected by any "
+                          "effects on the Defending Pokémon."},
+    "bw10-93": {"cost": ["Grass", "Grass", "Colorless"], "name": "G Scope", "damage": "",
+                "effect": "This attack does 100 damage to 1 of your opponent’s Benched Pokémon. (Don’t apply "
+                          "Weakness and Resistance for Benched Pokémon.)"},
+}
 PRISM = "◇"
 # A card played either way up (xy10-94 Chaos Tower) prints its other half upside down in the art.
 TWO_WAY = "which way this card faces"
@@ -283,7 +293,7 @@ def read_card(card_id):
     if name.endswith(HYPER_GEAR):
         raise SystemExit(f"{card_id} is {name!r}, attached to the opponent's Pokemon-EX: a rule the Gen 9 Tool "
                          "frame contradicts")
-    raw = c.get("effect") or ""
+    raw = LENT_RULE if card_id in LENT_ATTACKS else c.get("effect") or ""
     if TWO_WAY in raw:
         raise SystemExit(f"{card_id} is {name!r}, played either way up: its art holds the other way's text")
     if GX_ATTACK in raw:
@@ -303,10 +313,9 @@ def read_card(card_id):
     for a in c.get("abilities") or []:
         if not (a.get("name") and a.get("effect")):
             warnings.warn(f"{card_id}: TCGdex lists a {a.get('type') or 'Ability'} without its name or text: left out")
+    if card_id in LENT_ATTACKS:
+        attacks = [dict(LENT_ATTACKS[card_id], cost=list(LENT_ATTACKS[card_id]["cost"]))]
     convert = card_id in ACE_SPEC          # Black & White's: set on the Scarlet & Violet ACE SPEC frame (ace.py)
-    if card_id in ATTACK_LENDERS:
-        raise SystemExit(f"{card_id} is {name!r}, an ACE SPEC card that lends an attack: TCGdex gives only the "
-                         "attack's text, and the Scarlet & Violet ACE SPEC frame has no attack block")
     if convert and kind not in aceframe.KINDS:
         raise SystemExit(f"{card_id} is {name!r}: there is no ACE SPEC {kind} frame")
     in_text = re.search(TEXT_HP, raw)
@@ -456,7 +465,8 @@ def body(canvas, card, x=BODY_X, width=BODY_FULL_W, ink=None, dy=0):
         return blocks_body(canvas, card, paragraphs, TM_FIRST_BASE, FOSSIL_GAP, FOSSIL_NAME_TO_BODY, blank=False,
                            tracking=FOSSIL_TRACK, block_size=FOSSIL_ABILITY_SIZE)
     if card["attacks"]:
-        return blocks_body(canvas, card, paragraphs, TM_FIRST_BASE, TM_GAP, TM_NAME_TO_BODY)
+        return blocks_body(canvas, card, paragraphs, TM_FIRST_BASE, TM_GAP, TM_NAME_TO_BODY, x=x, width=width,
+                           ink=ink)
     for k in SHRINK_STEPS:
         lines, rows = lay_paragraphs(paragraphs, k, width=width)
         first = max(snap(BLOCK_CENTRE - (rows - 1) * ROW_HALF * k), BODY_TOP_MIN) + _drop(lines) + dy
@@ -469,19 +479,22 @@ def body(canvas, card, x=BODY_X, width=BODY_FULL_W, ink=None, dy=0):
 
 
 def blocks_body(canvas, card, paragraphs, first_base, gap, name_to_body, blank=True,
-                tracking=(BODY_TRACK, BODY_MIN_TRACK), block_size=compose.BODY_SIZE):
+                tracking=(BODY_TRACK, BODY_MIN_TRACK), block_size=compose.BODY_SIZE, x=BODY_X, width=BODY_FULL_W,
+                ink=None):
     """The effect from a fixed first baseline, then Abilities and attacks set as on the Pokemon cards (badge or
-    energy costs, name, damage; text at their size), the first name's cap top gap below the effect's last baseline."""
+    energy costs, name, damage; text at their size), the first name's cap top gap below the effect's last baseline.
+    x, width, ink: the panel's text column and ink when not the Trainers' (ACE SPEC: narrower, white)."""
+    ink = np.array(frame.DARK_INK, np.float32) if ink is None else ink
     blocks = len(card["abilities"]) + len(card["attacks"])
     for k in SHRINK_STEPS:
-        lines, rows = lay_paragraphs(paragraphs, k, blank, tracking)
+        lines, rows = lay_paragraphs(paragraphs, k, blank, tracking, width)
         first = first_base + _drop(lines)
         last = first + (rows - 1) * BODY_PITCH * k if lines else first - gap
         if last + gap + BLOCK_ROOM * blocks <= PANEL_BOTTOM:
             break
     else:
         warnings.warn(f"{card['id']}: the effect, abilities and attacks run taller than the panel holds")
-    draw_lines(canvas, lines, first, k)
+    draw_lines(canvas, lines, first, k, x, ink)
     top = last + gap
 
     def layout(laid, pitch):
@@ -492,9 +505,10 @@ def blocks_body(canvas, card, paragraphs, first_base, gap, name_to_body, blank=T
                   else mecompose.ROW_H) + mecompose.TIGHT_GAP
         return tops, t - mecompose.TIGHT_GAP <= PANEL_BOTTOM
     compose.text_block(canvas, {"id": card["id"], "abilities": card["abilities"], "attacks": card["attacks"]},
-                       np.array(frame.DARK_INK, np.float32), None, layout=layout, name_to_body=name_to_body,
+                       ink, None, layout=layout, name_to_body=name_to_body,
                        fit_tracking=mecompose.BODY_FIT_TRACK, cost_r=mecompose.COST_R, cost_dy=TM_COST_DY,
-                       body_size=block_size, dmg_limit=BODY_X + BODY_FULL_W)
+                       body_size=block_size, dmg_limit=x + width, dx=x - BODY_X,
+                       width=compose.BODY_FULL_W - (BODY_FULL_W - width))
     return k
 
 

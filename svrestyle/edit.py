@@ -114,11 +114,19 @@ def _energy_fixed(card):
     return card["energy"] == "basic" or card["frame"] == "print"
 
 
+def _print_text(card):
+    """A Scarlet & Violet / Mega Evolution Special Energy whose text can be set again on its own print (energy.in_place):
+    its text is all that changes."""
+    return card["energy"] == "special" and card["frame"] == "print" and bool(card.get("text_edit"))
+
+
 def _energy_editable(card):
     if _energy_fixed(card):
         out = {"energy": card["energy"], "frame": card["frame"]}
         if "type" in card:
             out["type"] = card["type"]
+        if _print_text(card):
+            out["effect"] = card.get("effect", "")
         return out
     out = {k: card.get(k, "") for k in ENERGY_SCALAR}
     out.update(energy="special", effect=card.get("effect", ""), cost=list(card.get("cost") or []),
@@ -223,6 +231,13 @@ def _apply_energy(out, edits):
     """Edits the editor sends back include the card's "energy" and a Basic Energy's "type", as editable() gave them."""
     if edits.get("energy", out["energy"]) != out["energy"]:
         raise ValueError("energy: a Basic Energy cannot become a Special Energy, or the other way round")
+    if _print_text(out):
+        if "effect" in edits:
+            out["effect"] = _paragraphs(edits["effect"], "text")
+        if any(k not in ("energy", "frame", "effect") or (k != "effect" and edits[k] != out[k]) for k in edits):
+            raise ValueError("a Scarlet & Violet / Mega Evolution Special Energy keeps its print: only its text can "
+                             "change")
+        return out
     if _energy_fixed(out):
         frame = edits.get("frame", out["frame"])
         if out["energy"] == "basic" and out["frame"] in BASIC_FRAMES and frame in BASIC_FRAMES:

@@ -1270,6 +1270,36 @@ def build_trainer(card_id, card, canvas, drawn):
     return out
 
 
+def reprinted_ink(img, record, printed, drawn, gain=ACE_CUT_GAIN, flat=False):
+    """A plate whose print was set again in place: what the old ink prints on it (printed: {kind: coverage, as found on
+    the card}) is taken off where the plate shows it (cut out: the foil under it from the record's foil field; lit:
+    filled from the plate around it) and the new ink (drawn, by the same kinds) set at the value the plate gives that
+    kind (ink_value), its coverage raised by gain (plates cut a little bolder than the print). Ink the plate does not
+    show leaves it as printed. flat: the ground under the ink is plain (an Energy's panel): cut-outs are filled from
+    round them too (the foil field, made from peer prints, leaves their words' ghosts there)."""
+    around = np.zeros((H, W), bool)
+    for cover in printed.values():
+        around |= cover > 0.05
+    learned, own_field = {}, None
+    for kind, cover in printed.items():
+        value = ink_value(img, cover, around)
+        learned[kind] = value
+        if value is None:
+            continue
+        area = dilate(cover > 0.05, MARK_GROW + 1)         # the print is found whole (its cut-out's rim too)
+        if value[0] < value[1] and not flat:              # cut out: the foil under it, from the field
+            if own_field is None:
+                own_field = field(record)[0]
+            img = np.where(area, own_field, img)
+        else:                                              # lit ink on plainer ground
+            img = fill(img, area)
+    for kind, value in learned.items():
+        if value is not None and kind in drawn:
+            cover = np.clip(drawn[kind] * gain, 0, 1)
+            img = img * (1 - cover) + value[0] * cover
+    return img
+
+
 def build_ace(card_id, card, canvas, drawn, original):
     """Foil of a Scarlet & Violet ACE SPEC Trainer edited in place (ace.compose_card): its own AceFoil printing,
     edited. What the old name, text and illustrator print on the plate is taken off where the plate shows it (cut
@@ -1285,32 +1315,77 @@ def build_ace(card_id, card, canvas, drawn, original):
     img = plate(record)
     groups = ace.changed(original, card)
     if groups:
-        scan = tcg.scan(card_id)
-        printed = ace.printed_ink(scan, original, groups)
-        around = np.zeros((H, W), bool)
-        for cover in printed.values():
-            around |= cover > 0.05
-        learned, own_field = {}, None
-        for kind, cover in printed.items():
-            value = ink_value(img, cover, around)
-            learned[kind] = value
-            if value is None:
-                continue
-            area = dilate(cover > 0.05, MARK_GROW + 1)         # the print is found whole (its cut-out's rim too)
-            if value[0] < value[1]:                           # cut out: the foil under it, from the field
-                if own_field is None:
-                    own_field = field(record)[0]
-                img = np.where(area, own_field, img)
-            else:                                              # lit ink on plainer ground
-                img = fill(img, area)
-        for kind, value in learned.items():
-            if value is not None and kind in drawn:
-                cover = np.clip(drawn[kind] * ACE_CUT_GAIN, 0, 1)
-                img = img * (1 - cover) + value[0] * cover
+        img = reprinted_ink(img, record, ace.printed_ink(tcg.scan(card_id), original, groups), drawn)
     spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)
     extra = {"etch": texture(record, record.get("_e")), "cf": texture(record, record.get("_cf"))}
     out["base"] = (spec, plate_texture(img * (alpha / 255)), extra)
     return out
+
+
+# AceFoil of an old ACE SPEC Trainer set on the Scarlet & Violet ACE SPEC frame (ace.convert_card). The plate of its
+# kind's frame is the median of the kind's prints' plates (aceframe.POOL); on its plain name bar and text panel what
+# the words cut out (darker than ACE_MARK) is filled from round it. In the art window the prints foil the ground round the item
+# more the darker the art is (fitted on 10 prints: plate ~ 260 - 0.4 * luminance, r -0.5) and leave the item itself
+# bare: the item is found on the old art by GrabCut (a Stadium's art has none). The new name and text are cut out at
+# the value the prints cut theirs.
+ACE_GROUND = (260.0, -0.4, 90.0)   # plate = a + b * art luminance, at least the last
+ACE_CUT = {"name": 21.0, "text": 27.0, "icon": 27.0}
+ACE_SUBJECT_INSET = (0.08, 0.06)   # GrabCut's rectangle: the window less this share of its width / height each side
+ACE_SUBJECT_EDGE = 1.5             # px blur of the item's edge on the plate
+ACE_SUBJECT_SHARE = (0.05, 0.75)   # an item found outside this share of the window is not one: the art all foiled
+ACE_MARK = 60                      # plate value below which the name bar and panel are cut out (they are ~98)
+
+
+def ace_frame_plate(kind):
+    """The AceFoil plate of the kind's ACE SPEC frame with nothing printed (the art window still as one print has it):
+    float32 733x1024; cached."""
+    from . import aceframe
+
+    def build():
+        own = np.median(np.stack([plate(printings(i)["base"]) for i in aceframe.POOL[kind]]), axis=0)
+        marks = np.zeros((H, W), bool)
+        for x0, y0, x1, y1 in (aceframe.NAME_ZONE, aceframe.TEXT_ZONE):
+            marks[y0:y1, x0:x1] = own[y0:y1, x0:x1] < ACE_MARK
+        return fill(own, dilate(marks, MARK_GROW + 1))
+    return _cached(f"ace-frame-v2-{kind}.png", build)
+
+
+def ace_subject(art):
+    """bool HxW of the window: the item on an art (RGB uint8), by GrabCut; all False when none is found."""
+    h, w = art.shape[:2]
+    sx, sy = ACE_SUBJECT_INSET
+    mask = np.zeros((h, w), np.uint8)
+    rect = (int(w * sx), int(h * sy), int(w * (1 - 2 * sx)), int(h * (1 - 2 * sy)))
+    cv2.grabCut(cv2.cvtColor(art, cv2.COLOR_RGB2BGR), mask, rect, None, None, 5, cv2.GC_INIT_WITH_RECT)
+    fg = (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD)
+    lo, hi = ACE_SUBJECT_SHARE
+    return fg if lo <= fg.mean() <= hi else np.zeros_like(fg)
+
+
+def build_ace_convert(card, canvas, drawn):
+    """Foil of an old ACE SPEC Trainer on the Scarlet & Violet ACE SPEC frame (ace.convert_card): the AceFoil the
+    prints of its kind carry, on its own art. Same shape as build()."""
+    from . import aceframe, trainer
+    kind = card["kind"]
+    record = printings(aceframe.POOL[kind][0])["base"]
+    img = ace_frame_plate(kind).copy()
+    x0, y0, x1, y1 = aceframe.tf.ART
+    art = np.clip(trainer.old_art(card)[y0:y1, x0:x1, :3], 0, 255).astype(np.uint8)
+    a, b, least = ACE_GROUND
+    ground = np.maximum(a + b * (art.astype(np.float32) * [0.299, 0.587, 0.114]).sum(-1), least)
+    ground = cv2.GaussianBlur(np.minimum(ground, 255), (0, 0), 2)
+    if kind != "Stadium":
+        bare = cv2.GaussianBlur(ace_subject(art).astype(np.float32), (0, 0), ACE_SUBJECT_EDGE)
+        ground = ground * (1 - bare)
+    template = aceframe.template(kind)[y0:y1, x0:x1, 3] / 255          # the window's rim belongs to the frame
+    img[y0:y1, x0:x1] = img[y0:y1, x0:x1] * template + ground * (1 - template)
+    for kind_drawn, value in ACE_CUT.items():
+        if kind_drawn in drawn:
+            cover = np.clip(drawn[kind_drawn] * ACE_CUT_GAIN, 0, 1)
+            img = img * (1 - cover) + value * cover
+    spec = (legacy_shader(record.get("_s") or ""), material_name(record.get("_f") or ""), record.get("_cc") or None)
+    return {"front": front_texture(canvas), "reverse": None,
+            "base": (spec, plate_texture(img * (canvas[..., 3] / 255)), {})}
 
 
 def files(foil, stem, card_id):

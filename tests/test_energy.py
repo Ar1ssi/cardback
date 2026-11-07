@@ -108,7 +108,30 @@ class Reading(unittest.TestCase):
             self.assertEqual(edit.apply(card, edit.editable(card)), card)
             with self.assertRaises(ValueError):
                 edit.apply(card, {"name": "Other"})
-        self.assertEqual(edit.editable(special), {"energy": "special", "frame": "print"})
+        self.assertEqual(edit.editable(special), {"energy": "special", "frame": "print",
+                                                  "effect": special["effect"]})
+        self.assertEqual(edit.editable(basic), {"energy": "basic", "frame": "print", "type": "Lightning"})
+
+    def test_a_scarlet_violet_special_energys_text_can_be_edited_and_nothing_else(self):
+        special = read(tcgdex(id="sv02-190", name="Jet Energy", set={"id": "sv02"}, rarity="Uncommon",
+                              effect="As long as this card is attached to a Pokémon, it provides Colorless Energy."))
+        self.assertEqual(special["text_edit"], "panel")
+        out = edit.apply(special, {"energy": "special", "frame": "print", "effect": "Draw a card."})
+        self.assertEqual(out["effect"], "Draw a card.")
+        for edits in ({"name": "Other"}, {"frame": "regular"}, {"cost": ["Fire"]}):
+            with self.subTest(edits), self.assertRaises(ValueError):
+                edit.apply(special, edits)
+
+    def test_how_a_print_is_edited_follows_its_rarity(self):
+        self.assertEqual(energy.print_layout("Uncommon"), "panel")
+        self.assertEqual(energy.print_layout("Rare"), "panel")                 # the typed prints share the panel
+        self.assertEqual(energy.print_layout("ACE SPEC Rare"), "ace")
+        self.assertIsNone(energy.print_layout("Hyper rare"))                   # gold: text over the art
+        full = read(tcgdex(id="sv08-252", name="Jet Energy", set={"id": "sv08"}, rarity="Hyper rare",
+                           effect="As long as this card is attached to a Pokémon, it provides Colorless Energy."))
+        self.assertEqual(edit.editable(full), {"energy": "special", "frame": "print"})
+        with self.assertRaises(ValueError):
+            edit.apply(full, {"effect": "Draw a card."})
 
 
 class Editing(unittest.TestCase):
@@ -222,6 +245,28 @@ class Composing(unittest.TestCase):
     def setUpClass(cls):
         from svrestyle import typeset
         typeset.configure(os.environ["SVRESTYLE_FONTS"])
+
+    def test_a_print_edited_in_place_changes_only_its_panel_and_its_plate_follows(self):
+        from svrestyle import layers
+        for card_id, text in (("sv02-190", "Draw a card."), ("sv05-162", "Draw a card.")):   # regular, ACE SPEC
+            original = energy.read_card(card_id)
+            card = edit.apply(original, {"effect": text})
+            with layers.recording() as drawn:
+                img, report = energy.compose_card(card_id, card)
+            scan = energy.tcg.scan(card_id)
+            changed = np.abs(img[..., :3] - scan[..., :3]).max(axis=2) > 8
+            with self.subTest(card_id):
+                self.assertEqual(report["edited"], ["text"])
+                self.assertFalse(changed[:650].any() or changed[945:].any(), "only the panel is set again")
+                self.assertTrue(changed[650:945].any())
+                built = energy.build_foil(card, img, drawn)
+                kept = energy._print_foil(original, scan)
+                for key in ("base", "reverse"):
+                    if built[key] and card_id == "sv05-162":    # the ACE SPEC plate cuts its text out: it follows
+                        self.assertFalse(np.array_equal(built[key][1], kept[key][1]))
+        unedited, report = energy.compose_card("sv02-190")
+        self.assertTrue(np.array_equal(unedited, energy.tcg.scan("sv02-190")))   # nothing edited: the print itself
+        self.assertNotIn("edited", report)
 
     def test_an_old_window_is_found_on_the_scan(self):
         for card_id, (width, height) in (("sm3.5-69", (675, 528)), ("sm1-136", (675, 528)), ("swsh1-186", (675, 520))):

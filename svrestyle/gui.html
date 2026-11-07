@@ -282,7 +282,7 @@
           <div id="provides" class="cost" aria-labelledby="providesLabel"></div><div id="providesPalette" class="palette"></div></div>
         <div data-energy data-basicframe><label for="basicFrameSel">Frame</label>
           <select id="basicFrameSel"><option value="basic">Mega Evolution Basic Energy</option><option value="gold">Gold Hyper Rare (Paldea Evolved style)</option></select></div>
-        <p class="hint" data-energy data-basic>An older Basic Energy becomes the Mega Evolution Basic Energy of its type, or its type's gold Hyper Rare one (Frame); only its footer, set code and number, is set. Scarlet &amp; Violet / Mega Evolution Energy keeps its print and its foil.</p>
+        <p class="hint" data-energy data-basic>An older Basic Energy becomes the Mega Evolution Basic Energy of its type, or its type's gold Hyper Rare one (Frame); only its footer, set code and number, is set. Scarlet &amp; Violet / Mega Evolution Energy keeps its print and its foil; a Special Energy's text can be edited (set again on its own panel, its foil following), but not on a full-art or gold print.</p>
         <div data-effect><label for="effect">Card text</label><textarea id="effect" rows="6" data-wording></textarea>
           <div id="effectWording" class="wording"></div></div>
         <p class="hint" data-energy data-special>One paragraph per line. {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols. Click an energy to add it to what the card provides (up to three icons in the name bar); click an icon to remove it.</p>
@@ -606,7 +606,7 @@ function showFor(layout) {
   const holds = { me: layout === "me", ex: layout === "ex", restyle: layout !== "modern",
     pokemon: layout !== "trainer" && layout !== "energy", trainer: layout === "trainer",
     energy: layout === "energy", noenergy: layout !== "energy", special: layout !== "energy" || !fixed,
-    basic: fixed, effect: layout === "trainer" || (layout === "energy" && !fixed),
+    basic: fixed, effect: layout === "trainer" || (layout === "energy" && (!fixed || "effect" in energy)),
     basicframe: layout === "energy" && kind === "basic" && energy.frame !== "print",
     foil: true };
   document.querySelectorAll("[data-me], [data-ex], [data-restyle], [data-pokemon], [data-trainer], [data-foil], " +
@@ -734,6 +734,7 @@ function readForm() {
       for (const k of ["name", "illustrator", "effect"]) card[k] = $(k).value;
       card.frame = $("frameSel").value;
     }
+    if (card.energy === "special" && card.frame === "print" && "effect" in card) card.effect = $("effect").value;
     if (card.energy === "basic" && card.frame !== "print") card.frame = $("basicFrameSel").value;
     return;
   }

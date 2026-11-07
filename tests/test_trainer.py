@@ -564,9 +564,16 @@ class AceSpec(unittest.TestCase):
         self.assertTrue(card["ace_convert"])
         self.assertFalse(card["ace"])
 
-    def test_ace_specs_that_lend_an_attack_are_refused(self):
-        with self.assertRaises(SystemExit):
-            self.card(id="bw10-92", rarity="Rare", set={"id": "bw10"})
+    def test_ace_specs_that_lend_an_attack_get_it_as_printed(self):
+        # bw10-92 G Booster: TCGdex gives the attack's text as the card's; the card and attack read off the scan
+        card = self.card(id="bw10-92", name="G Booster", rarity="Rare", set={"id": "bw10"},
+                         effect="Discard 2 Energy attached to this Pokémon. This attack’s damage isn’t affected by any "
+                                "effects on the Defending Pokémon.")
+        self.assertTrue(card["ace_convert"])
+        self.assertEqual(card["effect"], trainer.LENT_RULE)
+        self.assertEqual([(a["cost"], a["name"], a["damage"]) for a in card["attacks"]],
+                         [(["Grass", "Grass", "Colorless"], "G Booster", "200")])
+        self.assertIsNot(card["attacks"][0]["cost"], trainer.LENT_ATTACKS["bw10-92"]["cost"])
 
     def test_xy_ace_specs_and_other_special_rarities_are_still_refused(self):
         for over in (dict(id="xy1-1", rarity="ACE SPEC Rare"),
@@ -658,6 +665,22 @@ class TrainerFoil(unittest.TestCase):
                 self.assertEqual(plate.shape, (1024, 733))
                 self.assertGreater(float(((plate > 30) & (plate < 225))[640:930, 40:690].mean()), 0.9, "the Poké Ball pattern")
                 self.assertLess(float(plate[200:400, 100:600].max()), 30, "the art window is not foil")
+
+    @unittest.skipUnless(os.environ.get("SVRESTYLE_CACHE"), "needs the scans' cache (SVRESTYLE_CACHE)")
+    def test_a_converted_ace_spec_gets_acefoil_with_its_item_bare_and_its_name_cut(self):
+        from svrestyle import foil
+        card = trainer.read_card("bw7-137")               # Computer Search: the computer in the middle of its art
+        name = np.zeros((1024, 733), np.float32)
+        name[90:125, 60:300] = 1
+        built = foil.build_ace_convert(card, self.canvas(), {"name": name})
+        (shader, material, _), texture, _ = built["base"]
+        self.assertIn("AceFoil", material)
+        self.assertIsNone(built["reverse"])
+        plate = texture[:, 145:145 + 733]
+        self.assertLess(abs(float(np.median(plate[95:120, 70:290])) - foil.ACE_CUT["name"]), 2, "the name cut out")
+        self.assertLess(float(np.median(plate[300:380, 300:420])), 30, "the item is bare")
+        self.assertGreater(float(np.median(plate[150:170, 600:660])), 90, "the ground round it is foil")
+        self.assertGreater(float(np.median(plate[600:700, 100:600])), 80, "the panel is foil")
 
     def test_an_old_item_gets_flat_silver_on_that_plate_with_its_footer_cut(self):
         from svrestyle import foil, layers
