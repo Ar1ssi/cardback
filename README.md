@@ -44,6 +44,29 @@ from it too. TCGdex ids map to TCG Live ids by rule (`swsh6-99` -> `swsh6_99`, `
 `tcg.TCGLIVE_SETS` (`sma-SV33` -> `sm11-5_102`, `swshp-SWSH055` -> `swshbsp_55`, `mep-013` -> `mebsp_13`). A card the extract lacks falls back
 to pokemontcg.io with a warning. Everything built from these scans is cached under `<cache>/tcglive/`.
 
+#### The extract in a Cloudflare R2 bucket
+
+The extract does not have to be on this machine: `--tcglive r2://<bucket>/<prefix>` (or
+`SVRESTYLE_TCGLIVE=r2://<bucket>/<prefix>`) reads it from an R2 bucket whose keys mirror the extract's folders
+(`<prefix>/cardart/bundles/...`, `<prefix>/cardart/masks/...`, `<prefix>/cardart/manifests.jsonl`, `<prefix>/WebApp/...`,
+`<prefix>/cosmetics/...`, `<prefix>/pokemon_Pokemon TCG Live/shadersbundle/...`; the prefix may be empty). Upload a
+local extract once with rclone, e.g. `rclone copy E:\TCGLive_Extract r2:<bucket>/<prefix>`. Every file the scans,
+holofoil, Fairy coins and the editor's foil preview read is downloaded on first use into `<cache>/r2/<bucket>/` and
+read from there afterwards, so only the first render of a set waits on the network (a holofoil reads the plates of
+the card's whole set once). Delete `<cache>/r2/` to pick up files changed in the bucket.
+
+```sh
+pip install boto3
+export R2_ACCESS_KEY_ID=...  R2_SECRET_ACCESS_KEY=...     # an R2 API token with Object Read on the bucket
+export SVRESTYLE_TCGLIVE=r2://ptcg-foil/tcglive
+python -m svrestyle card swsh6-99 --foil
+```
+
+The S3 endpoint defaults to the account's (`https://e24075f3d9dc9fbd325f42aa3f946d38.r2.cloudflarestorage.com`);
+`SVRESTYLE_R2_ENDPOINT` changes it. Without `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`, boto3's own credential chain
+is used (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, ...). A key the bucket lacks counts as a file the extract lacks (a scan
+then falls back to pokemontcg.io); a bucket that cannot be read at all (keys, network) stops with the error.
+
 ### Holofoil (`--foil`)
 
 With a TCG Live extract, `card ... --foil` also writes the card's holofoil the way TCG Live draws it: a 1024x1024
