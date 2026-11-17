@@ -9,6 +9,10 @@ if not defined PORT set PORT=8765
 if not defined SVRESTYLE_CACHE set "SVRESTYLE_CACHE=%USERPROFILE%\svrestyle-work\cache"
 if not defined SVRESTYLE_FONTS set "SVRESTYLE_FONTS=%USERPROFILE%\svrestyle-work\fonts"
 if not defined SVRESTYLE_TCGLIVE if exist "E:\TCGLive_Extract" set "SVRESTYLE_TCGLIVE=E:\TCGLive_Extract"
+rem No local extract: read it from the Cloudflare R2 bucket when its keys are set (R2_ACCESS_KEY_ID and
+rem R2_SECRET_ACCESS_KEY, an API token with Object Read; needs pip install boto3). SVRESTYLE_R2_EXTRACT names it.
+if not defined SVRESTYLE_R2_EXTRACT set "SVRESTYLE_R2_EXTRACT=r2://ptcg-foil/tcglive"
+if not defined SVRESTYLE_TCGLIVE if defined R2_ACCESS_KEY_ID set "SVRESTYLE_TCGLIVE=%SVRESTYLE_R2_EXTRACT%"
 rem "Send to ptcg-sim" writes custom sets into the simulator's checkout; its running server reloads them
 if not defined SVRESTYLE_PTCG_SIM if exist "%USERPROFILE%\Downloads\vibecodepokemontcg2-main\client\src" set "SVRESTYLE_PTCG_SIM=%USERPROFILE%\Downloads\vibecodepokemontcg2-main"
 rem "Publish to site" uploads a set to the hosted simulator's R2 bucket through rclone (its remote holds the keys)

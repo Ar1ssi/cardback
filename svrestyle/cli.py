@@ -13,6 +13,7 @@
       --foil                 also write the card's TCG Live holofoil: 1024x1024 front, white plate(s), foil.json
   every command: --tcglive DIR   take scans from a Pokemon TCG Live extract (its 1024x1024 card fronts) instead of
                                  pokemontcg.io; or set SVRESTYLE_TCGLIVE. Cached apart from web scans.
+                                 DIR may be r2://BUCKET[/PREFIX]: the extract in a Cloudflare R2 bucket (extract.py).
 """
 import argparse
 import json
@@ -214,7 +215,8 @@ def main(argv=None):
     pg.set_defaults(func=cmd_gui)
     for sp in (pp, pc, pg):
         sp.add_argument("--tcglive", metavar="DIR", help="take card scans from this Pokemon TCG Live extract "
-                                                         "(1024x1024 fronts; or set SVRESTYLE_TCGLIVE)")
+                                                         "(1024x1024 fronts; or set SVRESTYLE_TCGLIVE): a folder, "
+                                                         "or r2://BUCKET[/PREFIX] for one in a Cloudflare R2 bucket")
     a = p.parse_args(argv)
     if a.tcglive:
         tcg.TCGLIVE, cache.SOURCE = a.tcglive, "tcglive"

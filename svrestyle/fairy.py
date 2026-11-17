@@ -25,13 +25,12 @@ Needs the TCG Live extract (the coins).
 """
 import functools
 import threading
-from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image
 
-from . import cache, tcg
+from . import cache, extract, tcg
 from .imaging import dilate, fill_holes, load_rgba, luminance, save_rgba
 
 W, H = 733, 1024
@@ -142,12 +141,12 @@ def coin(type_name):
                           "coins): pass --tcglive DIR or set SVRESTYLE_TCGLIVE")
     name = COIN.format(type_name)
     folder = f"cn_tcgl-default_energy-{type_name}_mtl"
-    png = Path(tcg.TCGLIVE, "cosmetics", "png", "coins", folder, f"_MainTex__{name}.png")
+    png = extract.path(tcg.TCGLIVE, "cosmetics", "png", "coins", folder, f"_MainTex__{name}.png")
     if png.exists():
         img = Image.open(png)
     else:
         import UnityPy
-        bundle = Path(tcg.TCGLIVE, "cosmetics", "bundles_deps", f"cn_tcgl-default_energy-{type_name}")
+        bundle = extract.path(tcg.TCGLIVE, "cosmetics", "bundles_deps", f"cn_tcgl-default_energy-{type_name}")
         if not bundle.exists():
             raise LookupError(f"no {type_name} Energy coin in the TCG Live extract ({png})")
         img = next((o.read().image for o in UnityPy.load(str(bundle)).objects

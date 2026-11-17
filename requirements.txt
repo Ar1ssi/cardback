@@ -5,3 +5,5 @@ opencv-python-headless>=4.9
 torch>=2.1
 # optional, for --tcglive scans from Pokemon TCG Live bundles
 # UnityPy>=1.10
+# optional, for --tcglive r2://BUCKET/PREFIX (the extract in a Cloudflare R2 bucket)
+# boto3>=1.28

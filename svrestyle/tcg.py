@@ -9,13 +9,12 @@ import os
 import re
 import time
 import warnings
-from pathlib import Path
 from urllib.parse import quote
 
 import numpy as np
 from PIL import Image
 
-from . import cache, edit
+from . import cache, edit, extract
 
 TCGDEX = "https://api.tcgdex.net/v2/en"
 W, H = 733, 1024   # every layout constant in this package is measured at this size
@@ -207,17 +206,17 @@ def tcglive_front(card_id, root=None):
     if not root:
         return None
     set_id, number = tcglive_id(card_id).rsplit("_", 1)
-    bundle = Path(root, "cardart", "bundles", f"{set_id}_en_{int(number):03d}")
-    if bundle.exists():
-        try:
-            import UnityPy
-        except ImportError:
-            UnityPy = None
-        if UnityPy:
+    try:
+        import UnityPy
+    except ImportError:
+        UnityPy = None
+    if UnityPy:                  # look for the bundle only when it can be decoded (from R2 it is downloaded)
+        bundle = extract.path(root, "cardart", "bundles", f"{set_id}_en_{int(number):03d}")
+        if bundle.exists():
             for obj in UnityPy.load(str(bundle)).objects:
                 if obj.type.name == "Texture2D" and obj.peek_name() == bundle.name:
                     return obj.read().image.convert("RGB")
-    webp = Path(root, "WebApp", "assets", "cards", f"{set_id}_{number}.webp")
+    webp = extract.path(root, "WebApp", "assets", "cards", f"{set_id}_{number}.webp")
     if webp.exists():
         return Image.open(webp).convert("RGB")
     return None

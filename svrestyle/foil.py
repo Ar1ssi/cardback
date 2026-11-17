@@ -30,7 +30,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, frame, layers, mecompose, meframe, refs, retype, stage, swsh, tcg
+from . import cache, compose, extract, frame, layers, mecompose, meframe, refs, retype, stage, swsh, tcg
 from .imaging import dilate
 
 W, H = 733, 1024
@@ -153,7 +153,7 @@ INK_AREA = 10        # px around a kind's ink that its taking off may reach (mod
 def _manifests():
     """bundle -> [MaterialManifest records] from the extract's cardart/manifests.jsonl."""
     out = {}
-    with open(Path(tcg.TCGLIVE, "cardart", "manifests.jsonl"), encoding="utf-8") as f:
+    with open(extract.path(tcg.TCGLIVE, "cardart", "manifests.jsonl"), encoding="utf-8") as f:
         for line in f:
             records = json.loads(line)
             if records:
@@ -183,12 +183,12 @@ def plate(record):
     name = record.get("_w")
     if not name:
         return np.full((H, W), 255, np.float32)
-    png = Path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png")
+    png = extract.path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png")
     if png.exists():
         img = Image.open(png)
     else:
         import UnityPy
-        bundle = Path(tcg.TCGLIVE, "cardart", "bundles", record["bundle"])
+        bundle = extract.path(tcg.TCGLIVE, "cardart", "bundles", record["bundle"])
         img = next(o.read().image for o in UnityPy.load(str(bundle)).objects
                    if o.type.name == "Texture2D" and o.peek_name() == name)
     img = img.convert("L").resize((TEX, TEX), Image.BICUBIC)
@@ -221,7 +221,7 @@ def fill_rows(img, where, reach=ROW_REACH):
 
 def _plate_file(record):
     name = record.get("_w")
-    png = Path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png") if name else None
+    png = extract.path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png") if name else None
     return png if png and png.exists() else None
 
 
@@ -717,11 +717,11 @@ def texture(record, name):
     """A texture of the record's bundle at its own size (uint8 array), or None."""
     if not name:
         return None
-    png = Path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png")
+    png = extract.path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png")
     if png.exists():
         return _plain(Image.open(png))
     import UnityPy
-    bundle = Path(tcg.TCGLIVE, "cardart", "bundles", record["bundle"])
+    bundle = extract.path(tcg.TCGLIVE, "cardart", "bundles", record["bundle"])
     img = next((o.read().image for o in UnityPy.load(str(bundle)).objects
                 if o.type.name == "Texture2D" and o.peek_name() == name), None)
     return None if img is None else _plain(img)

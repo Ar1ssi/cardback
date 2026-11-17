@@ -7,7 +7,7 @@ name, text, the Energy it provides and frame to edit; Scarlet & Violet / Mega Ev
 energy.py); or import a custom-set export and restyle or edit every Pokemon, Trainer and Energy card in it. Standard library
 only; serves on 127.0.0.1.
 
-  python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR] [--ptcg-sim DIR] [--no-browser]
+  python -m svrestyle gui [--port 8765] [--fonts DIR] [--tcglive DIR|r2://BUCKET/PREFIX] [--ptcg-sim DIR] [--no-browser]
 
 API (JSON in and out unless noted):
   GET  /                      the page (gui.html)
@@ -139,8 +139,8 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import (cache, compose, edit, energy, export, foil, follow, layers, mecompose, meframe, modern, tcg, trainer,
-               wording)
+from . import (cache, compose, edit, energy, export, extract, foil, follow, layers, mecompose, meframe, modern, tcg,
+               trainer, wording)
 
 PAGE = Path(__file__).with_name("gui.html")
 STATIC = Path(__file__).with_name("static")
@@ -399,7 +399,7 @@ def foil_file(token, name):
 def _extract_path(*parts):
     if not tcg.TCGLIVE:
         raise UserError("holofoil needs a Pokemon TCG Live extract (--tcglive DIR or SVRESTYLE_TCGLIVE)")
-    return Path(tcg.TCGLIVE, *parts)
+    return extract.path(tcg.TCGLIVE, *parts)
 
 
 @functools.lru_cache(maxsize=1)
