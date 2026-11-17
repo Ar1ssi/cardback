@@ -68,6 +68,14 @@ illustrator, effect, abilities, attacks).
 (`svrestyle/megarule.py`): a Tera-style panel under the "Evolves from" strip, labelled by the Mega badge (a Mega ex
 print's own, else one rebuilt from the Mega ex prints with the Pokemon's name). Abilities and attacks are not moved.
 
+## 3b2. Cards not on TCGdex yet
+`svrestyle/local.py` lists cards set up from scans found online (Mega Lucario Z ex `me07-058`, English; Mega Absol Z
+ex `mej7-030` and Mega Garchomp Z ex `mej7-067`, Japanese Aura Seeker prints set in English by `anglicize.py`). The
+editor loads, searches and edits them in place; `card <id> --foil` renders them as printed with their own holofoil
+masks (`custom_foil.py`, no TCG Live printing needed). To add one: its TCGdex-shaped data, the scan's URL and SHA-256 in
+`CARDS`, an id that starts with `me` (so it is edited as a Mega Evolution print) and does not clash with TCGdex. Say
+that Japanese cards' English is a translation, and that they cannot change type.
+
 ## 3c. Energy
 `python -m svrestyle card <id>` takes Energy ids (`sm3.5-69`, `sm2-166`, `base1-99`); output names end `-energy.png`
 and `--foil` (needs the TCG Live extract) also writes the foil files. A Basic Energy of Grass, Fire, Water,

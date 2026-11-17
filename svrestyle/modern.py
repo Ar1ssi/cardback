@@ -147,10 +147,18 @@ def changed(original, card):
 
 
 # ---------------------------------------------------------------- drawing, the same way for finding and setting
-def _name(canvas, card, logo=None):
+def is_mega_ex(card):
+    return card["family"] == "ex" and card["name"].startswith("Mega ")
+
+
+def _name(canvas, card, logo=None, mega=None):
+    """mega: set the name as a Mega ex prints it (yellow, outlined); default: when the card is one. A Mega ex print
+    renamed keeps its print's look (mega=is_mega_ex(the print))."""
     prof = frame.profile(card["type"])
     if card["family"] == "ex":
-        return compose.name_bar_text(canvas, card, prof, ex=True, logo=logo)
+        mega = is_mega_ex(card) if mega is None else mega
+        return compose.name_bar_text(canvas, card, prof, ex=True, logo=logo,
+                                     name_ink=compose.MEGA_NAME if mega else None)
     return compose.name_bar_text(canvas, card, prof, ex=False, name_right_limit=meframe.NAME_RIGHT_LIMIT)
 
 
@@ -831,7 +839,7 @@ def compose_card(card_id, card, original=None):
         stage.draw(canvas, card, stage_parts(original, card), own if printed else None, printed=printed)
     if "name" in groups:
         logo = card_logo(scan, original) if card["family"] == "ex" else None
-        _name(canvas, card, logo)
+        _name(canvas, card, logo, mega=is_mega_ex(original))
     if "rule" in groups and card.get("mega_rule"):
         megarule.draw(canvas, card, printed_badge=megarule.prints_badge(original))
     if plan:

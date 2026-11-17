@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 
 from . import cache, edit
+from . import local as localcards
 
 TCGDEX = "https://api.tcgdex.net/v2/en"
 W, H = 733, 1024   # every layout constant in this package is measured at this size
@@ -58,6 +59,8 @@ FIND_MAX = 96                                 # most cards one search answer car
 
 
 def card(card_id):
+    if localcards.is_local(card_id):              # a card TCGdex does not have yet (local.py)
+        return localcards.card(card_id)
     data = cache.fetch_json(f"{TCGDEX}/cards/{card_id}", cache.path("data", f"{card_id}.json"))
     if not data.get("id"):
         raise ValueError(f"TCGdex has no card {card_id!r}")
@@ -65,6 +68,8 @@ def card(card_id):
 
 
 def set_info(set_id):
+    if localcards.is_local_set(set_id):
+        return localcards.set_info(set_id)
     return cache.fetch_json(f"{TCGDEX}/sets/{set_id}", cache.path("data", f"set-{set_id}.json"))
 
 
@@ -158,10 +163,15 @@ def find(name="", filters=None, offset=0, limit=48):
         if edit.valid_card_id(b["id"]) and set_id not in pocket and POCKET not in b.get("image", ""):
             hits.append((-order.get(set_id, -1), _natural(b.get("localId", "")), b, set_id))
     hits.sort(key=lambda h: h[:2])
+    if not filters:                           # cards TCGdex does not have yet, by name (local.py)
+        known = {b["id"] for _, _, b, _ in hits}
+        hits = [(0, [], b, b["id"].rsplit("-", 1)[0]) for b in localcards.find(name) if b["id"] not in known] + hits
+        names.update({k: v["name"] for k, v in localcards.SETS.items()})
     offset, limit = max(int(offset), 0), min(max(int(limit), 1), FIND_MAX)
     return {"total": len(hits), "cards": [
         {"id": b["id"], "name": b.get("name", ""), "localId": b.get("localId", ""), "set": names.get(set_id, set_id),
-         "thumb": f"{b['image']}/low.webp" if b.get("image") else ""}
+         "thumb": f"{b['image']}/low.webp" if b.get("image")
+         else f"/api/original/{b['id']}.png" if localcards.is_local(b["id"]) else ""}
         for _, _, b, set_id in hits[offset:offset + limit]]}
 
 
@@ -204,7 +214,7 @@ def tcglive_front(card_id, root=None):
     """The card's 1024x1024 TCG Live front as an RGB PIL image, or None if the extract does not have it.
     Decoded from the game bundle (needs UnityPy) when possible, else read from the web app's .webp copy."""
     root = root or TCGLIVE
-    if not root:
+    if not root or localcards.is_local(card_id):
         return None
     set_id, number = tcglive_id(card_id).rsplit("_", 1)
     bundle = Path(root, "cardart", "bundles", f"{set_id}_en_{int(number):03d}")
@@ -264,6 +274,8 @@ def _tcglive_scan(card_id, dest):
 
 def scan(card_id, expect_sha=None):
     """The card scan as float32 RGBA at 733x1024."""
+    if localcards.is_local(card_id):              # set up from a scan found online (local.py)
+        return localcards.scan(card_id)
     dest = cache.path("scans", f"{card_id}.png")
     if not dest.exists() and not (TCGLIVE and _tcglive_scan(card_id, dest)):
         _web_scan(card_id, dest)

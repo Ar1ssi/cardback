@@ -33,8 +33,9 @@ def sha256(file):
     return h.hexdigest()
 
 
-def fetch(url, dest, timeout=60, retries=4):
-    """Download url to dest once (atomic write); later calls reuse the file."""
+def fetch(url, dest, timeout=60, retries=4, headers=None):
+    """Download url to dest once (atomic write); later calls reuse the file. headers: sent besides the User-Agent
+    (some CDNs pick the format by Accept)."""
     dest = Path(dest)
     if dest.exists() and dest.stat().st_size > 0:
         return dest
@@ -43,7 +44,7 @@ def fetch(url, dest, timeout=60, retries=4):
     last = None
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
             with urllib.request.urlopen(req, timeout=timeout) as r, open(tmp, "wb") as f:
                 while chunk := r.read(1 << 20):
                     f.write(chunk)

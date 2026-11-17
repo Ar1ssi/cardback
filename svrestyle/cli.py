@@ -11,6 +11,9 @@
       --no-attacks           leave out abilities and attacks (names, text, costs, damage)
       --out DIR              where PNGs go (default ./out); --debug also writes the art-cleaning mask overlay
       --foil                 also write the card's TCG Live holofoil: 1024x1024 front, white plate(s), foil.json
+      Cards TCGdex does not have yet, set up from scans found online (svrestyle/local.py: me07-058 Mega Lucario Z
+      ex, mej7-030 Mega Absol Z ex, mej7-067 Mega Garchomp Z ex) render as printed (in English), --foil with their
+      own holofoil masks; edit them in the gui.
   every command: --tcglive DIR   take scans from a Pokemon TCG Live extract (its 1024x1024 card fronts) instead of
                                  pokemontcg.io; or set SVRESTYLE_TCGLIVE. Cached apart from web scans.
 """
@@ -124,6 +127,22 @@ def render_trainer(card_id, out, want_foil=False):
     return path, foil_path
 
 
+def render_local(card_id, out, want_foil=False):
+    """A card set up from a scan found online (local.py), as printed (a Japanese print set in English) -> (PNG path,
+    foil.json path or None). The editor edits it in place like any Mega Evolution ex print."""
+    from . import modern
+    original = modern.read_card(card_id)
+    with layers.recording() as drawn:
+        img, _ = modern.compose_card(card_id, original, original)
+    stem = f"{card_id}-{file_slug(original['prefix'] + ' ' + original['name'])}-ex"
+    path = out / f"{stem}.png"
+    save_rgba(img, path)
+    foil_path = None
+    if want_foil:
+        foil_path = foil.save(foil.build_modern(card_id, original, img, drawn, original), out, stem, card_id)
+    return path, foil_path
+
+
 def cmd_card(a):
     from . import mecompose
     from .compose import Options, compose
@@ -139,6 +158,14 @@ def cmd_card(a):
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
                     path, foil_path = render_energy(card_id, out, a.foil)
+                notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
+                print(f"{card_id}: {path}" + (f"\n{card_id}: foil {foil_path}" if foil_path else "")
+                      + "".join(f"\n  warning: {n}" for n in notes))
+                continue
+            if tcg.localcards.is_local(card_id):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    path, foil_path = render_local(card_id, out, a.foil)
                 notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
                 print(f"{card_id}: {path}" + (f"\n{card_id}: foil {foil_path}" if foil_path else "")
                       + "".join(f"\n  warning: {n}" for n in notes))

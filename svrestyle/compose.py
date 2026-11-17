@@ -21,6 +21,9 @@ NAME_EDGE = ([8, 32, 38], 1.0, 0.55)          # soft dark edge under white name-
 ART_EDGE = ([14, 14, 18], 1.7, 0.95)          # keyline for white text set directly on the art (hybrid)
 LIGHT_KEYLINE = (WHITE, 1.7, 1.0)              # white keyline under dark footer text (Alakazam)
 DARK_KEYLINE = ([20, 20, 24], 1.7, 1.0)        # dark keyline under white footer text (Absol)
+# A Mega ex's name: yellow on every type (megaretype.NAME_FILL) in a dark navy outline ~2.6 px wide (me01-050,
+# me01-077, me01-086, me07-058: the ring 2 px out is 62-100 % outline, its colour (14-16, 14-22, 35-39))
+MEGA_NAME = (np.array([237, 232, 16], np.float32), ([16, 16, 36], 2.6, 1.0))
 ABILITY_RED = np.array([192, 26, 32], np.float32)
 COPYRIGHT_GREY = np.array([52, 52, 56], np.float32)
 
@@ -122,11 +125,13 @@ def panel(art, gradient):
     return canvas
 
 
-def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LIMIT, logo=None):
+def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LIMIT, logo=None, name_ink=None):
     """Name (regional prefix smaller), ex logo when ex, and HP. -> horizontal squeeze applied to the name.
-    logo: (sprite, left x, right x) like frame.ex_logo(), which is the default."""
+    logo: (sprite, left x, right x) like frame.ex_logo(), which is the default. name_ink: (fill, keyline) the name is
+    set in instead of the bar's ink (a Mega ex: yellow in a dark outline, MEGA_NAME); the HP keeps the bar's."""
     ink = prof["ink"]
     edge = NAME_EDGE if prof["light_text"] else None
+    name_fill, name_edge = name_ink or (ink, edge)
     logo, logo_left, logo_right = logo or frame.ex_logo()
     logo_room = (logo_right - logo_left) + EX_LOGO_GAP if ex else 0
     small = NAME_SIZE * PREFIX_RATIO
@@ -142,7 +147,7 @@ def name_bar_text(canvas, card, prof, ex=True, name_right_limit=EX_LOGO_RIGHT_LI
         ts.stamp(canvas, ts.coverage([
             dict(text=card["prefix"], face=ts.BOLD, size=small, x=NAME_X, base=NAME_BASE, xscale=xscale),
             dict(text=card["name"], face=ts.BOLD, size=NAME_SIZE, x=x_big, base=NAME_BASE, xscale=xscale),
-        ]), ink, edge)
+        ]), name_fill, name_edge)
     if ex:
         ox, oy = logo[4]
         with layers.kind("logo"):

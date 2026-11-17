@@ -103,6 +103,46 @@ and what every printing cuts (the row's lines) stays cut. The etch is carried ov
 real bleed. In effect text, {G} {R} {W} {L} {P} {F} {D} {M} {N} {C} print as energy symbols (any
 layout).
 
+### Cards TCGdex and TCG Live do not have yet (`local.py`)
+
+Mega ex prints revealed before their English release are set up from scans found online, so the editor loads,
+searches and edits them like any Mega Evolution ex print (edited in place, above). Each has its data in TCGdex's shape
+and one scan, downloaded once and checked against its SHA-256:
+
+| id | card | scan |
+| --- | --- | --- |
+| `me07-058` | Mega Lucario Z ex, Flowing Fists 058/080 (English) | the official reveal render, 746x1040 |
+| `mej7-030` | Mega Absol Z ex, Aura Seeker (Japanese M7) 030/078 | Serebii, 868x1212 |
+| `mej7-067` | Mega Garchomp Z ex, Aura Seeker (Japanese M7) 067/078 | Serebii, 868x1212 |
+
+Garchomp Z's and Absol Z's English is our translation of the Japanese prints (no English card exists yet; the
+attack names follow the katakana: Drago Avenger, Bloody Fear), Lucario Z's the English card's. A scan is resized to
+733x1024 and moved onto the layout where its weakness row and rule box lie off me01-086's (the English render: 2 px).
+
+The Japanese prints are set in English first (`anglicize.py`); that English print is then the card "as printed",
+so every later edit finds its text where the composers set it. Japanese and English Mega ex prints share the frame
+to a pixel, not the words' places: the name and ex logo (the logo, lifted off the print by frame.ex_logo's shape
+where its dark strokes lie, follows the English name), the Stage tab and "Evolves from" line, the Mega badge (one
+line in Japanese, two in English: the rebuilt badge is set over it), the abilities and attacks (Absol ex layout, in
+the old text's ink), the weakness row (its labels, icons and values sit elsewhere in Japanese: their slots are
+rebuilt by LaMa and the English row set with its labels; the Retreat circles stay) and the rule box (me01-086's
+English box laid over the Japanese one). The HP and the footer stay as printed (the footer's set code and number
+are the Japanese set's).
+
+A Mega ex print renamed in the editor keeps a Mega ex's name ink, yellow in a dark outline (`compose.MEGA_NAME`),
+and the Mega badge names the Pokemon without its form letter ("The Mega-Evolved form of Lucario" on Mega Lucario
+Z; of Charizard on Mega Charizard X). These cards cannot change type (no TCG Live printing tells their panel from
+their glitter).
+
+Holofoil (`custom_foil.py`): TCG Live has no printing of them, so each gets a Mega ex Double Rare's (SvUltra) made
+from its own print, as a printing record `foil.py` edits like the game's (`local.printings`): a white plate with
+foil over the whole face (name and ex logo lit, the badge and rule box foiled) and the HP, type icon, abilities and
+attacks, weakness row, rule box words, footer and Stage print cut out; and an etch that etches the art between the
+name bar and the weakness row along its own lines (the deeper the sharper its edges), keeps words, icons and the
+badge plain, and etches the HP black on a plain box. Its foil under the print is known (all foil), so edits close old
+cut-outs exactly. `python -m svrestyle card me07-058 mej7-030 mej7-067 --foil` writes them as printed with their
+foil; the plates are cached under `<cache>/local/`.
+
 ### Fairy
 
 Neither Scarlet & Violet nor Mega Evolution prints Fairy, so its look is made from Psychic's (`fairy.py`; needs the TCG
@@ -556,6 +596,8 @@ How it works, module by module:
 - `retype.py` - a Scarlet & Violet / Mega Evolution regular card's print lifted off its type's frame and set on
   another's (see Type above).
 - `stage.py` - Stage pieces, evolution portrait (found on TCGdex) and "Evolves from" line, for every layout.
+- `local.py` / `anglicize.py` / `custom_foil.py` - cards not on TCGdex or TCG Live yet: their data and scans, a
+  Japanese print set in English, and their holofoil masks (see above).
 - `megarule.py` - the Mega Evolution rule as Gen 9 sets such a rule: the panel under the "Evolves from" strip and
   the Mega badge (lifted from the Mega ex prints) that labels it.
 - `edit.py` / `gui.py` / `gui.html` - the editor: which fields can change and the checks on them, the local HTTP

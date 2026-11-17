@@ -16,6 +16,8 @@ taken off the band (its colour along x times its shading down y), "The Mega-Evol
 alike, put back, and the Pokemon's name set in white with an outline in the lettering's colours. A card that is not a
 Mega gets "Mega Evolution rule" on the badge instead.
 """
+import re
+
 import cv2
 import numpy as np
 
@@ -147,8 +149,8 @@ def label_of(card):
     name = card.get("name", "")
     if card.get("stage") == stage.MEGA and card.get("evolves_from"):
         return [card["evolves_from"]], True
-    if name.startswith("Mega "):
-        return [name[len("Mega "):]], True
+    if name.startswith("Mega "):                          # Mega Charizard X, Mega Lucario Z: "... form of Lucario"
+        return [re.sub(r" [XYZ]$", "", name[len("Mega "):])], True
     return ["Mega Evolution rule"], False
 
 
