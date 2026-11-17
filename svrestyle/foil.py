@@ -162,7 +162,10 @@ def _manifests():
 
 
 def printings(card_id):
-    """{'base': record, 'reverse': record or None} of the card's TCG Live printing (record: MaterialManifest JSON)."""
+    """{'base': record, 'reverse': record or None} of the card's TCG Live printing (record: MaterialManifest JSON).
+    A card TCG Live does not print yet (local.py) has its own: custom_foil's plate and etch."""
+    if tcg.localcards.is_local(card_id):
+        return tcg.localcards.printings(card_id)
     if not tcg.TCGLIVE:
         raise SystemExit("foil needs a Pokemon TCG Live extract: pass --tcglive DIR (or set SVRESTYLE_TCGLIVE)")
     set_id, number = tcg.tcglive_id(card_id).rsplit("_", 1)
@@ -180,6 +183,9 @@ def is_foil(record):
 def plate(record):
     """The record's white plate in card space: float32 733x1024, 0 (no foil) .. 255. A foil printing without a
     plate is foil all over."""
+    if record.get("_local"):
+        from . import custom_foil
+        return custom_foil.plate(record)
     name = record.get("_w")
     if not name:
         return np.full((H, W), 255, np.float32)
@@ -244,6 +250,8 @@ def _foil_at(thumb):
 def peers(record):
     """Other printings of the same set and kind (base / reverse) whose plates have this one's foil shapes (the
     detail correlates where neither is cut out): the same pattern under other cards' text. Most alike first."""
+    if record.get("_local"):           # a plate made here (custom_foil): no printing shares it
+        return []
     own_png = _plate_file(record)
     if own_png is None:
         return []
@@ -329,6 +337,10 @@ def field(record):
     around each gap (transfer). What no peer shows either (the art window, a border without foil) is bridged
     smoothly and is not own. Restyled plates keep this card's pattern and strength where it has them: the target
     era's template says where the foil goes, and gives it where this card has none."""
+    if record.get("_local"):           # a plate made here: its foil under the print is known (custom_foil)
+        from . import custom_foil
+        return custom_foil.field(record), np.ones((H, W), np.float32)
+
     def build():
         img = plate(record)
         marks = dilate(img < MARK_DARK, MARK_GROW)
@@ -717,6 +729,9 @@ def texture(record, name):
     """A texture of the record's bundle at its own size (uint8 array), or None."""
     if not name:
         return None
+    if record.get("_local"):
+        from . import custom_foil
+        return custom_foil.texture(record, name)
     png = Path(tcg.TCGLIVE, "cardart", "masks", name.split("_")[0], f"{name}.png")
     if png.exists():
         return _plain(Image.open(png))
@@ -1399,7 +1414,8 @@ def files(foil, stem, card_id):
         out[name] = buf.getvalue()
         return name
 
-    record = {"id": card_id, "tcglive": tcg.tcglive_id(card_id), "front": png(f"{stem}-front.png", foil["front"])}
+    live = None if tcg.localcards.is_local(card_id) else tcg.tcglive_id(card_id)     # local.py: none yet
+    record = {"id": card_id, "tcglive": live, "front": png(f"{stem}-front.png", foil["front"])}
     for key, suffix in (("base", "wp"), ("reverse", "wp-ph")):
         if foil[key] is None:
             record[key] = None

@@ -793,8 +793,8 @@ def supports(card_id, card):
     """Whether a type change can be made on this print: a Mega ex or a Scarlet & Violet ex on a frame measured here,
     with the TCG Live extract (the plates tell panel, glitter and what lies over them apart). card: modern.read_card's
     dict of it."""
-    if not tcg.TCGLIVE or card.get("family") != "ex":
-        return False
+    if not tcg.TCGLIVE or card.get("family") != "ex" or tcg.localcards.is_local(card_id):
+        return False                # a local card (local.py): no TCG Live printing to tell its panel and glitter apart
     try:
         return frame_of(card_id, card) is not None
     except ValueError:                          # no TCG Live printing
