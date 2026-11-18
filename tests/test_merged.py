@@ -74,7 +74,7 @@ class Merged(unittest.TestCase):
 
     def test_one_list_newest_project_wins(self):
         self.two_projects()
-        items, projects, repeats = gui.merged_items()
+        items, projects, repeats, unreadable, notes = gui.merged_items()
         self.assertEqual((projects, repeats), (2, 1))
         self.assertEqual([i["id"] for i in items], ["swsh6-99", "sv03.5-065", "sma-SV33", "swsh3-88"])   # no skipped card
         by = {i["id"]: i for i in items}
@@ -100,7 +100,7 @@ class Merged(unittest.TestCase):
             if card_id == "sv03.5-065":
                 raise gui.UserError("TCGdex has no scan")
             return gui.Render(f"png-{card_id}-{edits}-{style}".encode(), [], "me",
-                              ({}, {f"{card_id}-foil.json": b"{}"}, {}, "t") if holo else None)
+                              gui.Holo({}, {f"{card_id}-foil.json": b"{}"}, {}, "t") if holo else None)
         with mock.patch.object(gui, "render", side_effect=render):
             job = gui.start_merged_zip()
             self.assertEqual((job["total"], job["projects"], job["repeats"]), (4, 2, 1))

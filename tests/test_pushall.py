@@ -40,11 +40,11 @@ def entry(card_id):
 
 
 def holo(card_id):
-    """The fourth part of gui.render for a card with holofoil: (foil.json record, {file name: PNG}, plates, token)."""
+    """The holo of gui.render for a card with holofoil: gui.Holo(foil.json record, {file name: PNG}, plates, token)."""
     record = {"id": card_id, "tcglive": card_id.replace("-", "_"), "front": f"{card_id}-me-front.png",
               "base": {"shader": "TPCi/Cards3D/HoloFoil/SunPillar", "material": "MAT_Cards3D_SunPillar",
                        "wp": f"{card_id}-me-wp.png", "cc": None, "etch": None, "cf": None}, "reverse": None}
-    return record, {record["front"]: png(card_id), record["base"]["wp"]: png(card_id)}, {}, "token"
+    return gui.Holo(record, {record["front"]: png(card_id), record["base"]["wp"]: png(card_id)}, {}, "token")
 
 
 class PushAll(unittest.TestCase):

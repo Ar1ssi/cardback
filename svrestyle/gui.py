@@ -67,8 +67,10 @@ API (JSON in and out unless noted):
   POST /api/push-plan         {code} -> what pushing every saved project, merged, as that set would change in the
                               simulator's folder, without rendering: {setId, code, title, projects, repeats, incoming,
                               existing, added: [{id, name, lines}], changed: [{id, name, lines}], removed: [{id, name}],
-                              moved, unchanged, items}. items is the list to send to /api/push-set or /api/publish-set
-                              to push exactly this ("Push all"); cards already in the set keep their numbers
+                              moved, unchanged, unreadable: [{name, why}], notes: [str], items}. items is the list to
+                              send to /api/push-set or /api/publish-set to push exactly this ("Push all"); cards already
+                              in the set keep their numbers. unreadable: saved projects that could not be read (their
+                              cards are in none of the lists); notes: what the merge left off (holofoil, no extract)
   POST /api/set-job/cancel    {job} -> its progress (cancelling: true). Before the first file is written nothing
                               changes; a publish stops its upload (the site keeps the copy it had); a send that is
                               writing finishes. The three /api/set-job routes need what push-set needs: this
@@ -90,13 +92,15 @@ API (JSON in and out unless noted):
                               viewers, events: [], hello: {rev}} at once: the page reads the project again if its
                               rev differs. (Long polls, not an event stream: Cloudflare quick tunnels hold streams.)
   POST /api/projects/merged   {} -> {id, state: "running"|"done"|"failed"|"cancelled", done, total, current, projects, repeats,
-                              failed: [{id, why}], error}: start building every saved project, merged into one list
+                              failed: [{id, why}], unreadable: [{name, why}], notes: [str], error}: start building
+                              every saved project (unreadable: those that could not be read), merged into one list
                               (a card in several: the newest project's copy), as one zip in the background; a build
                               already running is joined. Poll with GET /api/projects/merged?job=ID (same answer)
   POST /api/projects/merged/cancel  {job} -> its progress (cancelling: true): the build stops after the card it is
                               rendering, state "cancelled", and its zip is removed
   GET  /api/projects/merged/file?job=ID  the finished zip (application/zip, as a download): the renders,
-                              CHANGELOG.md, and NOT-INCLUDED.txt for cards that could not be rendered
+                              CHANGELOG.md, and NOT-INCLUDED.txt for cards that could not be rendered, projects that
+                              could not be read and holofoil left off
   POST /api/projects/leave    {name, client}: the page is closing (it stops counting as a viewer at once)
   GET  /api/projects/history?name=N  {name, versions: [{id, saved, rev, cards}]}: the project's kept versions,
                               newest first
@@ -124,13 +128,15 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import threading
 import time
+import traceback
 import warnings
 import webbrowser
 import zipfile
-from collections import OrderedDict, deque
+from collections import OrderedDict, deque, namedtuple
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -180,9 +186,8 @@ CARD_FILE = re.compile(r"(\d{3})/high\.webp")    # a card of a published set, am
 
 _render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
 _push_lock = threading.Lock()         # one write into the simulator's folder at a time
-_set_jobs = OrderedDict()             # job id -> a send or publish in the background: the last SET_JOB_KEEP
-_set_jobs_lock = threading.Lock()
 _renders = OrderedDict()              # request key -> Render; the last few, for zip downloads
+_renders_lock = threading.Lock()      # the cache's own (not _render_lock): a hit must not wait for a render
 _RENDER_CACHE = 48
 
 
@@ -202,11 +207,60 @@ class DropsCards(Exception):
         self.info = info
 
 
-class Render(tuple):
-    """(png bytes, warnings, layout, holo). holo, when asked for: (foil.json record, {file name: bytes} as
-    foil.files writes them, {"base" | "reverse": white plate PNG at card size, for the preview})."""
-    def __new__(cls, png, notes, layout, holo=None):
-        return super().__new__(cls, (png, notes, layout, holo))
+class Render(namedtuple("Render", "png notes layout holo", defaults=(None,))):
+    """(png bytes, warnings, layout, holo): holo is a Holo when the holofoil was asked for and made, else None."""
+
+
+class Holo(namedtuple("Holo", "record files plates token")):
+    """A render's holofoil: record, the foil.json record; files, {file name: bytes} as foil.files writes them; plates,
+    {"base" | "reverse": white plate PNG at card size, for the preview}; token, what its texture URLs carry."""
+
+
+class Jobs:
+    """Background jobs a page polls (sends and publishes; all-projects zips), the last keep() by id. A job is a dict
+    with at least id, state ("running", then "done", "failed" or "cancelled") and cancel (asked to stop: its thread
+    looks). view(job) is what the page reads; dropped(job) cleans up after a job that falls out; `missing` names the
+    kind in the answer to an id it does not have."""
+    def __init__(self, keep, view, missing, dropped=None):
+        self.jobs = OrderedDict()
+        self.lock = threading.RLock()     # a starter holds it from its look for a running job to add
+        self.keep, self.view, self.missing, self.dropped = keep, view, missing, dropped
+
+    def add(self, **fields):
+        job = {"id": secrets.token_hex(8), "state": "running", "cancel": False, **fields}
+        with self.lock:
+            self.jobs[job["id"]] = job
+            while len(self.jobs) > self.keep():
+                old = self.jobs.popitem(last=False)[1]
+                if self.dropped:
+                    self.dropped(old)
+        return job
+
+    def running(self, cancelling=True):
+        """The job running now, or None; with cancelling False, not one that was asked to stop."""
+        with self.lock:
+            return next((j for j in self.jobs.values()
+                         if j["state"] == "running" and (cancelling or not j["cancel"])), None)
+
+    def find(self, job_id):
+        with self.lock:
+            return self.jobs.get(job_id)
+
+    def progress(self, job_id):
+        job = self.find(job_id)
+        if not job:
+            raise LookupError(f"no such {self.missing} (the server restarted since?): start it again")
+        return self.view(job)
+
+    def cancel(self, job_id):
+        """Ask a job to stop; one that is over is left as it is. -> its progress"""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise LookupError(f"no such {self.missing} (the server restarted since?)")
+            if job["state"] == "running":
+                job["cancel"] = True
+        return self.view(job)
 
 
 # ---------------------------------------------------------------- cards
@@ -217,13 +271,19 @@ def layout_of(card_id):
         data = tcg.card(card_id)
     except (ValueError, cache.DownloadError) as e:
         raise UserError(str(e)) from e
+    return layout_for(card_id, data)
+
+
+def layout_for(card_id, data):
+    """The layout a card gets, from its TCGdex record (category and name: a set list's supertype and name do): the one
+    place that decides, for the GUI, the set lists and the command line."""
     if data.get("category") == "Trainer":       # a Scarlet & Violet Trainer too: set again on its own kind's frame
         return "trainer"
     if data.get("category") == "Energy":        # read_card refuses Scarlet & Violet and Mega Evolution Energy
         return "energy"
     if modern.is_modern(card_id):
         return "modern"
-    return "ex" if data.get("name", "").endswith(" V") else "me"
+    return "ex" if str(data.get("name") or "").endswith(" V") else "me"
 
 
 def read(card_id):
@@ -278,22 +338,20 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
         raise UserError("holofoil needs a Pokemon TCG Live extract: start the GUI with --tcglive DIR "
                         "(or set SVRESTYLE_TCGLIVE)")
     key = json.dumps([card_id, edits, style, bool(attacks), bool(holo)], sort_keys=True, ensure_ascii=False)
-    if key in _renders:
-        _renders.move_to_end(key)
-        return _renders[key]
+    with _renders_lock:
+        if key in _renders:
+            _renders.move_to_end(key)
+            return _renders[key]
     with _render_lock, warnings.catch_warnings(record=True) as caught, layers.recording() as drawn:
         warnings.simplefilter("always")
         layout, original = read(card_id)        # its warnings shown too (a Trainer's kind guessed, its text missing)
-        ace = layout == "trainer" and original.get("ace")
         card = edit.apply(original, edits) if edits else original
         if layout == "energy":
             img, _ = energy.compose_card(card_id, card=card)
             built = energy.build_foil(card, img, drawn) if holo else None
         elif layout == "trainer":
             img, _ = trainer.compose_card(card_id, card=card)
-            built = (foil.build_ace(card_id, card, img, drawn, original) if ace
-                     else foil.build_ace_convert(card, img, drawn) if original.get("ace_convert")
-                     else foil.build_trainer(card_id, card, img, drawn)) if holo else None
+            built = trainer_foil(card_id, card, img, drawn, original) if holo else None
         elif layout == "modern":
             img, report = modern.compose_card(card_id, card, original)
             built = foil.build_modern(card_id, card, img, drawn, original) if holo else None
@@ -303,17 +361,29 @@ def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
             else:
                 img, _ = mecompose.compose_card(card_id, bool(attacks), card=card)
             built = foil.build(card_id, layout, img, drawn, card) if holo else None
-    notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
+    notes = export.warning_notes(caught)
     made = None
     if built:
         record, written = foil.files(built, f"{card_id}-{layout}", card_id)
         plates = {k: _png(foil.card_space(built[k][1]), "L") for k in ("base", "reverse") if built[k]}
-        made = (record, written, plates, hashlib.sha256(key.encode()).hexdigest()[:20])
+        made = Holo(record, written, plates, hashlib.sha256(key.encode()).hexdigest()[:20])
     result = Render(_png(img), notes, layout, made)
-    _renders[key] = result
-    while len(_renders) > _RENDER_CACHE:
-        _renders.popitem(last=False)
+    with _renders_lock:
+        _renders[key] = result
+        while len(_renders) > _RENDER_CACHE:
+            _renders.popitem(last=False)
     return result
+
+
+def trainer_foil(card_id, card, img, drawn, original):
+    """A Trainer's holofoil, by what its printed card is (original: read_card's, before edits): an ACE SPEC card's
+    own printing, edited; a Black & White ACE SPEC set on the Scarlet & Violet frame, the converted one's; any other,
+    the Gen 8 reverse holo. The one place that chooses, for the GUI and the command line."""
+    if original.get("ace"):
+        return foil.build_ace(card_id, card, img, drawn, original)
+    if original.get("ace_convert"):
+        return foil.build_ace_convert(card, img, drawn)
+    return foil.build_trainer(card_id, card, img, drawn)
 
 
 def follow_type(card_id, edits):
@@ -374,13 +444,12 @@ def original_png(card_id):
 def holo_json(made):
     """The foil part of /api/render's answer: the front's URL and per printing its plate (base64 PNG, card size),
     shader, material, cast-and-cure pattern and texture URLs (for the page's TCG Live shader preview), or null."""
-    record, _, plates, token = made
-    url = lambda name: f"/api/foil/file/{token}/{name}" if name else None
-    out = {"front": url(record["front"])}
+    url = lambda name: f"/api/foil/file/{made.token}/{name}" if name else None
+    out = {"front": url(made.record["front"])}
     for k in ("base", "reverse"):
-        r = record[k]
+        r = made.record[k]
         out[k] = None if not r else {
-            "png": base64.b64encode(plates[k]).decode(), "shader": r["shader"], "material": r["material"],
+            "png": base64.b64encode(made.plates[k]).decode(), "shader": r["shader"], "material": r["material"],
             "cc": r.get("cc"), "textures": {t: url(r.get(t)) for t in ("wp", "etch", "cf")}}
     return out
 
@@ -389,10 +458,12 @@ def foil_file(token, name):
     """A texture of a recent render's holofoil, by the token its foil answer carried."""
     if not FILE_NAME.fullmatch(name or ""):
         raise UserError("bad texture name")
-    for result in reversed(_renders.values()):
-        made = result[3]
-        if made and made[3] == token and name in made[1]:
-            return made[1][name]
+    with _renders_lock:
+        recent = list(_renders.values())
+    for result in reversed(recent):
+        made = result.holo
+        if made and made.token == token and name in made.files:
+            return made.files[name]
     raise LookupError(f"{name}: not among the recent renders (render the card again)")
 
 
@@ -474,29 +545,29 @@ def import_set(data):
 
 
 def _is_ace(cid):
-    """Whether a Scarlet & Violet Trainer is an ACE SPEC card (its holofoil can be made); False when TCGdex cannot say."""
+    """Whether a Scarlet & Violet Trainer is an ACE SPEC card (its holofoil can be made): True or False, None when
+    TCGdex cannot say (not known: a list entry does not keep it, so the next load asks again)."""
     if not modern.is_modern(cid):
         return False
     try:
         return trainer.ACE_RARITY in (tcg.card(cid).get("rarity") or "").lower()
     except (ValueError, cache.DownloadError):
-        return False
+        return None
+
+
+def _trainer_entry(entry):
+    """A Trainer's list entry with gen9 and ace; ace left out while TCGdex cannot say (_is_ace)."""
+    ace = _is_ace(entry.get("id"))
+    return {**entry, "gen9": modern.is_modern(entry.get("id")), **({} if ace is None else {"ace": ace})}
 
 
 def _set_entry(cid, name, supertype):
     """A set list's entry: the layout the card gets, or why it is skipped. supertype: the export's or TCGdex's."""
     entry = {"id": cid, "name": name}
-    if supertype == "Trainer":
-        entry.update(layout="trainer", gen9=modern.is_modern(cid), ace=_is_ace(cid))
-    elif supertype == "Energy":
-        entry["layout"] = "energy"           # a Scarlet & Violet / Mega Evolution one is kept as printed
-    elif supertype not in (None, "Pokémon", "Pokemon"):
-        entry["skip"] = "not a Pokémon, Trainer or Energy card"
-    elif modern.is_modern(cid):
-        entry["layout"] = "modern"
-    else:
-        entry["layout"] = "ex" if str(name).endswith(" V") else "me"
-    return entry
+    if supertype not in (None, "Pokémon", "Pokemon", "Trainer", "Energy"):
+        return {**entry, "skip": "not a Pokémon, Trainer or Energy card"}
+    entry["layout"] = layout_for(cid, {"category": supertype, "name": name})   # Energy: SV / ME kept as printed
+    return _trainer_entry(entry) if entry["layout"] == "trainer" else entry
 
 
 def _current_entries(cards):
@@ -510,7 +581,7 @@ def _current_entries(cards):
             except (ValueError, cache.DownloadError):
                 pass
         elif isinstance(c, dict) and c.get("layout") == "trainer" and ("gen9" not in c or "ace" not in c):
-            c = {**c, "gen9": modern.is_modern(c.get("id")), "ace": _is_ace(c.get("id"))}
+            c = _trainer_entry(c)
         out.append(c)
     return out
 
@@ -592,7 +663,10 @@ def _kill_tree(proc):
     if os.name == "nt":
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
     else:
-        proc.kill()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)      # its own process group (_run_publish starts it in one)
+        except ProcessLookupError:
+            pass
     proc.communicate()
 
 
@@ -602,7 +676,7 @@ def _run_publish(node, checkout, set_id, remote, cancelled=None):
     is over, so the site keeps the copy it had."""
     proc = subprocess.Popen([node, str(checkout.joinpath(*PUBLISH_SCRIPT)), set_id, "--remote", remote, "--json"],
                             cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
-                            errors="replace")
+                            errors="replace", start_new_session=os.name != "nt")
     deadline = time.monotonic() + PUBLISH_TIMEOUT
     while True:
         try:
@@ -675,16 +749,20 @@ def drops_for(kind, items, code, set_id):
             "message": " ".join(lines)}
 
 
-def _running_set_job():
-    return next((j for j in _set_jobs.values() if j["state"] == "running"), None)
-
-
 def _set_job_view(job):
     end = job.get("ended") or time.time()
     return {"id": job["id"], "kind": job["kind"], "code": job["code"], "setId": job["setId"], "state": job["state"],
             "phase": job["phase"], "done": job["done"], "total": job["total"], "current": job["current"],
             "elapsed": int(end - job["started"]), "cancelling": job["cancel"], "result": job["result"],
             "error": job["error"], "pushed": job["pushed"]}
+
+
+SET_JOBS = Jobs(lambda: SET_JOB_KEEP, _set_job_view, "send or publish")    # sends and publishes in the background
+_set_jobs = SET_JOBS.jobs
+
+
+def _running_set_job():
+    return SET_JOBS.running()
 
 
 def start_set_job(kind, items, title, code, force=False, allow_shrink=False):
@@ -717,31 +795,24 @@ def start_set_job(kind, items, title, code, force=False, allow_shrink=False):
         set_id = export.set_id_for(code)
     except ValueError as e:
         raise UserError(str(e)) from e
-    with _set_jobs_lock:
+    with SET_JOBS.lock:
         running = _running_set_job()
         if running:
             return _joined_or_refused(running, kind, set_id)
-    set_dir = sim_sets_dir() / set_id
-    # The list's order is only how it looks here: a card in the set keeps its number whatever its place in the list, and
-    # a push never takes a card out of the set. set.json lists the cards in display order (export.display_order).
-    # Every 1-prize Pokemon and Trainer goes with its holofoil (standard_foil).
-    items = standard_foil(keep_unlisted(keep_numbers(items, export.existing_cards(set_dir)), set_dir))
+    # The list's order is only how it looks here: set.json lists the cards in display order (export.display_order).
+    items = push_items(items, sim_sets_dir() / set_id)
     if len(items) > export.MAX_CARDS:
         raise UserError(f"items: at most {export.MAX_CARDS} cards in a set")
     if not allow_shrink:
         info = drops_for(kind, items, code, set_id)
         if info:
             raise DropsCards(info)
-    with _set_jobs_lock:
+    with SET_JOBS.lock:
         running = _running_set_job()
         if running:                                  # another page started one while the check ran
             return _joined_or_refused(running, kind, set_id)
-        job = {"id": secrets.token_hex(8), "kind": kind, "code": code, "setId": set_id, "state": "running",
-               "phase": "rendering", "done": 0, "total": len(items), "current": "", "started": time.time(),
-               "ended": None, "cancel": False, "result": None, "error": None, "pushed": None}
-        _set_jobs[job["id"]] = job
-        while len(_set_jobs) > SET_JOB_KEEP:
-            _set_jobs.popitem(last=False)
+        job = SET_JOBS.add(kind=kind, code=code, setId=set_id, phase="rendering", done=0, total=len(items), current="",
+                           started=time.time(), ended=None, result=None, error=None, pushed=None)
         threading.Thread(target=_run_set_job, args=(job, items, title, code, force, (root, checkout, node, remote)),
                          daemon=True).start()
         return _set_job_view(job)
@@ -790,24 +861,14 @@ def _run_set_job(job, items, title, code, force, plan):
 
 
 def set_job_progress(job_id):
-    with _set_jobs_lock:
-        job = _set_jobs.get(job_id)
-    if not job:
-        raise LookupError("no such send or publish (the server restarted since?): start it again")
-    return _set_job_view(job)
+    return SET_JOBS.progress(job_id)
 
 
 def cancel_set_job(job_id):
     """Stop a send or publish. Before the first file is written nothing changes; a publish stops its upload (the site
     keeps the copy it had); a send already writing finishes. Cancelling a job that is over changes nothing. -> its
     progress"""
-    with _set_jobs_lock:
-        job = _set_jobs.get(job_id)
-        if not job:
-            raise LookupError("no such send or publish (the server restarted since?)")
-        if job["state"] == "running":
-            job["cancel"] = True
-    return _set_job_view(job)
+    return SET_JOBS.cancel(job_id)
 
 
 def zip_renders(items, title=""):
@@ -823,7 +884,7 @@ def zip_renders(items, title=""):
             png, _, layout, made = render(it.get("id"), it.get("edits"), it.get("style", "hybrid"),
                                           it.get("attacks", True), bool(it.get("foil")))
             z.writestr(f"{it['id']}-{layout}.png", png)
-            for name, data in (made[1].items() if made else ()):
+            for name, data in (made.files.items() if made else ()):
                 z.writestr(name, data)
         z.writestr("CHANGELOG.md", changelog(items, title))
     return buf.getvalue()
@@ -848,15 +909,21 @@ def _cards(p):
     return len((p.get("data") or {}).get("cards") or [])
 
 
-def list_projects():
-    out = []
+def _read_projects():
+    """-> ([{name, saved, cards}] newest first, [{name, why}]: the project files that cannot be read)"""
+    out, unreadable = [], []
     for f in projects_dir().glob("*.json") if projects_dir().exists() else ():
         try:
             p = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as e:
+            unreadable.append({"name": f.stem, "why": f"{type(e).__name__}: {e}"})
             continue
         out.append({"name": p.get("name", f.stem), "saved": p.get("saved", ""), "cards": _cards(p)})
-    return {"projects": sorted(out, key=lambda p: p["saved"], reverse=True)}
+    return sorted(out, key=lambda p: p["saved"], reverse=True), unreadable
+
+
+def list_projects():
+    return {"projects": _read_projects()[0]}
 
 
 def load_project(name):
@@ -1144,26 +1211,33 @@ def undelete_project(trash_id):
 
 
 # ---------------------------------------------------------------- every project as one download
-_exports = {}                         # job id -> progress of an all-projects zip: the last MERGED_KEEP
-_exports_lock = threading.Lock()
-
-
 def exports_dir():
     return cache.CACHE / "exports"
+
+
+Merged = namedtuple("Merged", "items projects repeats unreadable notes")
 
 
 def merged_items():
     """Every saved project's cards as one list of zip items (like the page's own, see zip_renders). A card in
     several projects comes from the most recently saved one, with that project's edits and options; cards a project
-    lists as skipped stay out. -> (items, projects read, repeats left out)"""
-    items, seen, projects, repeats = [], set(), 0, 0
-    for listed in list_projects()["projects"]:                       # newest saved first
+    lists as skipped stay out. -> Merged: items, projects read, repeats left out, unreadable: [{name, why}] the
+    projects that could not be read (their cards are not in the list: whoever uses it says so), notes: [str] what the
+    list leaves out of what a project asks for (its holofoil, when there is no TCG Live extract to make it)."""
+    items, seen, projects, repeats, notes = [], set(), 0, 0, []
+    listed_projects, unreadable = _read_projects()
+    for listed in listed_projects:                                    # newest saved first
         try:
             data = load_project(listed["name"]).get("data") or {}
-        except (UserError, OSError, ValueError):
+        except (UserError, OSError, ValueError, AttributeError) as e:
+            unreadable.append({"name": listed["name"], "why": str(e) or type(e).__name__})
             continue
         projects += 1
-        foil = bool(data.get("foil")) and bool(tcg.TCGLIVE)
+        foil = bool(data.get("foil"))
+        if foil and not tcg.TCGLIVE:                 # render() refuses it: the cards go without, and the note says so
+            foil = False
+            notes.append(f"{listed['name']}: holofoil left off (it needs a Pokemon TCG Live extract: start the GUI "
+                         "with --tcglive DIR)")
         for c in data.get("cards") or []:
             if not isinstance(c, dict) or c.get("skip") or not edit.valid_card_id(c.get("id")):
                 continue
@@ -1175,41 +1249,63 @@ def merged_items():
             items.append({"id": c["id"], "edits": (data.get("edits") or {}).get(c["id"]),
                           "style": opt.get("style", "hybrid"), "attacks": opt.get("attacks", True),
                           "foil": foil})
-    return items, projects, repeats
+    return Merged(items, projects, repeats, unreadable, notes)
 
 
-class _Cancelled(Exception):
-    pass
+def _unreadable_note(unreadable):
+    return f"{len(unreadable)} project{'' if len(unreadable) == 1 else 's'} could not be read: " + "; ".join(
+        f"{u['name']}: {u['why']}" for u in unreadable[:3]) + (" …" if len(unreadable) > 3 else "")
 
 
 def _export_view(job):
     return {**{k: job[k] for k in ("id", "state", "done", "total", "current", "projects", "repeats")},
-            "failed": list(job["failed"]), "error": job.get("error"), "cancelling": job["cancel"]}
+            "failed": list(job["failed"]), "unreadable": list(job["unreadable"]), "notes": list(job["notes"]),
+            "error": job.get("error"), "cancelling": job["cancel"]}
+
+
+def _drop_export(job):
+    if job["file"]:
+        job["file"].unlink(missing_ok=True)
+
+
+MERGED = Jobs(lambda: MERGED_KEEP, _export_view, "download", _drop_export)     # all-projects zips in the background
+_exports = MERGED.jobs
 
 
 def start_merged_zip():
     """Build every saved project, merged (merged_items), as one zip in the background: a card takes 10-20 s to
     render the first time and tunnels cut a request at ~100 s, so the page polls merged_progress. A build already
     running is joined, not started again. -> its progress"""
-    with _exports_lock:
-        for job in _exports.values():
-            if job["state"] == "running" and not job["cancel"]:
-                return _export_view(job)
-        items, projects, repeats = merged_items()
-        if not items:
-            raise UserError("no saved project has a card to download")
-        job = {"id": secrets.token_hex(8), "state": "running", "done": 0, "total": len(items), "current": "",
-               "projects": projects, "repeats": repeats, "failed": [], "file": None, "cancel": False}
-        _exports[job["id"]] = job
-        while len(_exports) > MERGED_KEEP:
-            old = _exports.pop(next(iter(_exports)))
-            if old["file"]:
-                old["file"].unlink(missing_ok=True)
+    with MERGED.lock:
+        running = MERGED.running(cancelling=False)
+        if running:
+            return _export_view(running)
+        merged = merged_items()
+        if not merged.items:
+            raise UserError("no saved project has a card to download"
+                            + (f" ({_unreadable_note(merged.unreadable)})" if merged.unreadable else ""))
+        job = MERGED.add(done=0, total=len(merged.items), current="", projects=merged.projects,
+                         repeats=merged.repeats, failed=[], unreadable=merged.unreadable, notes=merged.notes,
+                         file=None)
         for f in exports_dir().glob("*.zip") if exports_dir().exists() else ():       # left by an earlier run
-            if f.stem not in _exports:
+            if f.stem not in MERGED.jobs:
                 f.unlink(missing_ok=True)
-        threading.Thread(target=_build_merged, args=(job, items), daemon=True).start()
+        threading.Thread(target=_build_merged, args=(job, merged.items), daemon=True).start()
         return _export_view(job)
+
+
+def _not_included(job):
+    """NOT-INCLUDED.txt of an all-projects zip: the cards that could not be rendered, the projects that could not be
+    read, and what was left off a card (merged_items' notes); "" when nothing was."""
+    parts = []
+    if job["failed"]:
+        parts.append("These cards could not be rendered:\n\n" + "\n".join(f"{f['id']}: {f['why']}" for f in job["failed"]))
+    if job["unreadable"]:
+        parts.append("These projects could not be read, so their cards are not here:\n\n"
+                     + "\n".join(f"{u['name']}: {u['why']}" for u in job["unreadable"]))
+    if job["notes"]:
+        parts.append("Left off:\n\n" + "\n".join(job["notes"]))
+    return "\n\n".join(parts) + "\n" if parts else ""
 
 
 def _build_merged(job, items):
@@ -1222,7 +1318,7 @@ def _build_merged(job, items):
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
             for it in items:
                 if job["cancel"]:
-                    raise _Cancelled
+                    raise export.Cancelled
                 job["current"] = it["id"]
                 try:
                     png, _, layout, holo = render(it["id"], it["edits"], it["style"], it["attacks"], it["foil"])
@@ -1230,18 +1326,17 @@ def _build_merged(job, items):
                     job["failed"].append({"id": it["id"], "why": str(e) or type(e).__name__})
                 else:
                     z.writestr(f"{it['id']}-{layout}.png", png)
-                    for name, data in (holo[1].items() if holo else ()):
+                    for name, data in (holo.files.items() if holo else ()):
                         z.writestr(name, data)
                     made.append(it)
                 job["done"] += 1
             if not made:
                 raise UserError("no card could be rendered: " + "; ".join(f"{f['id']}: {f['why']}" for f in job["failed"][:3]))
             z.writestr("CHANGELOG.md", changelog(made, "All projects"))
-            if job["failed"]:
-                z.writestr("NOT-INCLUDED.txt", "These cards could not be rendered:\n\n"
-                           + "\n".join(f"{f['id']}: {f['why']}" for f in job["failed"]) + "\n")
+            if _not_included(job):
+                z.writestr("NOT-INCLUDED.txt", _not_included(job))
         job["file"], job["state"] = path, "done"
-    except _Cancelled:
+    except export.Cancelled:
         job["state"] = "cancelled"
         path.unlink(missing_ok=True)
     except Exception as e:                                       # noqa: BLE001 - the page shows it
@@ -1250,28 +1345,17 @@ def _build_merged(job, items):
 
 
 def merged_progress(job_id):
-    with _exports_lock:
-        job = _exports.get(job_id)
-    if not job:
-        raise LookupError("no such download (the server restarted since?): start it again")
-    return _export_view(job)
+    return MERGED.progress(job_id)
 
 
 def cancel_merged_zip(job_id):
     """Stop a build: it ends after the card being rendered (a render cannot be stopped halfway) and its zip is
     removed. Cancelling a build that is over changes nothing. -> its progress"""
-    with _exports_lock:
-        job = _exports.get(job_id)
-        if not job:
-            raise LookupError("no such download (the server restarted since?)")
-        if job["state"] == "running":
-            job["cancel"] = True
-    return _export_view(job)
+    return MERGED.cancel(job_id)
 
 
 def merged_file(job_id):
-    with _exports_lock:
-        job = _exports.get(job_id)
+    job = MERGED.find(job_id)
     if not job or job["state"] != "done" or not job["file"].exists():
         raise LookupError("that download is not ready, or was removed: start it again")
     return job["file"]
@@ -1300,7 +1384,7 @@ def takes_reverse(card_id):
     except (UserError, ValueError, cache.DownloadError):
         return False
     if layout == "trainer":
-        return not _is_ace(card_id)
+        return _is_ace(card_id) is False         # an ACE SPEC card TCGdex cannot vouch for keeps the switch's choice
     return layout in ("me", "modern") and not name.endswith(MULTI_PRIZE)
 
 
@@ -1320,6 +1404,13 @@ def keep_numbers(items, existing):
             place.setdefault(source, i)
     return (sorted((it for it in items if it["id"] in place), key=lambda it: place[it["id"]])
             + [it for it in items if it["id"] not in place])
+
+
+def push_items(items, set_dir):
+    """What a push of `items` into set_dir sends: a card in the set already keeps its number whatever its place in the
+    list (keep_numbers), the cards of the set the list does not name stay (keep_unlisted: a push never takes one out),
+    and every 1-prize Pokemon and Trainer goes with its holofoil (standard_foil)."""
+    return standard_foil(keep_unlisted(keep_numbers(items, export.existing_cards(set_dir)), set_dir))
 
 
 def _push_changes(original, after, layout, old, new, stale=False):
@@ -1366,28 +1457,31 @@ def push_all_plan(code):
     -> {setId, code, title (the set's name now), projects, repeats, incoming, existing (cards there, None: no set yet),
     added / changed: [{id, name, lines}], removed: [{id, name}] (cards no list can send again: none in a set this editor
     wrote), kept: [{id, name}] (in the set, in no saved project: they stay), moved (cards that get another number),
-    unchanged,
+    unchanged, unreadable: [{name, why}] (projects that could not be read: their cards are in none of the lists),
+    notes: [str] (what the merge left off, merged_items),
     items (what to send to /api/push-set or /api/publish-set to push exactly this)}"""
     root = _sim_root()
     try:
         set_id = export.set_id_for(code)
     except ValueError as e:
         raise UserError(str(e)) from e
-    items, projects, repeats = merged_items()
-    if not items:
-        raise UserError("no saved project has a card to push")
+    merged = merged_items()
+    if not merged.items:
+        raise UserError("no saved project has a card to push"
+                        + (f" ({_unreadable_note(merged.unreadable)})" if merged.unreadable else ""))
     set_dir = root / set_id
-    listed = {it["id"] for it in items}
-    items = standard_foil(keep_unlisted(keep_numbers(items, export.existing_cards(set_dir)), set_dir))
+    listed = {it["id"] for it in merged.items}
+    items = push_items(merged.items, set_dir)
     plan = export.plan_set(items, set_dir)
     names = {source: name for source, name in reversed(export.existing_cards(set_dir) or []) if source}
     kept = [{"id": it["id"], "name": names.get(it["id"], it["id"])} for it in items if it["id"] not in listed]
-    return {"setId": set_id, "code": code, "title": export.existing_title(set_dir), "projects": projects,
-            "repeats": repeats, "incoming": len(items), "existing": plan["existing"],
+    return {"setId": set_id, "code": code, "title": export.existing_title(set_dir), "projects": merged.projects,
+            "repeats": merged.repeats, "incoming": len(items), "existing": plan["existing"],
             "added": [_plan_card(it) for it in plan["added"]],
             "changed": [_plan_card(it, old, stale) for it, old, stale in plan["changed"]],
             "removed": [{"id": source, "name": name} for source, name in plan["removed"]],
-            "kept": kept, "moved": plan["moved"], "unchanged": plan["unchanged"], "items": items}
+            "kept": kept, "moved": plan["moved"], "unchanged": plan["unchanged"], "unreadable": merged.unreadable,
+            "notes": merged.notes, "items": items}
 
 
 class Room:
@@ -1564,6 +1658,7 @@ class Handler(BaseHTTPRequestHandler):
         except LookupError as e:
             self._json({"error": str(e)}, HTTPStatus.NOT_FOUND)
         except Exception as e:                   # noqa: BLE001 - report, keep serving
+            traceback.print_exc()                # not the user's mistake: its trace for whoever runs the server
             self._json({"error": f"{type(e).__name__}: {e}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_GET(self):

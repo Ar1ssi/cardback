@@ -63,6 +63,13 @@ class Cancelled(Exception):
     """The caller asked a build to stop (its `cancelled` callback said so): nothing was written."""
 
 
+def warning_notes(caught):
+    """The messages of the warnings caught while cards were made (warnings.catch_warnings(record=True)), as notes for
+    the user. torch warns about TorchScript (torch.jit, which runs the LaMa inpainting model) on its own schedule:
+    that says nothing about a card, so it is left out."""
+    return [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
+
+
 def set_id_for(code):
     if not isinstance(code, str) or not SET_CODE.fullmatch(code):
         raise ValueError("set code: 2 to 5 capital letters or digits, like HBW")
@@ -108,17 +115,21 @@ def mega_stage(card):
     except Exception as e:                       # noqa: BLE001 - a lookup failure is a note, not a lost export
         warnings.warn(f"{card_name(card)}: could not look up {pre!r} on TCGdex ({e}); stage set to Stage1")
         return "Stage1"
-    stages = set()
+    stages, failed = set(), []
     for hit in hits[:5]:
         try:
             stages.add(tcg.card(hit["id"]).get("stage"))
-        except Exception:                        # noqa: BLE001
-            continue
+        except Exception as e:                   # noqa: BLE001 - the others may still say
+            failed.append(f"{hit.get('id')}: {e}")
     if "Stage1" in stages or "Stage2" in stages:
         return "Stage2"
     if "Basic" in stages:
         return "Stage1"
-    warnings.warn(f"{card_name(card)}: no TCGdex Pokémon named {pre!r}; stage set to Stage1")
+    if failed:
+        warnings.warn(f"{card_name(card)}: could not look up {len(failed)} of the TCGdex cards named {pre!r} "
+                      f"({'; '.join(failed[:2])}); stage set to Stage1")
+    else:
+        warnings.warn(f"{card_name(card)}: no TCGdex Pokémon named {pre!r}; stage set to Stage1")
     return "Stage1"
 
 
@@ -183,7 +194,8 @@ def display_order(records, is_ace=None):
     """The records in the order the simulator lists a set: Pokemon (by type A-Z, then evolution line A-Z by its first card, each line
     Basic, Stage 1, Stage 2), then Trainers (Item, Supporter, Stadium, Tool, each A-Z; the ACE SPEC Trainers after them, A-Z), then
     Energy in card-number order (an ACE SPEC Energy stays among it). Only the order of the list: ids and numbers stay. is_ace(source card id) -> bool
-    says whether a Trainer whose record does not call itself ACE SPEC is one (records made before it did)."""
+    says whether a Trainer whose record does not call itself ACE SPEC is one (records made before it did): True, False,
+    or None when it cannot say (sorted with the other Trainers)."""
     def ace(rec):
         source = _source_of(rec)
         return is_ace_record(rec) or bool(is_ace and source and is_ace(source))
@@ -300,10 +312,10 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
                 records.append(tcgdex_record(card, layout, set_id, local_id, item))
                 made = render(item["id"], item.get("edits"), item.get("style", "hybrid"), item.get("attacks", True),
                               bool(item.get("foil")))
-                high, low = _webp(made[0]), _webp(made[0], LOW_SIZE)
+                high, low = _webp(made.png), _webp(made.png, LOW_SIZE)
                 digests, foil = {"high": _digest(high), "low": _digest(low)}, None
                 if item.get("foil"):
-                    foil = foil_from_holo(made[3] if len(made) > 3 else None)
+                    foil = foil_from_holo(made.holo)
                     digests["foil"] = foil_digest(foil) if foil else NO_FOIL
                     if not foil:
                         warnings.warn(f"{records[-1]['name']}: no holofoil could be made; the card is set without it")
@@ -316,7 +328,7 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
                     files[f"foil/{local_id}-{kind}.webp"] = data
     if progress:
         progress("rendering", len(items), len(items), "")
-    notes = sorted({str(w.message) for w in caught if "torch.jit" not in str(w.message)})
+    notes = sorted(set(warning_notes(caught)))
     record = set_record(set_id, code, title, display_order(records, is_ace), today)
     files["CHANGELOG.md"] = (changelog(items, title) + (
         "\n\n## Export notes\n" + "".join(f"- {n}\n" for n in notes) if notes else "")).encode()
@@ -356,13 +368,13 @@ def _foil_webp(png, kind):
 
 
 def foil_from_holo(holo):
-    """What a set keeps of a render's holofoil. holo: gui.Render's fourth part, (foil.json record, {file name: PNG
-    bytes}, ...) or None. -> {tcgl, shader, material, cc, textures: {kind: WebP bytes}}: the base printing when TCG
+    """What a set keeps of a render's holofoil. holo: gui.Render's holo (gui.Holo: record, the foil.json record;
+    files, {file name: PNG bytes}) or None. -> {tcgl, shader, material, cc, textures: {kind: WebP bytes}}: the base printing when TCG
     Live foils the card, else its reverse holo's (the choice import-foil.py makes). None when there is no foil, or
     the record names a texture the render did not write."""
     if not holo:
         return None
-    record, written = holo[0], holo[1]
+    record, written = holo.record, holo.files
     chosen = next((record[key] for key in ("base", "reverse") if isinstance(record.get(key), dict)), None)
     if not chosen or not chosen.get("shader") or not chosen.get("material"):
         return None

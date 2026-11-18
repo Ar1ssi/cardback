@@ -42,15 +42,15 @@ def png_bytes(color=(200, 30, 30, 255)):
 
 
 def holo_for(card_id, color=(10, 20, 30, 255), reverse_only=False):
-    """What gui.render returns as its fourth part for a card with holofoil: (foil.json record, {file name: PNG}, plates,
-    token), shaped as foil.files writes it."""
+    """What gui.render returns as its holo for a card with holofoil: gui.Holo(foil.json record, {file name: PNG},
+    plates, token), shaped as foil.files writes it."""
     stem = f"{card_id}-me"
     printing = {"shader": "TPCi/Cards3D/HoloFoil/SunPillar", "material": "MAT_Cards3D_SunPillar", "wp": f"{stem}-wp.png",
                 "cc": "TEX_SouthernCross", "etch": None, "cf": None}
     record = {"id": card_id, "tcglive": card_id.replace("-", "_"), "front": f"{stem}-front.png",
               "base": None if reverse_only else printing, "reverse": printing if reverse_only else None}
     written = {record["front"]: png_bytes(color), printing["wp"]: png_bytes(color), f"{stem}-foil.json": b"{}"}
-    return record, written, {}, "token"
+    return gui.Holo(record, written, {}, "token")
 
 
 class Records(unittest.TestCase):
@@ -119,7 +119,7 @@ class Zip(unittest.TestCase):
     def export(self, items, code="HBW"):
         reads = {"swsh3-88": ("me", pokemon()), "base1-91": ("trainer", trainer())}
         return export.export_zip(items, "Homebrew Wave 1", code, read=lambda i: reads[i],
-                                 render=lambda *a: (png_bytes(), [], "me", None), apply=edit.apply,
+                                 render=lambda *a: gui.Render(png_bytes(), [], "me"), apply=edit.apply,
                                  changelog=lambda items, title: f"# {title}", today=datetime.date(2026, 10, 23))
 
     def test_layout_and_set_json(self):
@@ -151,7 +151,7 @@ class Zip(unittest.TestCase):
     def test_a_foil_card_brings_its_textures_and_a_foil_json(self):
         reads = {"swsh3-88": ("me", pokemon())}
         data = export.export_zip([{"id": "swsh3-88", "foil": True}], "Homebrew Wave 1", "HBW", read=lambda i: reads[i],
-                                 render=lambda *a: (png_bytes(), [], "me", holo_for("swsh3-88")), apply=edit.apply,
+                                 render=lambda *a: gui.Render(png_bytes(), [], "me", holo_for("swsh3-88")), apply=edit.apply,
                                  changelog=lambda items, title: f"# {title}", today=datetime.date(2026, 10, 23))
         z = zipfile.ZipFile(io.BytesIO(data))
         self.assertEqual(sorted(n for n in z.namelist() if "foil" in n),
@@ -451,7 +451,7 @@ class Push(unittest.TestCase):
         def render(card_id, edits=None, style="hybrid", attacks=True, foil=False):
             self.renders.append(card_id)
             holo = holo_for(card_id, self.COLORS[card_id]) if foil and self.makes_foil else None
-            return png_bytes(self.COLORS[card_id]), [], "me", holo
+            return gui.Render(png_bytes(self.COLORS[card_id]), [], "me", holo)
         return export.write_set_dir(items, title, "HBW", self.root, read=lambda i: reads[i], render=render,
                                     apply=edit.apply, changelog=lambda items, title: f"# {title}", force=force,
                                     today=datetime.date(2026, 10, 25), **extra)

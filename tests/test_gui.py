@@ -236,7 +236,7 @@ class Http(unittest.TestCase):
                   "reverse": {"shader": "TPCi/Cards3D/HoloFoil/FlatSilver", "material": "MAT_Cards3D_FlatSilver",
                               "wp": "swsh3-51-me-wp-ph.png", "cc": None, "etch": None, "cf": None}}
         files = {"swsh3-51-me-front.png": b"f", "swsh3-51-me-wp-ph.png": b"p", "swsh3-51-me-foil.json": b"{}"}
-        fake = gui.Render(b"fake png", [], "me", (record, files, {"reverse": b"plate"}, "t0ken"))
+        fake = gui.Render(b"fake png", [], "me", gui.Holo(record, files, {"reverse": b"plate"}, "t0ken"))
         gui._renders["a request"] = fake             # what render() keeps, for the texture URLs
         with mock.patch.object(gui, "render", return_value=fake) as r,                 mock.patch.object(gui, "card_changes", return_value=("Kingler", [])):
             status, _, body = self.call("/api/render", {"id": "swsh3-51", "foil": True})
