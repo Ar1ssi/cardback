@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from . import cache, frame, layers, lifted, megarule, meframe, refs, stage, swsh, tcg
+from . import cache, edit, frame, layers, lifted, megarule, meframe, refs, stage, swsh, tcg
 from . import typeset as ts
 from .imaging import load_rgba, luminance, put_sprite, save_rgba
 
@@ -23,6 +23,7 @@ LIGHT_KEYLINE = (WHITE, 1.7, 1.0)              # white keyline under dark footer
 DARK_KEYLINE = ([20, 20, 24], 1.7, 1.0)        # dark keyline under white footer text (Absol)
 ABILITY_RED = np.array([192, 26, 32], np.float32)
 COPYRIGHT_GREY = np.array([52, 52, 56], np.float32)
+BOX_DARK = np.array([38, 33, 38], np.float32)     # the footer boxes' outline and letters
 
 PREFIXES = ("Galarian", "Alolan", "Hisuian", "Paldean", "Origin Forme", "Rapid Strike", "Single Strike",
             "Fusion Strike", "Ice Rider", "Shadow Rider", "Dusk Mane", "Dawn Wings")
@@ -66,6 +67,7 @@ class Options:
 
 # ---------------------------------------------------------------- card data
 def read_card(card_id):
+    from . import mecompose                 # mecompose imports this module
     c = tcg.card(card_id)
     name = c.get("name", "")
     if c.get("category") != "Pokemon" or c.get("stage") != "Basic" or not name.endswith(" V"):
@@ -75,22 +77,16 @@ def read_card(card_id):
         raise SystemExit(f"{card_id}: no Scarlet & Violet frame for type {types[:1]}")
     s = tcg.set_info(c["set"]["id"])
     official = (s.get("cardCount") or {}).get("official") or (c["set"].get("cardCount") or {}).get("official")
-    local = c.get("localId", "")
-    number = f"{int(local):0{len(str(official))}d}/{official}" if local.isdigit() and official else local
     base = name[:-2]
     prefix = next((p for p in PREFIXES if base.startswith(p + " ")), "")
-    printed = lambda s: (s or "").replace("'", "’")      # TCGdex uses straight apostrophes; cards print ’
-    for b in (c.get("abilities") or []) + (c.get("attacks") or []):
-        b["effect"] = printed(b.get("effect"))
-        b["name"] = printed(b.get("name"))
+    edit.printed_blocks(c)
     return {
         "id": card_id, "type": types[0], "prefix": prefix, "name": base[len(prefix):].strip(), "hp": str(c.get("hp", "")),
         "abilities": c.get("abilities") or [], "attacks": c.get("attacks") or [],
         "weakness": (c.get("weaknesses") or [None])[0], "resistance": (c.get("resistances") or [None])[0],
         "retreat": int(c.get("retreat") or 0), "illustrator": c.get("illustrator") or "",
-        "reg_mark": c.get("regulationMark") or "", "set_code": ((s.get("abbreviation") or {}).get("official")
-                                                              or s.get("tcgOnline") or "").upper(),
-        "number": number, "year": (s.get("releaseDate") or "")[:4],
+        "reg_mark": c.get("regulationMark") or "", "set_code": mecompose.set_code(c["set"]["id"], s),
+        "number": mecompose.card_number(c.get("localId", ""), official, s), "year": (s.get("releaseDate") or "")[:4],
         "stage": 0, "evolves_from": "", "portrait": "",         # V cards are Basic; the editor can make them Stage
         "retype": True,                 # set on its type's frame: the editor can change the type (edit.retypes)
     }
@@ -426,7 +422,7 @@ def footer_boxes(reg_mark, set_code):
 def _footer(canvas, card, white_text, rarity, shift, keyline, style):
     ink, edge = (WHITE, DARK_KEYLINE) if white_text else (np.array(frame.DARK_INK, np.float32), LIGHT_KEYLINE)
     keyline = edge if keyline else None
-    dark = np.array([38, 33, 38], np.float32)
+    dark = BOX_DARK
     ix, iy = shift.get("illus", (0, 0))
     bx, by = shift.get("boxes", (0, 0))
     nx, ny = shift.get("number", (0, 0))

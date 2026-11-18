@@ -43,7 +43,6 @@ the type's colour: the icon alone changes (their etch rings it with plain circle
 a silver box under the name bar, tera) and Black White Rares (a monochrome icon) are left out.
 """
 import functools
-import threading
 import warnings
 from dataclasses import dataclass
 
@@ -51,7 +50,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from . import cache, compose, foil, frame, meframe, tcg
+from . import cache, compose, foil, frame, meframe, retype, tcg
 from .imaging import dilate, drop_small, fill_holes, load_rgba, luminance, put_sprite, save_rgba
 
 W, H = 733, 1024
@@ -135,8 +134,6 @@ SYMBOL_LUM = (50, 90)
 # White plate: white lettering on Darkness prints cut out of it at about this value (21..62 measured); a re-inked
 # word's cut-out (plate under CUT_CLOSE) closes when the word turns dark, its soft edge CUT_EDGE px too.
 CUT, CUT_CLOSE, CUT_EDGE = 35.0, 100, 3
-WORDS = "retyped_words"     # layers kind: the words recolour re-inked (as retype.WORDS), for the plates
-_build = threading.RLock()  # asset builders run one at a time (the GUI serves on threads; see _locked)
 
 # Scarlet & Violet ex: up to ten Double Rares a type, spread over the sets (not Tera), and for the bar's layouts five
 # Stage 2 and five Basic ones of far-apart types; the Stage 2 ones all of sv03.5, as the sets render the Stage tab a
@@ -230,6 +227,11 @@ def zone(boxes):
     return m
 
 
+def _red(c):
+    """The red of an ex print's Ability badge pill and red Ability names (retype._print_red reads a regular print's)."""
+    return c[..., 0] - c[..., 1:].max(-1) > 60
+
+
 def mode(a):
     """The most common value of a, rounded."""
     v, c = np.unique(np.round(a).astype(int), return_counts=True)
@@ -238,16 +240,6 @@ def mode(a):
 
 def _asset(name, fam=MEGA):
     return cache.path("assets", f"{fam.key}-v{ASSET_VERSION}", name)
-
-
-def _locked(build):
-    """An asset builder that runs one call at a time: the GUI serves requests on threads, and two first calls would
-    both write its file while the other reads it (they call one another: the lock is re-entrant)."""
-    @functools.wraps(build)
-    def run(*args, **kwargs):
-        with _build:
-            return build(*args, **kwargs)
-    return run
 
 
 def ink(type_name):
@@ -290,7 +282,7 @@ def panel_weight(c, w, e, words=False, ramp=6, fam=MEGA, own=None):
     if own is None:
         own = dilate(e < 200, 3)                                    # icons' rings, the badge's pill
     if words:
-        red = c[..., 0] - c[..., 1:].max(-1) > 60
+        red = _red(c)
         white = (c.min(-1) > 150) & (c.max(-1) - c.min(-1) < 60)
         letters = white & (w < WORD_CUT) & ~own & panel & ~zone(fam.keep)
         weight = np.maximum(weight, dilate(letters, 2) & ~own & ~dilate(red, 1) & panel & ~zone(fam.keep))
@@ -312,7 +304,7 @@ def own_mask(c, card, fam):
     for kind, count in kinds.items():
         for cx, cy in inplace.cost_icons(c, card, kind, count):
             out |= np.hypot(xx - cx, yy - cy) <= r + 1
-    red = (c[..., 0] - c[..., 1:].max(-1) > 60) & zone([fam.panel])
+    red = _red(c) & zone([fam.panel])
     out |= fill_holes(dilate(red, 1))
     return dilate(out, OWN_GROW)
 
@@ -366,7 +358,7 @@ def _glitter_px(c, w, fam=MEGA):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def params(type_name, fam=MEGA):
     """(panel tint (3,), glitter luminance quantiles (QUANT,), glitter colours there (QUANT x 3), glitter LUT); the
     glitter's three are None on a family without glitter (SV: its band, band_field)."""
@@ -409,7 +401,7 @@ def params(type_name, fam=MEGA):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def faded_table(k, fam=MEGA):
     """The faded art's channel k as a table of its other two (TABLE_STEP levels a bin, filled and smoothed): from the
     panels of every type that prints all three (panel / tint). A type that prints none of k (Darkness: red) takes
@@ -461,7 +453,7 @@ def ramp_at(ramp, q):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def glitter_template(type_name, fam=MEGA):
     """The type's glitter texture: per pixel, the median of its cards that show glitter there (white plate dark,
     colour among the type's glitter colours). -> (HxWx3, bool HxW where any card shows it)"""
@@ -490,7 +482,7 @@ def glitter_template(type_name, fam=MEGA):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def band_fixed(fam=SV):
     """bool HxW: the frame's pieces on an SV ex's band, the same on every type (the weakness row's rules, the rule box
     and its pill, the footer's boxes): where the medians of each type's cards agree within BAND_AGREE, and their dark
@@ -509,7 +501,7 @@ def band_fixed(fam=SV):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def band_field(type_name, fam=SV):
     """(the type's colour over an SV ex's band, HxWx3: per pixel the median of the type's cards where they show band,
     not its pieces, print or row icons, BAND_SMOOTH px smooth; its spread, the band's own grain: how far those
@@ -558,7 +550,7 @@ def bar_zone(lay="staged", fam=MEGA):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def typed_mask(lay="staged", fam=MEGA):
     """Name-bar pixels that take the type's colour: where the layout's cards of different types differ."""
     out = _asset(f"typed-{lay}.png", fam)
@@ -600,7 +592,7 @@ def hp_print(cover_hp):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def bar_alpha(lay="staged", fam=MEGA):
     """How much of each name-bar pixel is the bar, the rest the frame's silver pieces over it (their edges are
     anti-aliased): the slope of the layout's references' colours on their own bar fits. They share the pieces, not the
@@ -732,7 +724,7 @@ def _stray(a, b, fam=MEGA):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def type_bar(type_name, fam=MEGA):
     """The type's bar colour (rows 0..BAR), fitted on its cards whose bar is the type's: each card's own fit near at
     least half of the others' (me04-015's and me01's Basics' stray)."""
@@ -1069,7 +1061,7 @@ def _row_words(out, card, s_raw, old_t, new_t, fam=MEGA):
 def recolour(rgba, card, new_type, plate=None):
     """The card (RGBA float32 733x1024) on the new type's frame. card: modern.read_card's dict of it as printed (its
     type, Stage, name, HP, weakness row); plate: the print's white plate (default: its own). The words re-inked are
-    recorded under the layers kind WORDS (foil.build_modern cuts them out of the plate, or closes them)."""
+    recorded under the layers kind retype.WORDS (foil.build_modern cuts them out of the plate, or closes them)."""
     card_id, old_t = card["id"], card["type"]
     fam = family_of(card)
     c = rgba[..., :3].astype(np.float32)
@@ -1087,7 +1079,7 @@ def recolour(rgba, card, new_type, plate=None):
             rgb = _row_words(rgb, card, s_raw, old_t, new_type, fam)
         out[..., :3] = recolour_bar(rgb, card, old_t, new_type, words)
     from . import layers
-    with layers.kind(WORDS):
+    with layers.kind(retype.WORDS):
         layers.record(words)
     return out
 

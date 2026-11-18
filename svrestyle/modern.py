@@ -119,9 +119,7 @@ def read_card(card_id):
         raise SystemExit(f"{card_id}: type {types[:1]} is not supported")
     base = name[:-3] if ex else name
     prefix = next((p for p in compose.PREFIXES if base.startswith(p + " ")), "")
-    for b in (c.get("abilities") or []) + (c.get("attacks") or []):
-        b["effect"] = edit.printed(b.get("effect"))
-        b["name"] = edit.printed(b.get("name"))
+    edit.printed_blocks(c)
     evolves = edit.printed(c.get("evolveFrom")) if c["stage"] != "Basic" else ""
     card = {
         "id": card_id, "family": "ex" if ex else "regular", "type": types[0], "prefix": prefix,
@@ -790,19 +788,19 @@ def _recoloured(card_id, type_name):
     """A Mega ex print recoloured on another type (megaretype.recolour) -> (RGBA, the words it re-inked)."""
     with layers.recording() as drawn:
         out = megaretype.recolour(tcg.scan(card_id), read_card(card_id), type_name)
-    return out, drawn.get(megaretype.WORDS)
+    return out, drawn.get(retype.WORDS)
 
 
 def print_of(card_id, original, card, record=True):
     """(the print the edits start from, the card as that print has it): the card's own scan; a Mega ex whose type
     changes, its print recoloured on the new type (megaretype), which is then the card as printed. record: the words
-    it re-inked go to layers (megaretype.WORDS), for the plates."""
+    it re-inked go to layers (retype.WORDS), for the plates."""
     scan = tcg.scan(card_id)
     if original["family"] != "ex" or not original.get("retype") or card["type"] == original["type"]:
         return scan, original
     out, words = _recoloured(card_id, card["type"])
     if record and words is not None:
-        with layers.kind(megaretype.WORDS):
+        with layers.kind(retype.WORDS):
             layers.record(words)
     return out.copy(), dict(original, type=card["type"])
 

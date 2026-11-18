@@ -12,7 +12,7 @@ import warnings
 import cv2
 import numpy as np
 
-from . import cache, compose, frame, inpaint, megarule, meframe, stage, tcg
+from . import cache, compose, edit, frame, inpaint, megarule, meframe, stage, tcg
 from . import typeset as ts
 from .imaging import dilate, fill_holes, hsv, load_rgba, luminance, save_rgba
 
@@ -134,25 +134,23 @@ def read_card(card_id):
     s = tcg.set_info(c["set"]["id"])
     official = (s.get("cardCount") or {}).get("official")
     prefix = next((p for p in compose.PREFIXES if name.startswith(p + " ")), "")
-    printed = lambda t: (t or "").replace("'", "’")
-    for b in (c.get("abilities") or []) + (c.get("attacks") or []):
-        b["effect"] = printed(b.get("effect"))
-        b["name"] = printed(b.get("name"))
+    edit.printed_blocks(c)
     return {
         "id": card_id, "family": "regular", "type": types[0], "prefix": prefix, "name": name[len(prefix):].strip(),
         "hp": str(c.get("hp", "")), "stage": {"Basic": 0, "Stage1": 1, "Stage2": 2}[c["stage"]],
-        "evolves_from": printed(c.get("evolveFrom")), "portrait": "", "abilities": c.get("abilities") or [],
+        "evolves_from": edit.printed(c.get("evolveFrom")), "portrait": "", "abilities": c.get("abilities") or [],
         "attacks": c.get("attacks") or [], "weakness": (c.get("weaknesses") or [None])[0],
         "resistance": (c.get("resistances") or [None])[0], "retreat": int(c.get("retreat") or 0),
         "illustrator": c.get("illustrator") or "", "reg_mark": c.get("regulationMark") or "",
         "set_code": set_code(c["set"]["id"], s),
         "number": card_number(c.get("localId", ""), official, s), "year": (s.get("releaseDate") or "")[:4],
-        "rarity": rarity_symbol(c.get("rarity")), "flavor": printed(c.get("description")),
+        "rarity": rarity_symbol(c.get("rarity")), "flavor": edit.printed(c.get("description")),
         "dex_line": species_line(c),
         # Mega Evolution cards (used to check the layout against the real print) keep their own portrait.
         "old_stage": c["stage"] != "Basic" and not card_id.startswith("me"),
         # what the old portrait box shows (stage.portrait keeps it while the card still evolves from that)
-        "portrait_of": printed(c.get("evolveFrom")) if c["stage"] != "Basic" and not card_id.startswith("me") else None,
+        "portrait_of": (edit.printed(c.get("evolveFrom")) if c["stage"] != "Basic" and not card_id.startswith("me")
+                        else None),
     }
 
 

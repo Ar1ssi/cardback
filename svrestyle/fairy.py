@@ -24,7 +24,6 @@ print's glare (typed_energy).
 Needs the TCG Live extract (the coins).
 """
 import functools
-import threading
 from pathlib import Path
 
 import cv2
@@ -104,19 +103,6 @@ def _asset(name):
     return cache.path("assets", f"fairy-v{ASSET_VERSION}", name)
 
 
-_build = threading.RLock()
-
-
-def _locked(build):
-    """An asset builder that runs one call at a time (the GUI serves requests on threads: a page's icons and a render
-    can ask for the same new asset at once)."""
-    @functools.wraps(build)
-    def run(*args, **kwargs):
-        with _build:
-            return build(*args, **kwargs)
-    return run
-
-
 def tag(type_name):
     """What the cached assets made from this module carry in their names, so they are made again when it changes:
     "-f<version>" for Fairy, nothing for a printed type."""
@@ -170,7 +156,7 @@ def from_oklab(lab):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def colour_map():
     """(bin middles of Psychic lightness, per bin: lightness shift, log chroma gain, hue turn in degrees)."""
     out = _asset("colours.npz")
@@ -387,7 +373,7 @@ def _glowed(lab, disc, where, ring):
 
 
 @functools.lru_cache(maxsize=None)
-@_locked
+@cache.locked
 def icon_scan(card_id, cx, cy, r):
     """card_id's scan (a Psychic card) with its icon at (cx, cy), radius r, made Fairy's: what meframe.icon cuts Fairy's
     icons from. RGBA float32"""
@@ -498,7 +484,7 @@ def _typed_sphere(scan):
     return np.where((np.hypot(xx - cx, yy - cy) < r)[..., None], _srgb(lit), rgb)
 
 
-@_locked
+@cache.locked
 def typed_energy():
     """Psychic's Mega Evolution typed Special Energy (TYPED_ENERGY, Telepathic Psychic Energy) as Fairy's: its sphere
     with Fairy's symbol (_typed_sphere) through colour(), and the symbol in its name made Fairy's (swap). Its name,

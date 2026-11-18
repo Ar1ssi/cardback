@@ -87,7 +87,6 @@ BOX_REACH = 2        # px: a print's footer box may reach this far past where th
 BOX_RING = 4         # px: the band round that whose median is the colour printed round the boxes
 BOX_SPECK = 12       # px: smaller shapes off the colour round the boxes are grain
 BOX_DIFF = 90        # RGB levels off that colour a box pixel is (Water's grain stays under it)
-BOX_DARK = (38, 33, 38)   # the composers' box outline (compose._footer)
 BOX_LIGHT = 128      # a box pixel this light is its white ring or fill
 BOX_MIN_SHARE = 0.1  # least box share its colour is read back from (less is ground and noise)
 BOX_OFF = 40         # RGB distance off the ground-to-outline line past which an edge pixel is all box
@@ -444,7 +443,7 @@ def _box_edge(rgb, boxes):
     lift = rgb[band] - ground[band]
     best_share, best_off = np.ones(len(lift)), np.full(len(lift), np.inf)
     in_box = boxes[band]
-    for colour, where in ((np.array(BOX_DARK, np.float32), True), (compose.WHITE, in_box)):
+    for colour, where in ((compose.BOX_DARK, True), (compose.WHITE, in_box)):
         towards = colour - ground[band]
         share = np.clip((lift * towards).sum(-1) / np.maximum((towards * towards).sum(-1), 1.0), 0, 1)
         off = np.linalg.norm(lift - share[:, None] * towards, axis=-1)

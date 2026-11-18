@@ -30,7 +30,7 @@ import cv2
 import numpy as np
 
 from . import ace, cache, compose, foil, frame, inpaint, layers, meframe, mecompose, modern, tcg, trainer
-from . import trainerframe
+from . import fairy, trainerframe
 from . import typeset as ts
 from .imaging import dilate, load_rgba, luminance, save_rgba
 
@@ -39,15 +39,15 @@ VERSION = 9
 FULL_RARITY = ("secret", "ultra", "illustration", "hyper", "special")
 SPECIAL_TEMPLATES = {"regular": "me02.5-217", "full": "me02-124"}
 BASIC_TEMPLATES = {"Grass": "mee-001", "Fire": "mee-002", "Water": "mee-003", "Lightning": "mee-004",
-                   "Psychic": "mee-005", "Fighting": "mee-006", "Darkness": "mee-007", "Metal": "mee-008",
-                   "Fairy": "mee-005"}     # Fairy: Psychic's made Fairy's (fairy.basic_energy); its foil is Psychic's
+                   "Psychic": "mee-005", "Fighting": "mee-006", "Darkness": "mee-007", "Metal": "mee-008"}
 GOLD_TEMPLATES = {"Grass": "sv02-278", "Fire": "sv03-230", "Water": "sv02-279", "Lightning": "sv01-257",
-                  "Psychic": "sv03.5-207", "Fighting": "sv01-258", "Darkness": "sv06.5-098", "Metal": "sv06.5-099",
-                  "Fairy": "sv03.5-207"}   # Fairy: Psychic's made Fairy's (fairy.gold_energy)
+                  "Psychic": "sv03.5-207", "Fighting": "sv01-258", "Darkness": "sv06.5-098", "Metal": "sv06.5-099"}
 GOLD_RARITY = "Hyper rare"
 TYPED_TEMPLATES = {"Grass": "me03-086", "Fire": "me04-086", "Water": "me04-084", "Lightning": "me05-084",
-                   "Psychic": "me03-088", "Fighting": "me03-087", "Darkness": "me05-083", "Metal": "me04-085",
-                   "Fairy": "me03-088"}  # Fairy: Psychic's made Fairy's (fairy.typed_energy)
+                   "Psychic": "me03-088", "Fighting": "me03-087", "Darkness": "me05-083", "Metal": "me04-085"}
+# Fairy: its base's print made Fairy's (fairy.basic_energy, gold_energy, typed_energy); its foil is its base's.
+for _templates in (BASIC_TEMPLATES, GOLD_TEMPLATES, TYPED_TEMPLATES):
+    _templates["Fairy"] = _templates[fairy.BASE]
 FRAMES = ("regular", "full", "typed")           # what a Special Energy can be set on; "basic" and "gold" are for Basic
                                                 # Energy, "print" for Energy that is in the look already
 BASIC_FRAMES = ("basic", "gold")
@@ -236,8 +236,7 @@ def text_shift(scan, card, layout):
     its own (the prints do not all centre theirs alike: Jet Energy's sits 10 px lower than Reversal Energy's)."""
     printed = _rows(printed_text(scan, layout))
     x, width, ink = _text_column(layout)
-    with layers.recording() as drawn:
-        text(np.zeros((H, W, 4), np.float32), card, x, width, ink)
+    drawn = modern._drawn(text, card, x, width, ink)
     here = _rows(drawn["text"] > 0.5) if "text" in drawn else None
     if not printed or not here:
         return 0
@@ -289,7 +288,6 @@ def template_id(card):
 def _typed_template(type_name):
     """A type's typed Special Energy print, Fairy's made from Psychic's (fairy.typed_energy)."""
     if type_name == "Fairy":
-        from . import fairy
         return fairy.typed_energy()
     return tcg.scan(TYPED_TEMPLATES[type_name])
 
@@ -302,7 +300,6 @@ def _template(card):
         return _typed_template(typed_type(card))
     template = tcg.scan(template_id(card))
     if card["energy"] == "basic" and card["type"] == "Fairy":
-        from . import fairy
         template = fairy.gold_energy(template) if card["frame"] == "gold" else fairy.basic_energy(template)
     return template
 
@@ -310,7 +307,6 @@ def _template(card):
 def _clear(card):
     """The template with its name, icons, text and footer painted out; cached."""
     frame_name = card["frame"]
-    from . import fairy
     if frame_name in BASIC_FRAMES:
         name = f"{'gold-' if frame_name == 'gold' else ''}{card['type']}{fairy.tag(card['type'])}"
     elif frame_name == "typed":
@@ -540,7 +536,7 @@ def footer(canvas, card):
     full = card["frame"] == "full"
     ink = compose.WHITE if full else np.array(frame.DARK_INK, np.float32)
     keyline = compose.LIGHT_KEYLINE if full else None
-    dark = np.array([38, 33, 38], np.float32)
+    dark = compose.BOX_DARK
     with layers.kind("footer_box"):
         if card["reg_mark"]:
             ts.stamp(canvas, ts.rounded_box(44.5, 960.5, 62.5, 987.5, 3), dark)
@@ -778,7 +774,6 @@ def _run_lines(img, hole):
 
 def _title_symbol(rgb):
     """The title line's symbol as printed (dark on the gold), round ENERGY_SYMBOLS' first. bool HxW"""
-    from . import fairy
     cx, cy, r, _ = fairy.ENERGY_SYMBOLS[0]
     yy, xx = np.mgrid[:H, :W]
     near = np.hypot(xx - cx, yy - cy) < r + TITLE_REACH
