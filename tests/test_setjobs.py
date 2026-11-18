@@ -1,4 +1,4 @@
-"""Send to ptcg-sim and Publish to site as background jobs (gui.start_set_job, /api/push-set, /api/publish-set,
+"""Send to ptcg-sim and Publish to site as background jobs (setjobs.start_set_job, /api/push-set, /api/publish-set,
 /api/set-job) and the check that refuses to take cards out of a set that is already there. Rendering and TCGdex are
 mocked; the publish script is a stand-in. Run: python -m unittest discover tests"""
 import functools
@@ -17,7 +17,7 @@ from unittest import mock
 
 from PIL import Image
 
-from svrestyle import gui
+from svrestyle import gui, rendering, setjobs
 
 SET_ID = "customhbw"
 A, B, C = "swsh3-88", "base1-91", "swsh3-89"
@@ -52,7 +52,7 @@ def card(card_id):
 
 
 def fake_render(card_id, *rest):
-    return gui.Render(png(card_id), [], "me")
+    return rendering.Render(png(card_id), [], "me")
 
 
 class JobCase(unittest.TestCase):
@@ -62,34 +62,34 @@ class JobCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.checkout = Path(self.tmp.name)
         (self.checkout / "client" / "src").mkdir(parents=True)
-        script = self.checkout.joinpath(*gui.PUBLISH_SCRIPT)
+        script = self.checkout.joinpath(*setjobs.PUBLISH_SCRIPT)
         script.parent.mkdir(parents=True)
         script.write_text(PUBLISH, encoding="utf-8")
-        self.set_dir = self.checkout.joinpath(*gui.SIM_SETS) / SET_ID
+        self.set_dir = self.checkout.joinpath(*setjobs.SIM_SETS) / SET_ID
         for patcher in (mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": str(self.checkout),
                                                        "CUSTOM_SETS_R2_REMOTE": "r2:bucket/sets"}),
-                        mock.patch.object(gui, "read", side_effect=lambda cid: ("me", card(cid))),
-                        mock.patch.object(gui, "render", side_effect=fake_render),
-                        mock.patch.object(gui, "changelog", return_value="# log"),
-                        mock.patch.object(gui, "site_card_count", return_value=None),
-                        mock.patch.object(gui, "takes_reverse", return_value=False)):
+                        mock.patch.object(rendering, "read", side_effect=lambda cid: ("me", card(cid))),
+                        mock.patch.object(rendering, "render", side_effect=fake_render),
+                        mock.patch.object(rendering, "changelog", return_value="# log"),
+                        mock.patch.object(setjobs, "site_card_count", return_value=None),
+                        mock.patch.object(setjobs, "takes_reverse", return_value=False)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        gui._set_jobs.clear()
+        setjobs._set_jobs.clear()
         self.addCleanup(self.finish)          # runs first: no job still writing under the folder that goes
 
     def finish(self):
-        for job in list(gui._set_jobs.values()):
-            gui.cancel_set_job(job["id"])
+        for job in list(setjobs._set_jobs.values()):
+            setjobs.cancel_set_job(job["id"])
             self.wait(job["id"])
 
     def start(self, kind="push", items=None, code="HBW", **extra):
-        return gui.start_set_job(kind, items or [{"id": A}], "T", code, **extra)
+        return setjobs.start_set_job(kind, items or [{"id": A}], "T", code, **extra)
 
     def wait(self, job_id, seconds=15):
         end = time.time() + seconds
         while time.time() < end:
-            view = gui.set_job_progress(job_id)
+            view = setjobs.set_job_progress(job_id)
             if view["state"] != "running":
                 return view
             time.sleep(0.02)
@@ -119,11 +119,11 @@ class Jobs(JobCase):
             if card_id == B:
                 release.wait(10)
             return fake_render(card_id)
-        with mock.patch.object(gui, "render", side_effect=render):
+        with mock.patch.object(rendering, "render", side_effect=render):
             job = self.start(items=[{"id": A}, {"id": B}])
             self.assertEqual((job["kind"], job["state"], job["setId"], job["total"]), ("push", "running", SET_ID, 2))
-            self.until(lambda: gui.set_job_progress(job["id"])["current"] == B)
-            view = gui.set_job_progress(job["id"])
+            self.until(lambda: setjobs.set_job_progress(job["id"])["current"] == B)
+            view = setjobs.set_job_progress(job["id"])
             self.assertEqual((view["phase"], view["done"], view["total"], view["result"]), ("rendering", 1, 2, None))
             release.set()
             done = self.wait(job["id"])
@@ -134,11 +134,11 @@ class Jobs(JobCase):
 
     def test_asking_again_follows_the_job_running_but_another_set_is_refused(self):
         release = threading.Event()
-        with mock.patch.object(gui, "render", side_effect=lambda *a: release.wait(10) and fake_render(A)):
+        with mock.patch.object(rendering, "render", side_effect=lambda *a: release.wait(10) and fake_render(A)):
             first = self.start()
             self.assertEqual(self.start()["id"], first["id"], "the same send is followed, not started twice")
             for kwargs in ({"code": "ABC"}, {"kind": "publish"}):
-                with self.subTest(kwargs=kwargs), self.assertRaisesRegex(gui.UserError, "send of HBW is still running"):
+                with self.subTest(kwargs=kwargs), self.assertRaisesRegex(rendering.UserError, "send of HBW is still running"):
                     self.start(**kwargs)
             release.set()
             self.wait(first["id"])
@@ -146,7 +146,7 @@ class Jobs(JobCase):
 
     def test_a_cancel_while_rendering_changes_nothing(self):
         done = self.send([A, B])
-        self.assertEqual(gui.cancel_set_job(done["id"])["cancelling"], False, "cancelling a finished job does nothing")
+        self.assertEqual(setjobs.cancel_set_job(done["id"])["cancelling"], False, "cancelling a finished job does nothing")
         before = self.snapshot()
         release, started = threading.Event(), threading.Event()
 
@@ -154,10 +154,10 @@ class Jobs(JobCase):
             started.set()
             release.wait(10)
             return fake_render(card_id)
-        with mock.patch.object(gui, "render", side_effect=render):
+        with mock.patch.object(rendering, "render", side_effect=render):
             job = self.start(items=[{"id": A, "style": "panel"}, {"id": B}])
             started.wait(10)
-            stopping = gui.cancel_set_job(job["id"])
+            stopping = setjobs.cancel_set_job(job["id"])
             self.assertEqual((stopping["state"], stopping["cancelling"]), ("running", True))
             release.set()
             cancelled = self.wait(job["id"])
@@ -169,9 +169,9 @@ class Jobs(JobCase):
         marker = Path(self.tmp.name, "child-outlived-the-kill")
         with mock.patch.dict("os.environ", {"FAKE_PUBLISH_HANG": str(marker)}):
             job = self.start("publish")
-            self.until(lambda: gui.set_job_progress(job["id"])["phase"] == "uploading")
+            self.until(lambda: setjobs.set_job_progress(job["id"])["phase"] == "uploading")
             time.sleep(0.5)                                  # node is running, its child started
-            gui.cancel_set_job(job["id"])
+            setjobs.cancel_set_job(job["id"])
             cancelled = self.wait(job["id"])
         self.assertEqual((cancelled["state"], cancelled["error"], cancelled["result"]), ("cancelled", None, None))
         self.assertEqual(cancelled["pushed"]["setId"], SET_ID, "the files are in ptcg-sim")
@@ -186,31 +186,31 @@ class Jobs(JobCase):
         self.assertEqual(done["pushed"]["rendered"], 2)
 
     def test_failures_end_the_job_with_their_message(self):
-        with mock.patch.object(gui, "read", side_effect=gui.UserError("TCGdex has no scan")):
+        with mock.patch.object(rendering, "read", side_effect=rendering.UserError("TCGdex has no scan")):
             failed = self.send([A])
         self.assertEqual((failed["state"], failed["error"], failed["pushed"]), ("failed", "TCGdex has no scan", None))
         for boom, text in ((RuntimeError("boom"), "RuntimeError: boom"), (SystemExit("no scan"), "SystemExit: no scan")):
-            with self.subTest(boom=boom), mock.patch.object(gui, "render", side_effect=boom):
+            with self.subTest(boom=boom), mock.patch.object(rendering, "render", side_effect=boom):
                 failed = self.send([A])
                 self.assertEqual((failed["state"], failed["error"]), ("failed", text))
         self.assertFalse(self.set_dir.exists(), "nothing was written")
 
     def test_only_the_last_jobs_are_kept(self):
-        with mock.patch.object(gui, "SET_JOB_KEEP", 2):
+        with mock.patch.object(setjobs, "SET_JOB_KEEP", 2):
             ids = [self.send([A])["id"] for _ in range(3)]
         with self.assertRaises(LookupError):
-            gui.set_job_progress(ids[0])
-        self.assertEqual(gui.set_job_progress(ids[2])["state"], "done")
+            setjobs.set_job_progress(ids[0])
+        self.assertEqual(setjobs.set_job_progress(ids[2])["state"], "done")
         with self.assertRaises(LookupError):
-            gui.cancel_set_job("nope")
+            setjobs.cancel_set_job("nope")
 
     def test_what_the_page_sends_is_checked_before_a_job_starts(self):
         for kwargs, why in (({"items": []}, "items: a non-empty list"), ({"items": ["swsh3-88"]}, "expected objects"),
                             ({"items": [{"id": 5}]}, "expected objects"), ({"code": "bad code"}, "set code"),
                             ({"code": None}, "set code")):
-            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(gui.UserError, why):
-                gui.start_set_job("push", kwargs.get("items", [{"id": A}]), "T", kwargs.get("code", "HBW"))
-        self.assertEqual(gui._set_jobs, {})
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(rendering.UserError, why):
+                setjobs.start_set_job("push", kwargs.get("items", [{"id": A}]), "T", kwargs.get("code", "HBW"))
+        self.assertEqual(setjobs._set_jobs, {})
 
 
 class Drops(JobCase):
@@ -249,13 +249,13 @@ class Drops(JobCase):
         self.send([A, B, C])
         self.unsource()
         before = self.snapshot()
-        with self.assertRaises(gui.DropsCards) as caught:
+        with self.assertRaises(setjobs.DropsCards) as caught:
             self.start(items=[{"id": A}])
         info = caught.exception.info
         self.assertEqual(info["message"], "HBW has 3 cards in ptcg-sim; this list has 1: 2 would be removed (Bill, Larvitar).")
         self.assertEqual((info["setId"], info["code"], info["incoming"], info["names"]), (SET_ID, "HBW", 1, ["Bill", "Larvitar"]))
         self.assertEqual(info["copies"], [{"where": "ptcg-sim", "cards": 3, "dropped": 2}])
-        self.assertEqual((self.snapshot(), gui._running_set_job()), (before, None), "nothing started, nothing written")
+        self.assertEqual((self.snapshot(), setjobs._running_set_job()), (before, None), "nothing started, nothing written")
         done = self.send([A], allow_shrink=True)
         self.assertEqual((done["state"], done["result"]["removed"]), ("done", ["002", "003"]))
 
@@ -264,7 +264,7 @@ class Drops(JobCase):
         with mock.patch.dict(NAMES, names):
             self.send(list(names))
             self.unsource()
-            with self.assertRaises(gui.DropsCards) as caught:
+            with self.assertRaises(setjobs.DropsCards) as caught:
                 self.start(items=[{"id": "sv1-1"}])
         self.assertIn("(Card 2, Card 3, Card 4, Card 5, Card 6 and 2 more)", caught.exception.info["message"])
         self.assertEqual(caught.exception.info["names"], ["Card 2", "Card 3", "Card 4", "Card 5", "Card 6"])
@@ -280,14 +280,14 @@ class Drops(JobCase):
 
     def test_a_publish_is_checked_against_the_site_copy_too(self):
         self.send([A, B, C])
-        with mock.patch.object(gui, "site_card_count", return_value=5) as counted:
-            with self.assertRaises(gui.DropsCards) as caught:
+        with mock.patch.object(setjobs, "site_card_count", return_value=5) as counted:
+            with self.assertRaises(setjobs.DropsCards) as caught:
                 self.start("publish", [{"id": i} for i in (A, B, C)])      # ptcg-sim loses nothing; the site loses 2
             info = caught.exception.info
             self.assertEqual(info["copies"], [{"where": "the site", "cards": 5, "dropped": 2}])
             self.assertEqual(info["message"], "The site has 5 cards of HBW; this list has 3: 2 would be removed.")
             counted.assert_called_once_with("r2:bucket/sets", SET_ID)
-            with self.assertRaises(gui.DropsCards) as caught:
+            with self.assertRaises(setjobs.DropsCards) as caught:
                 self.start("publish", [{"id": A}])                           # B and C stay in ptcg-sim: the site is the same
             self.assertEqual(caught.exception.info["message"],
                              "The site has 5 cards of HBW; this list has 3: 2 would be removed.")
@@ -296,7 +296,7 @@ class Drops(JobCase):
             self.assertEqual(self.send([A, B, C], "publish", allow_shrink=True)["state"], "done")
             counted.assert_not_called()                                  # a send never asks the site; a confirmed publish skips it
         for site in (None, 3, 2):                                        # unknown, as long, shorter than the list: nothing to ask
-            with self.subTest(site=site), mock.patch.object(gui, "site_card_count", return_value=site):
+            with self.subTest(site=site), mock.patch.object(setjobs, "site_card_count", return_value=site):
                 self.assertEqual(self.send([A, B, C], "publish")["state"], "done")
 
     def test_over_http_the_refusal_is_a_409_the_page_can_answer(self):
@@ -341,9 +341,9 @@ class SiteCount(unittest.TestCase):
 
     def count(self, out=None, code=0, set_id=SET_ID, which="rclone-path", error=None):
         done = subprocess.CompletedProcess([], code, json.dumps(self.INDEX) if out is None else out, "")
-        with mock.patch.object(gui.shutil, "which", return_value=which), \
-                mock.patch.object(gui.subprocess, "run", return_value=done, side_effect=error) as ran:
-            return gui.site_card_count("r2:b/s", set_id), ran
+        with mock.patch.object(setjobs.shutil, "which", return_value=which), \
+                mock.patch.object(setjobs.subprocess, "run", return_value=done, side_effect=error) as ran:
+            return setjobs.site_card_count("r2:b/s", set_id), ran
 
     def test_counts_the_card_folders_of_that_set(self):
         counted, ran = self.count()

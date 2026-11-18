@@ -61,6 +61,13 @@ def printed(text):
     return text.replace("'", "’")
 
 
+def printed_blocks(c):
+    """A TCGdex card's abilities and attacks, their names and text printed() (in place: as the readers take them)."""
+    for b in (c.get("abilities") or []) + (c.get("attacks") or []):
+        b["effect"] = printed(b.get("effect"))
+        b["name"] = printed(b.get("name"))
+
+
 def is_trainer(card):
     return "kind" in card
 

@@ -1,4 +1,4 @@
-"""Every saved project as one download (gui.merged_items, the background zip, /api/projects/merged). Rendering and
+"""Every saved project as one download (projects.merged_items, the background zip, /api/projects/merged). Rendering and
 TCGdex are mocked. Run: python -m unittest discover tests"""
 import io
 import json
@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from svrestyle import gui
+from svrestyle import gui, merged, projects, rendering
 
 
 def entry(card_id, layout="me", **extra):
@@ -34,22 +34,22 @@ class Merged(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         for p in (mock.patch.object(gui.cache, "CACHE", Path(self.tmp.name)),
-                  mock.patch.object(gui, "changelog", return_value="# log"),
+                  mock.patch.object(rendering, "changelog", return_value="# log"),
                   mock.patch.object(gui.tcg, "TCGLIVE", "x"),
                   mock.patch.object(gui.tcg, "card", return_value={"category": "Stadium"})):   # for the skipped entries: a kind with no layout
             p.start()
             self.addCleanup(p.stop)
-        gui._exports.clear()
+        merged._exports.clear()
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(self.finish)
 
     def finish(self):                                  # no build still writing under the folder that goes
-        for job in list(gui._exports.values()):
+        for job in list(merged._exports.values()):
             self.wait(job["id"])
 
     def put(self, name, saved, data):
-        gui.save_project(name, data)
-        f = gui.project_file(name)
+        projects.save_project(name, data)
+        f = projects.project_file(name)
         held = json.loads(f.read_text(encoding="utf-8"))
         f.write_text(json.dumps({**held, "saved": saved}), encoding="utf-8")
 
@@ -66,7 +66,7 @@ class Merged(unittest.TestCase):
     def wait(self, job_id, seconds=10):
         end = time.time() + seconds
         while time.time() < end:
-            view = gui.merged_progress(job_id)
+            view = merged.merged_progress(job_id)
             if view["state"] != "running":
                 return view
             time.sleep(0.02)
@@ -74,8 +74,8 @@ class Merged(unittest.TestCase):
 
     def test_one_list_newest_project_wins(self):
         self.two_projects()
-        items, projects, repeats = gui.merged_items()
-        self.assertEqual((projects, repeats), (2, 1))
+        items, read, repeats, unreadable, notes = projects.merged_items()
+        self.assertEqual((read, repeats), (2, 1))
         self.assertEqual([i["id"] for i in items], ["swsh6-99", "sv03.5-065", "sma-SV33", "swsh3-88"])   # no skipped card
         by = {i["id"]: i for i in items}
         self.assertEqual(by["swsh6-99"], {"id": "swsh6-99", "edits": {"hp": "2"}, "style": "panel", "attacks": False,
@@ -84,30 +84,30 @@ class Merged(unittest.TestCase):
                                           "foil": False})
         self.assertTrue(by["sma-SV33"]["foil"])                                # a Trainer has the Gen 9 reverse holo
         with mock.patch.object(gui.tcg, "TCGLIVE", None):                      # no extract: no foil asked for
-            self.assertFalse(any(i["foil"] for i in gui.merged_items()[0]))
+            self.assertFalse(any(i["foil"] for i in projects.merged_items()[0]))
 
     def test_nothing_to_download(self):
-        with self.assertRaises(gui.UserError):
-            gui.start_merged_zip()
+        with self.assertRaises(rendering.UserError):
+            merged.start_merged_zip()
         self.put("Empty", "2026-10-01T10:00:00", {"cards": [entry("swsh1-1", skip="not a Pokémon or Trainer")]})
-        with self.assertRaises(gui.UserError):
-            gui.start_merged_zip()
+        with self.assertRaises(rendering.UserError):
+            merged.start_merged_zip()
 
     def test_zip_has_every_render_and_names_the_failures(self):
         self.two_projects()
 
         def render(card_id, edits, style, attacks, holo):
             if card_id == "sv03.5-065":
-                raise gui.UserError("TCGdex has no scan")
-            return gui.Render(f"png-{card_id}-{edits}-{style}".encode(), [], "me",
-                              ({}, {f"{card_id}-foil.json": b"{}"}, {}, "t") if holo else None)
-        with mock.patch.object(gui, "render", side_effect=render):
-            job = gui.start_merged_zip()
+                raise rendering.UserError("TCGdex has no scan")
+            return rendering.Render(f"png-{card_id}-{edits}-{style}".encode(), [], "me",
+                              rendering.Holo({}, {f"{card_id}-foil.json": b"{}"}, {}, "t") if holo else None)
+        with mock.patch.object(rendering, "render", side_effect=render):
+            job = merged.start_merged_zip()
             self.assertEqual((job["total"], job["projects"], job["repeats"]), (4, 2, 1))
             done = self.wait(job["id"])
         self.assertEqual((done["state"], done["done"], done["failed"]), ("done", 4, [
             {"id": "sv03.5-065", "why": "TCGdex has no scan"}]))
-        with zipfile.ZipFile(gui.merged_file(job["id"])) as z:
+        with zipfile.ZipFile(merged.merged_file(job["id"])) as z:
             self.assertEqual(sorted(z.namelist()), ["CHANGELOG.md", "NOT-INCLUDED.txt", "sma-SV33-foil.json",
                                                     "sma-SV33-me.png", "swsh3-88-me.png", "swsh6-99-foil.json",
                                                     "swsh6-99-me.png"])
@@ -120,39 +120,39 @@ class Merged(unittest.TestCase):
 
         def render(*args):
             release.wait(10)
-            return gui.Render(b"png", [], "me")
-        with mock.patch.object(gui, "render", side_effect=render):
-            first = gui.start_merged_zip()
-            self.assertEqual(gui.start_merged_zip()["id"], first["id"])
-            self.assertEqual(gui.merged_progress(first["id"])["state"], "running")
+            return rendering.Render(b"png", [], "me")
+        with mock.patch.object(rendering, "render", side_effect=render):
+            first = merged.start_merged_zip()
+            self.assertEqual(merged.start_merged_zip()["id"], first["id"])
+            self.assertEqual(merged.merged_progress(first["id"])["state"], "running")
             with self.assertRaises(LookupError):                               # not ready to download yet
-                gui.merged_file(first["id"])
+                merged.merged_file(first["id"])
             release.set()
             self.assertEqual(self.wait(first["id"])["state"], "done")
-        self.assertNotEqual(gui.start_merged_zip()["id"], first["id"])         # a finished one is not reused
+        self.assertNotEqual(merged.start_merged_zip()["id"], first["id"])         # a finished one is not reused
         self.finish()
 
     def test_every_card_failing_is_a_failed_build(self):
         self.two_projects()
-        with mock.patch.object(gui, "render", side_effect=gui.UserError("no fonts")):
-            done = self.wait(gui.start_merged_zip()["id"])
+        with mock.patch.object(rendering, "render", side_effect=rendering.UserError("no fonts")):
+            done = self.wait(merged.start_merged_zip()["id"])
         self.assertEqual(done["state"], "failed")
         self.assertIn("no card could be rendered", done["error"])
         self.assertIn("no fonts", done["error"])
-        self.assertEqual(list(gui.exports_dir().glob("*.zip")), [])
+        self.assertEqual(list(merged.exports_dir().glob("*.zip")), [])
         with self.assertRaises(LookupError):
-            gui.merged_file(done["id"])
+            merged.merged_file(done["id"])
 
     def test_only_the_last_builds_are_kept(self):
         self.two_projects()
-        with mock.patch.object(gui, "render", return_value=gui.Render(b"png", [], "me")):
+        with mock.patch.object(rendering, "render", return_value=rendering.Render(b"png", [], "me")):
             ids = []
-            for _ in range(gui.MERGED_KEEP + 1):
-                ids.append(gui.start_merged_zip()["id"])
+            for _ in range(merged.MERGED_KEEP + 1):
+                ids.append(merged.start_merged_zip()["id"])
                 self.wait(ids[-1])
         with self.assertRaises(LookupError):
-            gui.merged_progress(ids[0])
-        self.assertEqual(sorted(f.stem for f in gui.exports_dir().glob("*.zip")), sorted(ids[1:]))
+            merged.merged_progress(ids[0])
+        self.assertEqual(sorted(f.stem for f in merged.exports_dir().glob("*.zip")), sorted(ids[1:]))
 
     def call(self, path, body=None):
         req = urllib.request.Request(self.base + path, None if body is None else json.dumps(body).encode(),
@@ -166,7 +166,7 @@ class Merged(unittest.TestCase):
     def test_http(self):
         self.assertEqual(self.call("/api/projects/merged", {})[0], 400)        # nothing saved
         self.two_projects()
-        with mock.patch.object(gui, "render", return_value=gui.Render(b"png", [], "me")):
+        with mock.patch.object(rendering, "render", return_value=rendering.Render(b"png", [], "me")):
             status, _, body = self.call("/api/projects/merged", {})
             job = json.loads(body)
             self.assertEqual((status, job["total"]), (200, 4))

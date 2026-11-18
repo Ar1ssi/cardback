@@ -9,7 +9,7 @@ from unittest import mock
 
 import numpy as np
 
-from svrestyle import edit, energy, export, gui
+from svrestyle import edit, energy, export, gui, rendering
 
 
 def tcgdex(**over):
@@ -222,19 +222,19 @@ class SetsAndExport(unittest.TestCase):
 
     def test_layout_of_and_the_set_list(self):
         with mock.patch.object(gui.tcg, "card", return_value=tcgdex()):
-            self.assertEqual(gui.layout_of("sm3.5-69"), "energy")
-        self.assertEqual(gui._set_entry("sm3.5-69", "Double Colorless Energy", "Energy"),
+            self.assertEqual(rendering.layout_of("sm3.5-69"), "energy")
+        self.assertEqual(rendering._set_entry("sm3.5-69", "Double Colorless Energy", "Energy"),
                          {"id": "sm3.5-69", "name": "Double Colorless Energy", "layout": "energy"})
-        self.assertEqual(gui._set_entry("me02-124", "Ignition Energy", "Energy")["layout"], "energy")
+        self.assertEqual(rendering._set_entry("me02-124", "Ignition Energy", "Energy")["layout"], "energy")
 
     def test_the_editor_view_and_the_note(self):
         card = read(tcgdex())
-        with mock.patch.object(gui, "read", return_value=("energy", card)), \
+        with mock.patch.object(rendering, "read", return_value=("energy", card)), \
                 mock.patch.object(gui.tcg, "card", return_value=tcgdex()):
             summary = gui.card_summary("sm3.5-69")
             self.assertEqual((summary["layout"], summary["energy"], summary["name"]),
                              ("energy", "special", "Double Colorless Energy"))
-            name, notes = gui.card_changes("sm3.5-69", {"name": "Twin Energy"})
+            name, notes = rendering.card_changes("sm3.5-69", {"name": "Twin Energy"})
         self.assertEqual(notes, ["Restyled as a Mega Evolution Energy", "Name: Double Colorless Energy → Twin Energy"])
 
 

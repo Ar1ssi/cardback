@@ -1,0 +1,94 @@
+---
+name: deslop-clean-code-small-functions
+description: Deslop principle — Small Functions: short functions that do one thing (~15 lines); judged by the one job, not only the line count.
+---
+
+# Small Functions
+
+> "The first rule of functions is that they should be small. The second rule of functions is that they should be smaller than that."
+> — Robert C. Martin (Uncle Bob), *Clean Code*
+
+Small Functions is the principle that **functions should be short, focused, and do one thing well**. Decompose logic into small, named units that can be understood at a glance, preferably under 15 lines long. Prefer many smaller functions over fewer big functions. Any time you notice yourself figuring out what a few lines of code does, extract it into a small, tight function which is named after that "what". Long functions are a code smell. Large functions are hard to name, do too many things with too many levels of abstraction, and are difficult to test in isolation. Claiming everything is related and needs to go in the same function is simply lazy thinking, and comments do not take the place of well-defined specific functions. Refactor now, not later.
+
+The "Stepdown" rule says functions should read like a top-down narrative of what's going on, descending one level of abstraction at a time. For instance:
+
+```python
+def process_order(order: Order) -> Receipt:
+    # Reads like a story:
+    validate_order(order)
+    apply_discounts(order)
+    charge_payment(order)
+    send_confirmation(order)
+    return create_receipt(order)
+```
+
+Some code smells to watch out for are:
+- 30+ lines long
+- Comments separating sections inside the function
+- Deeply nested conditionals (3+ levels)
+- Functions with "And" in the name (e.g. `validateAndSave`)
+
+Sometimes, larger functions are the better choice if too many files is increasing cognitive load, or the overhead of calling other functions is significantly degrading performance.
+
+```python
+# ❌ Too shallow - interface complexity exceeds implementation
+def is_empty(collection): return len(collection) == 0
+def is_not_empty(collection): return len(collection) > 0
+
+# ✅ Better - meaningful abstraction hiding complexity
+def get_active_users(user_ids: list[int]) -> list[User]:
+    """Fetches users, filters inactive, sorts by last_active."""
+    users = fetch_users_batch(user_ids)
+    active = [u for u in users if u.is_active]
+    return sorted(active, key=lambda u: u.last_active, reverse=True)
+```
+
+## A flag argument is two functions in one
+
+A parameter that **selects behaviour** — `skip_validation`, `as_draft`, `mode="fast"`, an options bag — is the
+size principle arriving through the signature instead of the body. The function is not small: it is two
+functions sharing a name, and only one caller ever exercises each half.
+
+```python
+# ❌ one name, two behaviours, a different lifecycle on each side
+def save(entity, *, skip_validation: bool = False, as_draft: bool = False) -> None:
+    if not skip_validation:
+        validate(entity)
+    if as_draft:
+        persist_draft(entity)
+        notify_draft(entity)
+        return
+    persist(entity)
+    notify(entity)
+```
+
+```python
+# ✅ the behaviours have names; the shared work keeps one home
+def save(entity: Entity) -> None:
+    validate(entity); persist(entity); notify(entity)
+
+def save_draft(entity: Entity) -> None:
+    persist_draft(entity); notify_draft(entity)
+```
+
+Three tests, in order: **census the call sites** and write down the value each passes — the table *is* the
+finding, and a parameter every caller passes the same value is a dead branch wearing a signature; **the branch
+test** separates data from a decision, since a count, a timeout or a string used in a query is not a flag while
+a condition that changes what the body does is; **name both behaviours** without a boolean or an "and", because
+failing to is the signature admitting it is two functions. Delete the flag and split, and if callers all pass
+the same constant there was only ever one function.
+
+A parameter carrying genuinely varied data, threaded configuration mapped once at the edge, or a declared
+policy of the operation that several callers exercise, is not this. See
+[Decide, Don't Cope](decide-dont-cope.md) for the same instinct at a type boundary, and
+[Principle of Least Surprise](least-surprise.md) for why the caller should not have to know.
+
+The "small function" principle is related to several other principles:
+
+| Principle | Connection |
+|-----------|------------|
+| [**Single Responsibility**](../architecture/solid.md) | Small Functions is the *how*, SRP is the *what* |
+| [**Separation of Concerns**](../architecture/separation-of-concerns.md) | Decompose by concern, then make each piece small |
+| [**DRY**](../architecture/dry.md) | Extract duplicated code into small reusable functions |
+| [**Self-Documenting Code**](self-documenting-code.md) | Function names replace comments when functions are small |
+| [**KISS**](kiss.md) | Small functions are simpler to understand |

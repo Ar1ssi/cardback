@@ -110,7 +110,7 @@ SHRINK_STEPS = (1.0, 0.95, 0.9, 0.85, 0.8)
 PANEL_BOTTOM = 880
 # Technical Machines: the effect from a fixed first baseline, then the attacks (cap top of the name TM_GAP below the
 # effect's last baseline), set like the Mega Evolution cards' attacks.
-TM_FIRST_BASE, TM_GAP, TM_NAME_TO_BODY, TM_COST_DY = 583, 41, 43, 11.7
+TM_FIRST_BASE, TM_GAP, TM_NAME_TO_BODY = 583, 41, 43
 BLOCK_ROOM = 70            # px an attack or Ability with a line of text needs
 # Fossils and dolls, played as Basic Pokemon: the HP at the bar's right (the Pokemon cards' figures, moved), the
 # effect set tighter (a paragraph's last line at -1.04, a one-line paragraph squeezed to -1.34) and run on without a
@@ -157,8 +157,8 @@ TCGDEX_TYPOS = (("That Pokémon my use", "That Pokémon may use"), ("Miracle Pla
 NAME_LABEL = r" Team Flare Gear$"
 # A fossil's or doll's HP when TCGdex gives none but its text does (swsh10-157, xy4-102 "a 30 HP Colorless ...").
 TEXT_HP = r"as if it were an? (\d+)[- ]HP\b"
-TYPES = "Grass|Fire|Water|Lightning|Psychic|Fighting|Darkness|Metal|Fairy|Dragon|Colorless"
 CODE = {name: code for code, name in ts.ENERGY_CODES.items()}
+TYPES = "|".join(CODE)
 
 
 # ---------------------------------------------------------------- card data
@@ -506,7 +506,7 @@ def blocks_body(canvas, card, paragraphs, first_base, gap, name_to_body, blank=T
         return tops, t - mecompose.TIGHT_GAP <= PANEL_BOTTOM
     compose.text_block(canvas, {"id": card["id"], "abilities": card["abilities"], "attacks": card["attacks"]},
                        ink, None, layout=layout, name_to_body=name_to_body,
-                       fit_tracking=mecompose.BODY_FIT_TRACK, cost_r=mecompose.COST_R, cost_dy=TM_COST_DY,
+                       fit_tracking=mecompose.BODY_FIT_TRACK, cost_r=mecompose.COST_R, cost_dy=mecompose.COST_DY,
                        body_size=block_size, dmg_limit=x + width, dx=x - BODY_X,
                        width=compose.BODY_FULL_W - (BODY_FULL_W - width))
     return k
@@ -524,6 +524,17 @@ def warn_missing_glyphs(card):
         warnings.warn(f"{card['id']}: Gill Sans has no {' '.join(missing)}: it prints as an empty box (edit the text)")
 
 
+def over_art(template, art, a):
+    """The Gen 9 frame (template, its alpha a: HxWx1) over the old art, with the printed card's corners; its alpha
+    recorded as the frame layer. RGBA float32"""
+    canvas = np.zeros((H, W, 4), np.float32)
+    canvas[..., :3] = art[..., :3] * (1 - a) + template[..., :3] * a
+    canvas[..., 3] = trainerframe.corners()
+    with layers.kind("frame"):
+        layers.record(a[..., 0])
+    return canvas
+
+
 def compose_card(card_id, card=None):
     """-> (RGBA float32 733x1024, report dict). card: read_card's dict, possibly edited (default: read it)."""
     card = card or read_card(card_id)
@@ -539,11 +550,7 @@ def compose_card(card_id, card=None):
     a = template[..., 3:4] / 255
     if card["era"] == "modern":
         a = (a >= 1).astype(np.float32)        # the print's window already holds its rim's shading
-    canvas = np.zeros((H, W, 4), np.float32)
-    canvas[..., :3] = art[..., :3] * (1 - a) + template[..., :3] * a
-    canvas[..., 3] = trainerframe.corners()
-    with layers.kind("frame"):
-        layers.record(a[..., 0])
+    canvas = over_art(template, art, a)
     xscale = name_and_character(canvas, card)
     scale = body(canvas, card)
     compose.footer(canvas, card, False, rarity=card["rarity"], shift=FOOTER_SHIFT, keyline=False)

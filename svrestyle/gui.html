@@ -417,7 +417,7 @@ const state = {
   dragging: null,         // id of the row being dragged in the list
   pushing: false,         // a send to ptcg-sim is on its way
   publishing: false,      // a publish to the site is on its way (it sends to ptcg-sim first)
-  pushAgain: false,       // another was asked for meanwhile (true, or "force"): it goes out after
+  sendQueue: [],          // sends and publishes asked for meanwhile, in order ({kind, options}): each goes out after
   project: null,          // name of the saved project being worked on (autosaved), or null
   autoNamed: false,       // project's name was made up by autosave, so the first Save under a name renames it
   saveTimer: null,
@@ -427,7 +427,8 @@ const state = {
   pollAbort: null,        // AbortController of the poll in flight
   listeningTo: null,      // the project polled for, told when the page stops
   sending: false,         // a patch is on its way
-  pushAgain: false,       // a change came while it was: send again after
+  saveAgain: false,       // a change came while it was: send again after
+  saveFails: 0,           // failed saves in a row (network or server trouble), for the wait before the next try
   resyncAfter: false,     // the project is to be read again once the patch on its way is in
 };
 const LAST_PROJECT = "svrestyle.project";
@@ -489,16 +490,22 @@ function fixTerms(input) {
       return [term, new RegExp(`(?<![\\w\\-])${words.join("\\s+")}(e?s)?(?!\\w)`, "giu")];
     });
   }
-  const fixed = input.value.split(/(\{[A-Za-z]\})/).map((piece, i) => i % 2 ? piece : termPatterns.reduce((text, [term, re]) =>
-    text.replace(re, (found, plural) => {
-      if (found.length > 2 && found === found.toUpperCase()) return found;
-      const out = term + (plural || "");
-      return out.length === found.length ? out : found;
-    }), piece)).join("");
+  // odd pieces are the {R} symbols the split kept
+  const fixed = input.value.split(/(\{[A-Za-z]\})/).map((piece, i) => (i % 2 ? piece : capitalTerms(piece))).join("");
   if (fixed === input.value) return;
   const [start, end] = [input.selectionStart, input.selectionEnd];
   input.value = fixed;
   input.setSelectionRange(start, end);
+}
+
+// Each term found takes the term's capitals. A match typed all in capitals (three letters or more) stays, and so does
+// one the term would make longer or shorter: the caret is kept by place.
+function capitalTerms(text) {
+  return termPatterns.reduce((out, [term, re]) => out.replace(re, (found, plural) => {
+    if (found.length > 2 && found === found.toUpperCase()) return found;
+    const fixed = term + (plural || "");
+    return fixed.length === found.length ? fixed : found;
+  }), text);
 }
 
 // "Suggest wording": Claude rewrites an effect in printed-card wording (server /api/suggest: the server's
@@ -564,14 +571,10 @@ async function loadCard(id) {
 }
 
 function fillForm() {
-  const { layout, name, id, gen9 } = state.current;
+  const { layout, name, id } = state.current;
   const card = state.edits[id];
   $("editor").hidden = false;
-  $("layoutBadge").textContent = { ex: "→ Scarlet & Violet ex", me: "→ Mega Evolution", modern: "edited in place",
-    energy: card.frame === "print" ? "Energy, kept as printed"
-      : card.energy === "basic" ? "→ Mega Evolution Basic Energy" : "→ Mega Evolution Special Energy",
-    trainer: state.current.ace ? "ACE SPEC, name, text and illustrator edited in place"
-      : gen9 ? "Trainer, set again" : "→ Scarlet & Violet Trainer" }[layout];
+  $("layoutBadge").textContent = layoutBadge(state.current, card);
   $("cardTitle").textContent = `${id} · ${name}`;
   showFor(layout);
   for (const k of ["prefix", "name", "hp", "evolves_from", "portrait", "illustrator", "flavor", "character", "effect"]) $(k).value = card[k] ?? "";
@@ -596,6 +599,19 @@ function fillForm() {
     drawBlocks();
   }
   drawChanges();
+}
+
+// What the editor makes of the card loaded (/api/card's answer) with its edits.
+function layoutBadge({ layout, gen9, ace }, card) {
+  if (layout === "energy") {
+    if (card.frame === "print") return "Energy, kept as printed";
+    return card.energy === "basic" ? "→ Mega Evolution Basic Energy" : "→ Mega Evolution Special Energy";
+  }
+  if (layout === "trainer") {
+    if (ace) return "ACE SPEC, name, text and illustrator edited in place";
+    return gen9 ? "Trainer, set again" : "→ Scarlet & Violet Trainer";
+  }
+  return { ex: "→ Scarlet & Violet ex", me: "→ Mega Evolution", modern: "edited in place" }[layout];
 }
 
 // A node shows when every data-* layout mark on it holds for the card loaded.
@@ -881,9 +897,17 @@ function setFoil(foil) {
 function drawFoilInfo(problem) {
   const foil = state.foilInfo;
   const on = $("foilOn").checked;
-  $("foilBadge").textContent = !on ? "" : !foil ? "not rendered" : foil.base || foil.reverse ? "on" : "no foil";
-  $("foilInfo").textContent = problem || (!on || !foil ? "" : Object.entries(PRINTINGS).map(([k, label]) =>
-    `${label}: ${foil[k] ? SHADERS[shaderName(foil[k].shader)] || shaderName(foil[k].shader) : "none (the old print had none)"}`).join(" · "));
+  $("foilBadge").textContent = foilBadge(on, foil);
+  const shader = (printing) => (printing ? SHADERS[shaderName(printing.shader)] || shaderName(printing.shader)
+    : "none (the old print had none)");
+  $("foilInfo").textContent = problem || (on && foil
+    ? Object.entries(PRINTINGS).map(([k, label]) => `${label}: ${shader(foil[k])}`).join(" · ") : "");
+}
+
+function foilBadge(on, foil) {
+  if (!on) return "";
+  if (!foil) return "not rendered";
+  return foil.base || foil.reverse ? "on" : "no foil";
 }
 
 // Where the foil catches the light: the pointer over the card, else a slow drift (TCG Live's idle sway).
@@ -936,6 +960,8 @@ const CLIENT = (window.crypto && crypto.randomUUID && crypto.randomUUID()) || Ma
 const sameJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const emptyData = () => ({ version: 1, setName: "", cards: [], edits: {}, options: {}, current: null, foil: false, code: "" });
 const withDefaults = (data) => ({ ...emptyData(), ...(data || {}) });
+// The fields a patch carries whole (the server's apply_patch takes the same): a field left out here is never saved.
+const PATCH_FIELDS = ["setName", "foil", "current", "code"];
 
 function projectData() {
   return { version: 1, setName: $("setName").textContent, cards: state.setCards, edits: state.edits,
@@ -966,7 +992,7 @@ function diffData(local, base) {
     }
     if (Object.keys(out).length) patch[key] = out;
   }
-  for (const k of ["setName", "foil", "current"]) if (local[k] !== base[k]) patch[k] = local[k];
+  for (const k of PATCH_FIELDS) if (local[k] !== base[k]) patch[k] = local[k];
   return Object.keys(patch).length ? structuredClone(patch) : null;
 }
 
@@ -989,7 +1015,7 @@ function applyPatch(data, patch) {
       else out[key][id] = key === "edits" ? { ...(out[key][id] || {}), ...v } : v;
     }
   }
-  for (const k of ["setName", "foil", "current"]) if (k in patch) out[k] = patch[k];
+  for (const k of PATCH_FIELDS) if (k in patch) out[k] = patch[k];
   return out;
 }
 
@@ -1046,13 +1072,17 @@ function opened(name, data, rev) {
   listen();
 }
 
-// One patch at a time, so the server takes them in the order they were made.
+// ms before a failed save is tried again, the longer the more it fails in a row (offline, the server restarting).
+const SAVE_RETRY = [1000, 3000, 10000, 30000];
+
+// One patch at a time, so the server takes them in the order they were made. -> null, or the error of a save that
+// failed (its change stays unsent: it goes with the next one).
 async function pushChanges() {
   state.saveTimer = null;
-  if (state.sending) { state.pushAgain = true; return; }
+  if (state.sending) { state.saveAgain = true; return null; }
   const first = !state.project;
   const patch = diffData(projectData(), first ? emptyData() : state.synced);
-  if (!patch) return;
+  if (!patch) return null;
   state.sending = true;                                      // from here: changes meanwhile wait for this one
   if (first) { state.project = await freshName(); state.autoNamed = true; state.synced = emptyData(); }
   const before = state.synced;
@@ -1062,16 +1092,25 @@ async function pushChanges() {
     state.rev = Math.max(state.rev, out.rev);
     $("saved").textContent = `Saved “${out.name}” ${out.saved.slice(11, 16)}`;
     if (first) { opened(out.name, state.synced, state.rev); refreshProjects(out.name); }
+    state.saveFails = 0;
+    return null;
   } catch (e) {
     state.synced = before;                                   // still to send: with the next change, or soon
     if (first) { state.project = null; state.autoNamed = false; }
     clearTimeout(state.saveTimer);
-    state.saveTimer = setTimeout(pushChanges, 3000);
+    // Network trouble (no status) or a server error may pass: try again. A 4xx is the same on every try: the next
+    // edit sends the change again.
+    if (!e.status || e.status >= 500) {
+      state.saveTimer = setTimeout(pushChanges, SAVE_RETRY[Math.min(state.saveFails, SAVE_RETRY.length - 1)]);
+      state.saveFails += 1;
+    }
     showError(`Save failed: ${e.message}`);
+    $("saved").textContent = `Not saved: ${e.message}`;     // stays after a render clears the error box
+    return e;
   } finally {
     state.sending = false;
     if (state.resyncAfter) { state.resyncAfter = false; resync(); }
-    if (state.pushAgain) { state.pushAgain = false; autosave(); }
+    if (state.saveAgain) { state.saveAgain = false; autosave(); }
   }
 }
 
@@ -1130,9 +1169,9 @@ async function newProject() {
   clearTimeout(state.saveTimer);
   state.saveTimer = null;
   while (state.sending) await new Promise((done) => setTimeout(done, 50));
-  await pushChanges();
-  if (state.saveTimer) {                                     // pushChanges failed and will try again: keep the page
-    showError("The project open could not be saved, so it stays on the page; try New again in a moment.");
+  const failed = await pushChanges();
+  if (failed) {                                              // its change is still unsent: keep the page
+    showError(`The project open could not be saved (${failed.message}), so it stays on the page; try New again once it saves.`);
     return;
   }
   clearTimeout(state.renderTimer);
@@ -1340,6 +1379,7 @@ function adopt(data) {
   }
   state.setCards = data.cards;
   if (data.setName) $("setName").textContent = data.setName;
+  if ($("setCode").value !== (data.code || "")) $("setCode").value = data.code || "";
   for (const id of touched) {
     state.rendered.delete(id);
     if (id !== open) delete state.changes[id];
@@ -1498,7 +1538,7 @@ async function cancelSetJob() {
   const job = setJob;
   if (!job) return;
   $("cancelSetBtn").disabled = true;
-  state.pushAgain = false;                                   // a send queued behind this one is cancelled with it
+  state.sendQueue = [];                                      // the sends queued behind this one are cancelled with it
   try { await api("/api/set-job/cancel", { job: job.id }); }
   catch (e) { $("cancelSetBtn").disabled = false; showError(`Cancel: ${e.message}`); }
 }
@@ -1512,18 +1552,31 @@ function dropsConfirmed(e, verb, quiet) {
   return false;
 }
 
+// A send or publish asked for while one runs waits its turn with what it was asked to send (Push all's list, or the
+// page's as it is when it goes). A second ask for the same list joins the one waiting; Shift's "render every card"
+// and an answered "remove cards" stick.
+function queueSend(kind, options) {
+  const same = state.sendQueue.find((q) => q.kind === kind && q.options.set === options.set);
+  if (!same) { state.sendQueue.push({ kind, options }); return; }
+  same.options = { ...options, force: same.options.force || options.force,
+                   allowShrink: same.options.allowShrink || options.allowShrink };
+}
+
+// The next queued that can go: one whose list is gone (no set code now, no cards) is dropped.
 function runQueuedPush() {
-  if (!state.pushAgain) return;
-  const again = state.pushAgain;
-  state.pushAgain = false;
-  pushSimSet({ force: again === "force", quiet: true });
+  while (state.sendQueue.length && !state.pushing && !state.publishing) {
+    const { kind, options } = state.sendQueue.shift();
+    if (kind === "publish") publishSiteSet(options);
+    else pushSimSet({ ...options, quiet: true });             // starts at once (sets state.pushing) or returns
+  }
 }
 
 // "Publish to site": the set sent to ptcg-sim as below, then uploaded to the site's bucket by the simulator's
 // publish script; the site polls the bucket and picks it up within about 10 s.
 async function publishSiteSet({ force = false, allowShrink = false, set = null } = {}) {
   const { items, title, code } = set || currentSet();
-  if (!state.meta.ptcgSite || !SET_CODE.test(code) || !items.length || state.pushing || state.publishing) return;
+  if (!state.meta.ptcgSite || !SET_CODE.test(code) || !items.length) return;
+  if (state.pushing || state.publishing) { queueSend("publish", { force, allowShrink, set }); return; }
   state.publishing = true;
   drawExportButton();
   let again = false;
@@ -1583,7 +1636,7 @@ async function unlockPush() {
 async function pushSimSet({ force = false, quiet = false, allowShrink = false, set = null } = {}) {
   const { items, title, code } = set || currentSet();
   if (!state.meta.ptcgSim || !SET_CODE.test(code) || !items.length) return;
-  if (state.pushing || state.publishing) { state.pushAgain = state.pushAgain === "force" || force ? "force" : true; return; }
+  if (state.pushing || state.publishing) { queueSend("push", { force, allowShrink, set }); return; }
   state.pushing = true;
   drawExportButton();
   let again = false;
@@ -1595,13 +1648,18 @@ async function pushSimSet({ force = false, quiet = false, allowShrink = false, s
       const r = job.result;
       const rendered = r.rendered ? `${r.rendered} card${r.rendered === 1 ? "" : "s"} rendered, ` : "";
       const removed = r.removed.length ? `, ${r.removed.length} removed` : "";
-      status(r.written.length ? `Sent ${code}${set && set.summary ? ` (${set.summary})` : ""} to ptcg-sim: ${rendered}${r.written.length} file${r.written.length === 1 ? "" : "s"} updated${removed}.`
+      const files = `${r.written.length} file${r.written.length === 1 ? "" : "s"}`;
+      const summary = set && set.summary ? ` (${set.summary})` : "";
+      status(r.written.length ? `Sent ${code}${summary} to ptcg-sim: ${rendered}${files} updated${removed}.`
         : `ptcg-sim already has ${code} as it is.`);
       if (!quiet) setTimeout(() => { if ($("status").textContent.startsWith("Sent ")) status(""); }, 6000);
     }
   } catch (e) {
     status("");
-    if (e.data && e.data.drops) { state.pushAgain = false; again = dropsConfirmed(e, "Send to ptcg-sim", quiet); }
+    if (e.data && e.data.drops) {                            // the same list queued would be refused the same way
+      state.sendQueue = state.sendQueue.filter((q) => q.kind !== "push" || q.options.set !== set);
+      again = dropsConfirmed(e, "Send to ptcg-sim", quiet);
+    }
     else showError(`Send to ptcg-sim: ${e.message}`);
   } finally {
     state.pushing = false;
@@ -1653,6 +1711,11 @@ function drawPushPlan(error = "") {
     + "project. They stay in the set as they are."));
   if (plan.moved) notes.push(el("div", { class: "msg warn" }, `${cardCount(plan.moved)} get another number in the set: a deck that `
     + "names them by number would find other cards."));
+  if (plan.unreadable && plan.unreadable.length) notes.push(el("div", { class: "msg err" },
+    `${plan.unreadable.length === 1 ? "1 project" : `${plan.unreadable.length} projects`} could not be read, so `
+    + `${plan.unreadable.length === 1 ? "its" : "their"} cards are not in this push:\n`
+    + plan.unreadable.map((u) => `${u.name}: ${u.why}`).join("\n")));
+  if (plan.notes && plan.notes.length) notes.push(el("div", { class: "msg warn" }, `Left off:\n${plan.notes.join("\n")}`));
   $("pushAllList").replaceChildren(...notes, ...planGroup("New", plan.added, "new"), ...planGroup("Changed", plan.changed, "changed"),
     ...planGroup("Removed", plan.removed, "gone"),
     ...(changes ? [] : [el("div", { class: "none" }, plan.existing === null ? "Nothing to push." : `ptcg-sim already has all ${cardCount(plan.incoming)} as they are.`)]));
@@ -1957,7 +2020,13 @@ async function downloadAllProjects() {
     const a = el("a", { href: `/api/projects/merged/file?job=${job.id}`, download: "all-projects.zip" });
     document.body.append(a); a.click(); a.remove();
     status(`All projects downloaded (${what}).`);
-    if (job.failed.length) showError(`Not in the zip (${job.failed.length}):\n${job.failed.map((f) => `${f.id}: ${f.why}`).join("\n")}`);
+    const missing = [
+      ...(job.failed.length ? [`Not in the zip (${job.failed.length}):\n${job.failed.map((f) => `${f.id}: ${f.why}`).join("\n")}`] : []),
+      ...(job.unreadable && job.unreadable.length ? [`Projects that could not be read (${job.unreadable.length}), their cards not in the zip:\n`
+        + job.unreadable.map((u) => `${u.name}: ${u.why}`).join("\n")] : []),
+      ...(job.notes && job.notes.length ? [`Left off:\n${job.notes.join("\n")}`] : []),
+    ];
+    if (missing.length) showError(missing.join("\n\n"));
   } catch (e) { status(""); showError(e.message); }
   finally {
     mergeJob = null;

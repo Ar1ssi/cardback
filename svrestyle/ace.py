@@ -18,7 +18,7 @@ import hashlib
 import cv2
 import numpy as np
 
-from . import aceframe, cache, compose, inpaint, layers, tcg, trainer, trainerframe
+from . import aceframe, cache, compose, inpaint, layers, tcg, trainer
 from . import typeset as ts
 from .imaging import dilate, load_rgba, save_rgba
 
@@ -146,12 +146,7 @@ def convert_card(card_id, card):
     trainer.warn_missing_glyphs(card)
     template = aceframe.template(card["kind"])
     art = trainer.old_art(card)
-    a = template[..., 3:4] / 255
-    canvas = np.zeros((H, W, 4), np.float32)
-    canvas[..., :3] = art[..., :3] * (1 - a) + template[..., :3] * a
-    canvas[..., 3] = trainerframe.corners()
-    with layers.kind("frame"):
-        layers.record(a[..., 0])
+    canvas = trainer.over_art(template, art, template[..., 3:4] / 255)
     xscale = trainer.name_and_character(canvas, card, compose.WHITE)
     scale = _text(canvas, card, CONVERT_TEXT_DY)
     compose.footer(canvas, card, True, rarity=card["rarity"], shift=trainer.FOOTER_SHIFT, keyline=False,

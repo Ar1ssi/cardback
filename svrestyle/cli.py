@@ -22,8 +22,8 @@ import sys
 import warnings
 from pathlib import Path
 
-from . import (badges, cache, energy, fairy, foil, frame, inpaint, layers, lifted, megaretype, megarule, meframe,
-               oldwindow, refs, swsh, tcg, trainer, trainerframe)
+from . import (badges, cache, energy, export, fairy, foil, frame, inpaint, layers, lifted, megaretype, megarule,
+               meframe, oldwindow, refs, swsh, tcg, trainer, trainerframe)
 from . import typeset as ts
 from .imaging import save_rgba
 
@@ -70,21 +70,9 @@ def cmd_prepare(a):
     print("print glyphs lifted for:", ", ".join(kinds) or "none (set in Gill Sans)")
 
 
-def is_v(card_id):
-    return tcg.card(card_id).get("name", "").endswith(" V")
-
-
-def is_trainer(card_id):
-    return tcg.card(card_id).get("category") == "Trainer"
-
-
 def file_slug(name):
     """'Type: Null' -> 'type-null': a colon would name an NTFS stream, not a file."""
     return re.sub(r"[^\w-]+", "-", name.strip().lower()).strip("-")
-
-
-def is_energy(card_id):
-    return tcg.card(card_id).get("category") == "Energy"
 
 
 def render_energy(card_id, out, want_foil=False):
@@ -113,19 +101,15 @@ def render_trainer(card_id, out, want_foil=False):
     save_rgba(img, path)
     foil_path = None
     if want_foil:
-        if card.get("ace"):
-            built = foil.build_ace(card_id, card, img, drawn, trainer.read_card(card_id))
-        elif card.get("ace_convert"):
-            built = foil.build_ace_convert(card, img, drawn)
-        else:
-            built = foil.build_trainer(card_id, card, img, drawn)
+        from . import rendering
+        built = rendering.trainer_foil(card_id, card, img, drawn, card)      # card: as read, nothing is edited here
         if built["base"] or built["reverse"]:
             foil_path = foil.save(built, out, stem, card_id)
     return path, foil_path
 
 
 def cmd_card(a):
-    from . import mecompose
+    from . import mecompose, rendering
     from .compose import Options, compose
     fonts_dir(a.fonts)
     out = Path(a.out)
@@ -135,25 +119,18 @@ def cmd_card(a):
     failed = 0
     for card_id in a.ids:
         try:
-            if is_energy(card_id):
+            layout = rendering.layout_for(card_id, tcg.card(card_id))
+            if layout in ("energy", "trainer"):
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
-                    path, foil_path = render_energy(card_id, out, a.foil)
-                notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
-                print(f"{card_id}: {path}" + (f"\n{card_id}: foil {foil_path}" if foil_path else "")
-                      + "".join(f"\n  warning: {n}" for n in notes))
-                continue
-            if is_trainer(card_id):
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    path, foil_path = render_trainer(card_id, out, a.foil)
-                notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
+                    path, foil_path = (render_energy if layout == "energy" else render_trainer)(card_id, out, a.foil)
+                notes = export.warning_notes(caught)
                 print(f"{card_id}: {path}" + (f"\n{card_id}: foil {foil_path}" if foil_path else "")
                       + "".join(f"\n  warning: {n}" for n in notes))
                 continue
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                v = is_v(card_id)
+                v = layout == "ex"            # any other Pokemon ("me", and "modern": no in-place edit here) is set as Mega
                 with layers.recording() as drawn:
                     img, report = compose(card_id, opts) if v else mecompose.compose_card(card_id, opts.attacks)
             c = report["card"]
@@ -170,7 +147,7 @@ def cmd_card(a):
                 save_rgba(swsh.overlay(scan, mask), out / f"{stem}-mask.png")
                 (out / f"{stem}-report.json").write_text(json.dumps({**report, "art_detection": det}, default=str,
                                                                    indent=1, ensure_ascii=False))
-            notes = [str(w.message) for w in caught if "torch.jit" not in str(w.message)]
+            notes = export.warning_notes(caught)
             print(f"{card_id}: {path}" + "".join(f"\n  warning: {n}" for n in notes))
         except (SystemExit, ValueError, cache.DownloadError) as e:
             failed += 1

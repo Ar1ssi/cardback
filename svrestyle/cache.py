@@ -1,8 +1,10 @@
 """Download cache. Everything fetched or built lives under SVRESTYLE_CACHE (default ~/.cache/svrestyle), so card
 scans, the LaMa model and the built frame assets are never committed."""
+import functools
 import hashlib
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +19,21 @@ SOURCE = "tcglive" if os.environ.get("SVRESTYLE_TCGLIVE") else ""
 
 class DownloadError(RuntimeError):
     pass
+
+
+# One lock for every built asset, not one a module: the builders call across modules (megaretype's into fairy's), and
+# a single re-entrant lock leaves no lock order to get wrong. A built asset is read from lru_cache or its file after.
+_build = threading.RLock()
+
+
+def locked(build):
+    """An asset builder that runs one call at a time with every other one: the GUI serves requests on threads, and two
+    first calls would both write its file while the other reads it (they call one another: the lock is re-entrant)."""
+    @functools.wraps(build)
+    def run(*args, **kwargs):
+        with _build:
+            return build(*args, **kwargs)
+    return run
 
 
 def path(*parts):
