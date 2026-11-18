@@ -17,7 +17,9 @@ const DEG = Math.PI / 180;
 
 let dataPromise = null;
 
-/** shaders.json + materials.json, fetched once. */
+/** shaders.json + materials.json, fetched once. They are the extract's as it has them (gui.py only points texture
+ * URLs at itself): shaders.json without `linear` is a gamma-space translation, materials.json without `textures`
+ * has none to bind (gui.foil_materials reads it the same way). */
 function loadFoilData() {
   if (dataPromise) return dataPromise;
   const get = (file) => fetch(`/api/foil/${file}`).then((res) => {
@@ -68,20 +70,22 @@ const PLAIN = { white: plainTexture(255, 255, 255), gray: plainTexture(128, 128,
 const toLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
 
 // ---------------------------------------------------------------- material
-/** RawShaderMaterial for one printing: {front, shader, material, cc, textures: {wp, etch, cf}} (URLs or null). */
-function createFoilMaterial(data, printing) {
-  const sh = data.shaders[printing.shader];
-  if (!sh) throw new Error(`foil shader ${printing.shader} not in the extract`);
-  const mat = data.materials[printing.material]
+// The printing's material, else one of its shader's: the material name comes from the card's manifest
+// (foil.material_name) and the extract may lack it, while the shader's other materials draw it close enough. A
+// missing shader cannot be drawn at all, so it throws (createFoilMaterial).
+function materialFor(data, printing) {
+  return data.materials[printing.material]
     ?? Object.values(data.materials).find((m) => m.shader === printing.shader) ?? { tex: {}, floats: {}, colors: {} };
+}
 
-  // property values: shader defaults <- material <- the client's big-card view settings
+/** Property values: shader defaults <- material <- the client's big-card view settings. */
+function propertyValues(sh, mat, printing, linear) {
   const vals = {};
   for (const [name, prop] of Object.entries(sh.props)) {
     vals[name] = prop.type === "vec" ? prop.default.slice() : prop.type === "float" ? prop.default : null;
   }
   Object.assign(vals, mat.floats ?? {}, mat.colors ?? {});
-  if (data.linear) {            // Unity hands Color properties (not Vectors) to the shader converted from sRGB
+  if (linear) {                 // Unity hands Color properties (not Vectors) to the shader converted from sRGB
     for (const [name, prop] of Object.entries(sh.props)) {
       const v = vals[name];
       if (prop.color && Array.isArray(v)) vals[name] = [toLinear(v[0]), toLinear(v[1]), toLinear(v[2]), v[3]];
@@ -93,7 +97,14 @@ function createFoilMaterial(data, printing) {
   });
   const light = vals._LightDirection;            // Unity is left-handed (cards face -Z): mirror the light's z
   vals._LightDirection = [light[0], light[1], -light[2], light[3] ?? 0];
+  return vals;
+}
 
+/**
+ * The texture each sampler property gets -> {textureFor(prop), cardTextures (the view's own, disposed with it),
+ * waits (load promises)}.
+ */
+function textureBinder(data, sh, mat, printing) {
   const cardTextures = [];
   const waits = [];
   const cardTexture = (url, fallback) => {
@@ -132,12 +143,11 @@ function createFoilMaterial(data, printing) {
     const fromMaterial = bound ? materialTexture(bound) : null;
     return fromMaterial ?? unbound(prop);
   };
-  const scaleOffset = (prop) => {
-    const t = mat.tex?.[prop];
-    return t ? [t.scale[0], t.scale[1], t.offset[0], t.offset[1]] : [1, 1, 0, 0];
-  };
+  return { textureFor, cardTextures, waits };
+}
 
-  // constant buffers
+/** The shader's constant buffers as vec4 array uniforms -> {uniforms, buffers: [{arr, cb: {buffer, params}}]}. */
+function constantBuffers(sh) {
   const uniforms = {};
   const buffers = [];
   for (const [stage, cbs] of [["v", sh.vsCB], ["f", sh.fsCB]]) {
@@ -161,12 +171,23 @@ function createFoilMaterial(data, printing) {
       buffers.push({ arr, cb: { buffer, params: [] } });
     }
   }
-  const put = (arr, offset, values) => {
-    for (let i = 0; i < values.length; i += 1) {
-      const o = offset / 4 + i;
-      const v = arr[o >> 2];
-      if (v) v.setComponent(o & 3, values[i]);
-    }
+  return { uniforms, buffers };
+}
+
+/** Write values (floats) at a byte offset of a vec4 array, the way a constant buffer lays them out. */
+function put(arr, offset, values) {
+  for (let i = 0; i < values.length; i += 1) {
+    const o = offset / 4 + i;
+    const v = arr[o >> 2];
+    if (v) v.setComponent(o & 3, values[i]);
+  }
+}
+
+/** $Globals from the property values; *_ST is a texture's scale and offset in the material. */
+function fillGlobals(buffers, vals, mat) {
+  const scaleOffset = (prop) => {
+    const t = mat.tex?.[prop];
+    return t ? [t.scale[0], t.scale[1], t.offset[0], t.offset[1]] : [1, 1, 0, 0];
   };
   for (const { arr, cb } of buffers) {
     if (cb.buffer !== "$Globals") continue;
@@ -176,20 +197,14 @@ function createFoilMaterial(data, printing) {
       put(arr, p.offset, Array.isArray(v) ? v.slice(0, p.dim) : [v]);
     }
   }
-  for (const [slot, name] of Object.entries(sh.fsTex)) uniforms[`t${slot}`] = { value: textureFor(name) };
+}
 
-  const strip = (src) => src.replace(/^#version 300 es\s*/, "");
-  const material = new THREE.RawShaderMaterial({
-    vertexShader: strip(sh.vs), fragmentShader: strip(sh.fs), uniforms, glslVersion: THREE.GLSL3,
-    side: THREE.FrontSide, depthWrite: true, transparent: false,
-  });
-  material.ready = Promise.all(waits);
-  material.ready.catch(() => {});
-
+/** -> update(mesh, camera, t, rasterVP): Unity's builtin buffers (fixed layout) and named builtins, per frame. */
+function builtinUpdater(buffers) {
   const rasterMatrix = new THREE.Matrix4();
   const inv = new THREE.Matrix4();
   const camPos = new THREE.Vector3();
-  material.update = (mesh, camera, t, rasterVP) => {
+  return (mesh, camera, t, rasterVP) => {
     mesh.updateMatrixWorld();
     camera.updateMatrixWorld();
     rasterMatrix.fromArray(rasterVP);
@@ -198,7 +213,7 @@ function createFoilMaterial(data, printing) {
     const time = [t / 20, t, t * 2, t * 3];
     const sinTime = [Math.sin(t / 8), Math.sin(t / 4), Math.sin(t / 2), Math.sin(t)];
     const cosTime = [Math.cos(t / 8), Math.cos(t / 4), Math.cos(t / 2), Math.cos(t)];
-    for (const { arr, cb } of buffers) {          // Unity's builtin buffers have a fixed layout
+    for (const { arr, cb } of buffers) {
       if (cb.buffer === "UnityPerCamera") {
         put(arr, 0, time);
         put(arr, 16, sinTime);
@@ -230,6 +245,27 @@ function createFoilMaterial(data, printing) {
       for (const p of cb.params) if (named[p.name]) put(arr, p.offset, named[p.name]);
     }
   };
+}
+
+/** RawShaderMaterial for one printing: {front, shader, material, cc, textures: {wp, etch, cf}} (URLs or null). */
+function createFoilMaterial(data, printing) {
+  const sh = data.shaders[printing.shader];
+  if (!sh) throw new Error(`foil shader ${printing.shader} not in the extract`);
+  const mat = materialFor(data, printing);
+  const vals = propertyValues(sh, mat, printing, data.linear);
+  const { textureFor, cardTextures, waits } = textureBinder(data, sh, mat, printing);
+  const { uniforms, buffers } = constantBuffers(sh);
+  fillGlobals(buffers, vals, mat);
+  for (const [slot, name] of Object.entries(sh.fsTex)) uniforms[`t${slot}`] = { value: textureFor(name) };
+
+  const strip = (src) => src.replace(/^#version 300 es\s*/, "");
+  const material = new THREE.RawShaderMaterial({
+    vertexShader: strip(sh.vs), fragmentShader: strip(sh.fs), uniforms, glslVersion: THREE.GLSL3,
+    side: THREE.FrontSide, depthWrite: true, transparent: false,
+  });
+  material.ready = Promise.all(waits);
+  material.ready.catch(() => {});
+  material.update = builtinUpdater(buffers);
   material.release = () => {
     material.dispose();
     for (const texture of cardTextures) texture.dispose();
