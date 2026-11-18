@@ -101,15 +101,15 @@ def render_trainer(card_id, out, want_foil=False):
     save_rgba(img, path)
     foil_path = None
     if want_foil:
-        from . import gui
-        built = gui.trainer_foil(card_id, card, img, drawn, card)      # card: as read, nothing is edited here
+        from . import rendering
+        built = rendering.trainer_foil(card_id, card, img, drawn, card)      # card: as read, nothing is edited here
         if built["base"] or built["reverse"]:
             foil_path = foil.save(built, out, stem, card_id)
     return path, foil_path
 
 
 def cmd_card(a):
-    from . import gui, mecompose
+    from . import mecompose, rendering
     from .compose import Options, compose
     fonts_dir(a.fonts)
     out = Path(a.out)
@@ -119,7 +119,7 @@ def cmd_card(a):
     failed = 0
     for card_id in a.ids:
         try:
-            layout = gui.layout_for(card_id, tcg.card(card_id))
+            layout = rendering.layout_for(card_id, tcg.card(card_id))
             if layout in ("energy", "trainer"):
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")

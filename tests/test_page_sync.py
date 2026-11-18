@@ -8,7 +8,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from svrestyle import gui
+from svrestyle import gui, projects
 
 PAGE = (Path(gui.__file__).with_name("gui.html")).read_text(encoding="utf-8")
 SCRIPT = PAGE[PAGE.index('<script>\n"use strict";'):]
@@ -59,7 +59,7 @@ class PageSync(unittest.TestCase):
         self.assertEqual(sorted(out["fields"]), sorted(out["PATCH_FIELDS"]), "projectData's fields, all patched")
         self.assertEqual(out["patch"], {"setName": "S", "foil": True, "current": "a", "code": "HBW"})
         self.assertEqual(out["applied"]["code"], "HBW")
-        server = gui.apply_patch({"version": 1, "cards": []}, out["patch"])
+        server = projects.apply_patch({"version": 1, "cards": []}, out["patch"])
         self.assertEqual({k: server[k] for k in out["PATCH_FIELDS"]}, {k: out["applied"][k] for k in out["PATCH_FIELDS"]})
 
 

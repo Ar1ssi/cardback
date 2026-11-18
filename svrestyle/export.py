@@ -277,7 +277,7 @@ def build_set(items, title, code, *, read, render, apply, changelog, today=None,
               cancelled=None, is_ace=None):
     """-> (set id, {path in the set folder: bytes}, {"rendered": n, "reused": n}): set.json, the cards' WebPs and
     CHANGELOG.md. items: [{id, edits?, style?, attacks?, foil?}] in set order (the first is card 001).
-    read / render / apply / changelog: gui.read, gui.render, edit.apply, gui.changelog (passed in: no import cycle).
+    read / render / apply / changelog: rendering.read, rendering.render, edit.apply, rendering.changelog (passed in: no import cycle).
     reuse(item) -> (record, high webp, low webp, foil) | None: a card exported before with the same options, kept
     instead of rendered and numbered for its place in this list (foil: foil_from_holo's shape, None without holofoil).
     A card flagged for holofoil also gets its foil textures under foil/ and a row in foil.json.
@@ -368,7 +368,7 @@ def _foil_webp(png, kind):
 
 
 def foil_from_holo(holo):
-    """What a set keeps of a render's holofoil. holo: gui.Render's holo (gui.Holo: record, the foil.json record;
+    """What a set keeps of a render's holofoil. holo: rendering.Render's holo (rendering.Holo: record, the foil.json record;
     files, {file name: PNG bytes}) or None. -> {tcgl, shader, material, cc, textures: {kind: WebP bytes}}: the base printing when TCG
     Live foils the card, else its reverse holo's (the choice import-foil.py makes). None when there is no foil, or
     the record names a texture the render did not write."""
@@ -741,7 +741,7 @@ def is_set_data(data):
 
 def import_set_data(data, entry):
     """A set.json this module wrote -> the editor's list with each card's edits and options restored.
-    entry(card_id, name, supertype) -> the list entry (gui._set_entry). -> {name, code, cards, edits, options}."""
+    entry(card_id, name, supertype) -> the list entry (rendering._set_entry). -> {name, code, cards, edits, options}."""
     if data.get("version") != VERSION:
         raise ValueError(f"custom set version {data.get('version')!r} is not one this editor reads")
     cards, edits, options, seen = [], {}, {}, set()

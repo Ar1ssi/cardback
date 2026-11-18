@@ -10,7 +10,7 @@ from unittest import mock
 
 import numpy as np
 
-from svrestyle import ace, badges, cli, edit, gui, oldwindow, trainer, trainerframe
+from svrestyle import ace, badges, cli, edit, gui, oldwindow, rendering, trainer, trainerframe
 
 
 def tcgdex(**over):
@@ -469,8 +469,8 @@ class EditTrainer(unittest.TestCase):
 class GuiTrainer(unittest.TestCase):
     def test_trainers_get_the_trainer_layout(self):
         with mock.patch.object(gui.tcg, "card", return_value=tcgdex()):
-            self.assertEqual(gui.layout_of("ex1-83"), "trainer")
-        with mock.patch.object(gui, "read", return_value=("trainer", trainer_card())):
+            self.assertEqual(rendering.layout_of("ex1-83"), "trainer")
+        with mock.patch.object(rendering, "read", return_value=("trainer", trainer_card())):
             summary = gui.card_summary("ex1-83")
         self.assertEqual((summary["layout"], summary["type"], summary["card"]["kind"]),
                          ("trainer", "Supporter", "Supporter"))
@@ -478,49 +478,49 @@ class GuiTrainer(unittest.TestCase):
     def test_gen9_trainers_get_the_trainer_layout(self):
         # sv01-166 Arven, TCGdex: category Trainer, trainerType Supporter
         with mock.patch.object(gui.tcg, "card", return_value=tcgdex(id="sv01-166", name="Arven", set={"id": "sv01"})):
-            self.assertEqual(gui.layout_of("sv01-166"), "trainer")
+            self.assertEqual(rendering.layout_of("sv01-166"), "trainer")
         arven = trainer_card(id="sv01-166", name="Arven", era="modern")
-        with mock.patch.object(gui, "read", return_value=("trainer", arven)):
+        with mock.patch.object(rendering, "read", return_value=("trainer", arven)):
             self.assertTrue(gui.card_summary("sv01-166")["gen9"])
-        with mock.patch.object(gui, "read", return_value=("trainer", arven)),                 mock.patch.object(gui.tcg, "card", return_value=tcgdex(id="sv01-166", name="Arven")):
-            self.assertEqual(gui.card_changes("sv01-166"), ("Arven", []))
+        with mock.patch.object(rendering, "read", return_value=("trainer", arven)),                 mock.patch.object(gui.tcg, "card", return_value=tcgdex(id="sv01-166", name="Arven")):
+            self.assertEqual(rendering.card_changes("sv01-166"), ("Arven", []))
 
     def test_gen9_pokemon_keep_the_modern_layout(self):
         with mock.patch.object(gui.tcg, "card", return_value={"id": "sv09-080", "category": "Pokemon", "name": "Larvitar"}):
-            self.assertEqual(gui.layout_of("sv09-080"), "modern")
+            self.assertEqual(rendering.layout_of("sv09-080"), "modern")
 
     def test_a_trainer_has_its_gen_9_reverse_holo_made(self):
-        with mock.patch.object(gui, "read", return_value=("trainer", trainer_card())), \
+        with mock.patch.object(rendering, "read", return_value=("trainer", trainer_card())), \
                 mock.patch.object(gui.tcg, "TCGLIVE", "x"), \
-                mock.patch.object(gui.trainer, "compose_card", return_value=(np.zeros((1024, 733, 4), np.float32), {})), \
-                mock.patch.object(gui.foil, "build_trainer", return_value=None) as build, \
-                mock.patch.object(gui.foil, "build_ace") as ace:
-            gui.render("ex1-83", holo=True)
+                mock.patch.object(rendering.trainer, "compose_card", return_value=(np.zeros((1024, 733, 4), np.float32), {})), \
+                mock.patch.object(rendering.foil, "build_trainer", return_value=None) as build, \
+                mock.patch.object(rendering.foil, "build_ace") as ace:
+            rendering.render("ex1-83", holo=True)
         build.assert_called_once()
         ace.assert_not_called()
 
     def test_ace_spec_holofoil_is_made(self):
         card = ace_card()
-        with mock.patch.object(gui, "read", return_value=("trainer", card)),                 mock.patch.object(gui.tcg, "TCGLIVE", "x"),                 mock.patch.object(gui.trainer, "compose_card", return_value=(np.zeros((1024, 733, 4), np.float32), {})),                 mock.patch.object(gui.foil, "build_ace", return_value=None) as build:
-            gui.render("sv05-154", holo=True)
+        with mock.patch.object(rendering, "read", return_value=("trainer", card)),                 mock.patch.object(gui.tcg, "TCGLIVE", "x"),                 mock.patch.object(rendering.trainer, "compose_card", return_value=(np.zeros((1024, 733, 4), np.float32), {})),                 mock.patch.object(rendering.foil, "build_ace", return_value=None) as build:
+            rendering.render("sv05-154", holo=True)
         build.assert_called_once()
 
     def test_changes_note_the_restyle(self):
-        with mock.patch.object(gui, "read", return_value=("trainer", trainer_card())), \
+        with mock.patch.object(rendering, "read", return_value=("trainer", trainer_card())), \
                 mock.patch.object(gui.tcg, "card", return_value=tcgdex()):
-            name, notes = gui.card_changes("ex1-83", attacks=False)
+            name, notes = rendering.card_changes("ex1-83", attacks=False)
         self.assertEqual((name, notes), ("Lady Outing", ["Restyled as a Scarlet & Violet Trainer"]))
 
     def test_reading_warnings_reach_the_render(self):
         def read(card_id):
             warnings.warn("base1-91: TCGdex gives no Trainer type and its text holds no rule: set as an Item")
             return "trainer", trainer_card(id=card_id)
-        gui._renders.clear()
+        rendering._renders.clear()
         blank = np.zeros((4, 4, 4), np.float32)
-        with mock.patch.object(gui, "read", side_effect=read), \
-                mock.patch.object(gui.trainer, "compose_card", return_value=(blank, {})):
-            _, notes, _, _ = gui.render("base1-91")
-        gui._renders.clear()
+        with mock.patch.object(rendering, "read", side_effect=read), \
+                mock.patch.object(rendering.trainer, "compose_card", return_value=(blank, {})):
+            _, notes, _, _ = rendering.render("base1-91")
+        rendering._renders.clear()
         self.assertTrue(any("no Trainer type" in n for n in notes), notes)
 
 

@@ -10,7 +10,7 @@ from unittest import mock
 
 from PIL import Image
 
-from svrestyle import edit, export, gui
+from svrestyle import edit, export, gui, rendering, setjobs
 
 SET_ID = "customhbw"
 
@@ -42,7 +42,7 @@ def png_bytes(color=(200, 30, 30, 255)):
 
 
 def holo_for(card_id, color=(10, 20, 30, 255), reverse_only=False):
-    """What gui.render returns as its holo for a card with holofoil: gui.Holo(foil.json record, {file name: PNG},
+    """What rendering.render returns as its holo for a card with holofoil: rendering.Holo(foil.json record, {file name: PNG},
     plates, token), shaped as foil.files writes it."""
     stem = f"{card_id}-me"
     printing = {"shader": "TPCi/Cards3D/HoloFoil/SunPillar", "material": "MAT_Cards3D_SunPillar", "wp": f"{stem}-wp.png",
@@ -50,7 +50,7 @@ def holo_for(card_id, color=(10, 20, 30, 255), reverse_only=False):
     record = {"id": card_id, "tcglive": card_id.replace("-", "_"), "front": f"{stem}-front.png",
               "base": None if reverse_only else printing, "reverse": printing if reverse_only else None}
     written = {record["front"]: png_bytes(color), printing["wp"]: png_bytes(color), f"{stem}-foil.json": b"{}"}
-    return gui.Holo(record, written, {}, "token")
+    return rendering.Holo(record, written, {}, "token")
 
 
 class Records(unittest.TestCase):
@@ -119,7 +119,7 @@ class Zip(unittest.TestCase):
     def export(self, items, code="HBW"):
         reads = {"swsh3-88": ("me", pokemon()), "base1-91": ("trainer", trainer())}
         return export.export_zip(items, "Homebrew Wave 1", code, read=lambda i: reads[i],
-                                 render=lambda *a: gui.Render(png_bytes(), [], "me"), apply=edit.apply,
+                                 render=lambda *a: rendering.Render(png_bytes(), [], "me"), apply=edit.apply,
                                  changelog=lambda items, title: f"# {title}", today=datetime.date(2026, 10, 23))
 
     def test_layout_and_set_json(self):
@@ -151,7 +151,7 @@ class Zip(unittest.TestCase):
     def test_a_foil_card_brings_its_textures_and_a_foil_json(self):
         reads = {"swsh3-88": ("me", pokemon())}
         data = export.export_zip([{"id": "swsh3-88", "foil": True}], "Homebrew Wave 1", "HBW", read=lambda i: reads[i],
-                                 render=lambda *a: gui.Render(png_bytes(), [], "me", holo_for("swsh3-88")), apply=edit.apply,
+                                 render=lambda *a: rendering.Render(png_bytes(), [], "me", holo_for("swsh3-88")), apply=edit.apply,
                                  changelog=lambda items, title: f"# {title}", today=datetime.date(2026, 10, 23))
         z = zipfile.ZipFile(io.BytesIO(data))
         self.assertEqual(sorted(n for n in z.namelist() if "foil" in n),
@@ -170,7 +170,7 @@ class Zip(unittest.TestCase):
         self.assertEqual(back["edits"], {"swsh3-88": {"hp": "190"}})
         self.assertEqual(back["options"], {"swsh3-88": {"style": "panel", "attacks": False},
                                            "base1-91": {"style": "hybrid", "attacks": True}})
-        with self.assertRaises(gui.UserError):
+        with self.assertRaises(rendering.UserError):
             gui.import_set({**record, "version": 2})
         # the older Custom Set tab export still imports as before
         with mock.patch.object(gui.modern, "is_modern", return_value=False):
@@ -229,10 +229,10 @@ class Http(unittest.TestCase):
         return status, job
 
     def test_export_set(self):
-        fake = gui.Render(png_bytes(), [], "me")
-        with mock.patch.object(gui, "read", return_value=("me", pokemon())), \
-                mock.patch.object(gui, "render", return_value=fake), \
-                mock.patch.object(gui, "changelog", return_value="# log"):
+        fake = rendering.Render(png_bytes(), [], "me")
+        with mock.patch.object(rendering, "read", return_value=("me", pokemon())), \
+                mock.patch.object(rendering, "render", return_value=fake), \
+                mock.patch.object(rendering, "changelog", return_value="# log"):
             status, ctype, body = self.call("/api/export-set", {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"})
             self.assertEqual((status, ctype), (200, "application/zip"))
             names = zipfile.ZipFile(io.BytesIO(body)).namelist()
@@ -260,11 +260,11 @@ class Http(unittest.TestCase):
         import tempfile
         import urllib.request
         from pathlib import Path
-        fake = gui.Render(png_bytes(), [], "me")
+        fake = rendering.Render(png_bytes(), [], "me")
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(gui, "read", return_value=("me", pokemon())), \
-                mock.patch.object(gui, "render", return_value=fake), \
-                mock.patch.object(gui, "changelog", return_value="# log"):
+                mock.patch.object(rendering, "read", return_value=("me", pokemon())), \
+                mock.patch.object(rendering, "render", return_value=fake), \
+                mock.patch.object(rendering, "changelog", return_value="# log"):
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": ""}):
                 status, _, body = self.call("/api/push-set", {"items": [{"id": "swsh3-88"}], "code": "HBW"})
                 self.assertEqual(status, 400)
@@ -296,7 +296,7 @@ class Http(unittest.TestCase):
         import tempfile
         import urllib.request
         from pathlib import Path
-        fake = gui.Render(png_bytes(), [], "me")
+        fake = rendering.Render(png_bytes(), [], "me")
         key = "k" * gui.MIN_PUBLISH_KEY
         body = json.dumps({"items": [{"id": "swsh3-88"}], "code": "HBW"}).encode()
         tunnel = {"Host": "abc.trycloudflare.com", "Cf-Connecting-Ip": "203.0.113.9", "Origin": "https://abc.trycloudflare.com"}
@@ -309,9 +309,9 @@ class Http(unittest.TestCase):
             return self.job("/api/push-set", json.loads(body), headers)[0]
 
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(gui, "read", return_value=("me", pokemon())), \
-                mock.patch.object(gui, "render", return_value=fake), \
-                mock.patch.object(gui, "changelog", return_value="# log"):
+                mock.patch.object(rendering, "read", return_value=("me", pokemon())), \
+                mock.patch.object(rendering, "render", return_value=fake), \
+                mock.patch.object(rendering, "changelog", return_value="# log"):
             (Path(tmp) / "client" / "src").mkdir(parents=True)
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "SVRESTYLE_PUBLISH_TOKEN": key}):
                 self.assertEqual((get_meta(tunnel)["ptcgSim"], get_meta(tunnel)["publishKey"]), (False, True))
@@ -338,7 +338,7 @@ class Http(unittest.TestCase):
         import tempfile
         import urllib.request
         from pathlib import Path
-        fake = gui.Render(png_bytes(), [], "me")
+        fake = rendering.Render(png_bytes(), [], "me")
         # stands in for the simulator's scripts/custom-sets/publish.mjs: echoes its arguments in the --json report
         script = ("const args = process.argv.slice(2);\n"
                   "if (process.env.FAKE_PUBLISH_FAIL) { console.error('rclone copy blobs failed: AccessDenied'); "
@@ -356,16 +356,16 @@ class Http(unittest.TestCase):
         meta = lambda: json.loads(urllib.request.urlopen(self.base + "/api/meta", timeout=10).read())["ptcgSite"]
         items = {"items": [{"id": "swsh3-88"}], "title": "T", "code": "HBW"}
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(gui, "read", return_value=("me", pokemon())), \
-                mock.patch.object(gui, "render", return_value=fake), \
-                mock.patch.object(gui, "changelog", return_value="# log"):
+                mock.patch.object(rendering, "read", return_value=("me", pokemon())), \
+                mock.patch.object(rendering, "render", return_value=fake), \
+                mock.patch.object(rendering, "changelog", return_value="# log"):
             (Path(tmp) / "client" / "src").mkdir(parents=True)
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "CUSTOM_SETS_R2_REMOTE": "r2:bucket/sets"}):
                 self.assertFalse(meta(), "no publish script in the checkout")
                 status, _, body = self.call("/api/publish-set", items)
                 self.assertEqual(status, 400)
                 self.assertIn("publish.mjs", json.loads(body)["error"])
-                publish = Path(tmp, *gui.PUBLISH_SCRIPT)
+                publish = Path(tmp, *setjobs.PUBLISH_SCRIPT)
                 publish.parent.mkdir(parents=True)
                 publish.write_text(script, encoding="utf-8")
                 self.assertTrue(meta())
@@ -387,7 +387,7 @@ class Http(unittest.TestCase):
                 self.assertEqual(failed["state"], "failed")
                 self.assertIn("gave no report: 'done, no json'", failed["error"])
                 marker = Path(tmp, "child-outlived-the-kill")
-                with mock.patch.dict("os.environ", {"FAKE_PUBLISH_HANG": str(marker)}),                         mock.patch.object(gui, "PUBLISH_TIMEOUT", 1):
+                with mock.patch.dict("os.environ", {"FAKE_PUBLISH_HANG": str(marker)}),                         mock.patch.object(setjobs, "PUBLISH_TIMEOUT", 1):
                     status, failed = self.job("/api/publish-set", items)
                 self.assertEqual(failed["state"], "failed")
                 self.assertIn("stopped it", failed["error"])
@@ -404,7 +404,7 @@ class Http(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn("CUSTOM_SETS_R2_REMOTE", json.loads(body)["error"])
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp, "CUSTOM_SETS_R2_REMOTE": "r2:bucket/sets"}), \
-                    mock.patch.object(gui.shutil, "which", return_value=None):
+                    mock.patch.object(setjobs.shutil, "which", return_value=None):
                 status, _, body = self.call("/api/publish-set", items)
                 self.assertEqual(status, 400)
                 self.assertIn("node not found", json.loads(body)["error"])
@@ -419,13 +419,13 @@ class SimFolder(unittest.TestCase):
             sets = Path(tmp, "client", "src", "assets", "custom-sets")
             for value, want in (("", None), (str(Path(tmp, "missing")), None), (tmp, None)):
                 with self.subTest(value=value), mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": value}):
-                    self.assertEqual(gui.sim_sets_dir(), want)
+                    self.assertEqual(setjobs.sim_sets_dir(), want)
             Path(tmp, "client", "src").mkdir(parents=True)
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": tmp}):
-                self.assertEqual(gui.sim_sets_dir(), sets)     # made by the first push, not here
+                self.assertEqual(setjobs.sim_sets_dir(), sets)     # made by the first push, not here
             sets.mkdir(parents=True)
             with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": str(sets)}):
-                self.assertEqual(gui.sim_sets_dir(), sets)
+                self.assertEqual(setjobs.sim_sets_dir(), sets)
 
 
 class Push(unittest.TestCase):
@@ -451,7 +451,7 @@ class Push(unittest.TestCase):
         def render(card_id, edits=None, style="hybrid", attacks=True, foil=False):
             self.renders.append(card_id)
             holo = holo_for(card_id, self.COLORS[card_id]) if foil and self.makes_foil else None
-            return gui.Render(png_bytes(self.COLORS[card_id]), [], "me", holo)
+            return rendering.Render(png_bytes(self.COLORS[card_id]), [], "me", holo)
         return export.write_set_dir(items, title, "HBW", self.root, read=lambda i: reads[i], render=render,
                                     apply=edit.apply, changelog=lambda items, title: f"# {title}", force=force,
                                     today=datetime.date(2026, 10, 25), **extra)

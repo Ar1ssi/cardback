@@ -1,5 +1,5 @@
-"""Push all: every saved project merged into one set, and what pushing it would change (gui.push_all_plan,
-/api/push-plan, gui.keep_numbers). TCGdex and rendering are mocked. Run: python -m unittest discover tests"""
+"""Push all: every saved project merged into one set, and what pushing it would change (setjobs.push_all_plan,
+/api/push-plan, setjobs.keep_numbers). TCGdex and rendering are mocked. Run: python -m unittest discover tests"""
 import functools
 import hashlib
 import io
@@ -15,7 +15,7 @@ from unittest import mock
 
 from PIL import Image
 
-from svrestyle import gui
+from svrestyle import gui, projects, rendering, setjobs
 
 A, B, C, D, M = "swsh3-88", "base1-91", "swsh3-89", "swsh4-43", "sv01-001"
 NAMES = {A: "Tyranitar", B: "Bill", C: "Larvitar", D: "Pikachu", M: "Sprigatito"}
@@ -40,11 +40,11 @@ def entry(card_id):
 
 
 def holo(card_id):
-    """The holo of gui.render for a card with holofoil: gui.Holo(foil.json record, {file name: PNG}, plates, token)."""
+    """The holo of rendering.render for a card with holofoil: rendering.Holo(foil.json record, {file name: PNG}, plates, token)."""
     record = {"id": card_id, "tcglive": card_id.replace("-", "_"), "front": f"{card_id}-me-front.png",
               "base": {"shader": "TPCi/Cards3D/HoloFoil/SunPillar", "material": "MAT_Cards3D_SunPillar",
                        "wp": f"{card_id}-me-wp.png", "cc": None, "etch": None, "cf": None}, "reverse": None}
-    return gui.Holo(record, {record["front"]: png(card_id), record["base"]["wp"]: png(card_id)}, {}, "token")
+    return rendering.Holo(record, {record["front"]: png(card_id), record["base"]["wp"]: png(card_id)}, {}, "token")
 
 
 class PushAll(unittest.TestCase):
@@ -53,42 +53,42 @@ class PushAll(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.checkout = Path(self.tmp.name, "sim")
         (self.checkout / "client" / "src").mkdir(parents=True)
-        self.set_dir = self.checkout.joinpath(*gui.SIM_SETS) / "customhbw"
+        self.set_dir = self.checkout.joinpath(*setjobs.SIM_SETS) / "customhbw"
         for patcher in (mock.patch.object(gui.cache, "CACHE", Path(self.tmp.name, "cache")),
                         mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": str(self.checkout)}),
-                        mock.patch.object(gui, "read", side_effect=lambda cid: ("me", card(cid))),
-                        mock.patch.object(gui, "render", side_effect=lambda cid, *a: gui.Render(png(cid), [], "me")),
-                        mock.patch.object(gui, "changelog", return_value="# log"),
+                        mock.patch.object(rendering, "read", side_effect=lambda cid: ("me", card(cid))),
+                        mock.patch.object(rendering, "render", side_effect=lambda cid, *a: rendering.Render(png(cid), [], "me")),
+                        mock.patch.object(rendering, "changelog", return_value="# log"),
                         mock.patch.object(gui.tcg, "TCGLIVE", None),
                         mock.patch.object(gui.tcg, "card", side_effect=lambda cid: {"name": NAMES[cid]}),
-                        mock.patch.object(gui, "takes_reverse", return_value=False)):
+                        mock.patch.object(setjobs, "takes_reverse", return_value=False)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        gui._set_jobs.clear()
+        setjobs._set_jobs.clear()
         self.addCleanup(self.finish)
 
     def finish(self):
-        for job in list(gui._set_jobs.values()):
-            gui.cancel_set_job(job["id"])
+        for job in list(setjobs._set_jobs.values()):
+            setjobs.cancel_set_job(job["id"])
             self.wait(job["id"])
 
     def wait(self, job_id, seconds=15):
         end = time.time() + seconds
         while time.time() < end:
-            view = gui.set_job_progress(job_id)
+            view = setjobs.set_job_progress(job_id)
             if view["state"] != "running":
                 return view
             time.sleep(0.02)
         self.fail("the job did not finish")
 
     def put(self, name, saved, cards, edits=None, options=None):
-        gui.save_project(name, {"cards": [entry(c) for c in cards], "edits": edits or {}, "options": options or {},
+        projects.save_project(name, {"cards": [entry(c) for c in cards], "edits": edits or {}, "options": options or {},
                                 "foil": False})
-        f = gui.project_file(name)
+        f = projects.project_file(name)
         f.write_text(json.dumps({**json.loads(f.read_text(encoding="utf-8")), "saved": saved}), encoding="utf-8")
 
     def push(self, items, code="HBW", title="Homebrew Wave 1", **extra):
-        return self.wait(gui.start_set_job("push", items, title, code, **extra)["id"])
+        return self.wait(setjobs.start_set_job("push", items, title, code, **extra)["id"])
 
     def sources(self):
         record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
@@ -97,24 +97,24 @@ class PushAll(unittest.TestCase):
     def test_the_cards_already_in_the_set_keep_their_numbers(self):
         existing = [(A, "x"), (B, "y"), (C, "z")]
         items = [{"id": i} for i in (D, C, B, M, A)]
-        self.assertEqual([i["id"] for i in gui.keep_numbers(items, existing)], [A, B, C, D, M])
-        self.assertEqual([i["id"] for i in gui.keep_numbers(items, None)], [D, C, B, M, A])
-        self.assertEqual([i["id"] for i in gui.keep_numbers(items, [(None, "x"), (None, "y")])], [D, C, B, M, A])
+        self.assertEqual([i["id"] for i in setjobs.keep_numbers(items, existing)], [A, B, C, D, M])
+        self.assertEqual([i["id"] for i in setjobs.keep_numbers(items, None)], [D, C, B, M, A])
+        self.assertEqual([i["id"] for i in setjobs.keep_numbers(items, [(None, "x"), (None, "y")])], [D, C, B, M, A])
 
     def test_cards_no_list_names_are_put_back_where_they_are(self):
         self.push([{"id": A, "edits": {"hp": "190"}}, {"id": B}, {"id": C}])
-        items = gui.keep_unlisted([{"id": C}, {"id": D}], self.set_dir)
+        items = setjobs.keep_unlisted([{"id": C}, {"id": D}], self.set_dir)
         self.assertEqual([i["id"] for i in items], [A, B, C, D], "A and B at their numbers, the new card last")
         self.assertEqual(items[0], {"id": A, "edits": {"hp": "190"}, "style": "hybrid", "attacks": True, "foil": False})
-        self.assertEqual(gui.keep_unlisted([{"id": A}], self.set_dir.parent / "nothing"), [{"id": A}])
-        self.assertEqual(gui.keep_unlisted([{"id": A}, {"id": B}, {"id": C}], self.set_dir),
+        self.assertEqual(setjobs.keep_unlisted([{"id": A}], self.set_dir.parent / "nothing"), [{"id": A}])
+        self.assertEqual(setjobs.keep_unlisted([{"id": A}, {"id": B}, {"id": C}], self.set_dir),
                          [{"id": A}, {"id": B}, {"id": C}], "everything named: nothing added")
 
     def test_the_plan_lists_new_and_changed_cards_and_the_ones_that_stay(self):
         self.push([{"id": A}, {"id": B}, {"id": C}])
         self.put("Older", "2026-10-01T10:00:00", [A, B], edits={A: {"hp": "190"}})
         self.put("Newer", "2026-10-02T10:00:00", [B, D], options={B: {"style": "hybrid", "attacks": False}})
-        plan = gui.push_all_plan("HBW")
+        plan = setjobs.push_all_plan("HBW")
         self.assertEqual((plan["setId"], plan["code"], plan["title"], plan["projects"], plan["repeats"]),
                          ("customhbw", "HBW", "Homebrew Wave 1", 2, 1))
         self.assertEqual([i["id"] for i in plan["items"]], [A, B, C, D], "the set's order, the new card last")
@@ -129,7 +129,7 @@ class PushAll(unittest.TestCase):
         self.assertEqual((done["state"], done["result"]["rendered"], done["result"]["reused"], done["result"]["removed"]),
                          ("done", 3, 1, []))
         self.assertEqual(self.sources(), [A, B, C, D])
-        again = gui.push_all_plan("HBW")
+        again = setjobs.push_all_plan("HBW")
         self.assertEqual((again["added"], again["changed"], again["removed"], again["moved"], again["unchanged"]),
                          ([], [], [], 0, 4), "nothing left to push")
 
@@ -141,40 +141,40 @@ class PushAll(unittest.TestCase):
         (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
         (self.set_dir / "003" / "high.webp").write_bytes(b"damaged")  # C's image is not the one its record names
         self.put("Only", "2026-10-02T10:00:00", [A, B, C, D], edits={B: {"hp": "190"}})
-        plan = gui.push_all_plan("HBW")
+        plan = setjobs.push_all_plan("HBW")
         self.assertEqual(sorted(c["id"] for c in plan["added"]), [D])
         self.assertEqual(sorted(c["id"] for c in plan["changed"]), [B, C])
         self.assertEqual((plan["unchanged"], [c["id"] for c in plan["kept"]], plan["removed"]), (2, [M], []),
                          "A is kept as it is, and M stays in the set")
         self.assertIn("Its images in the set are not the ones its record names: rendered again",
                       next(c for c in plan["changed"] if c["id"] == C)["lines"])
-        gui.render.reset_mock()
+        rendering.render.reset_mock()
         done = self.push(plan["items"])
-        self.assertEqual(sorted(call.args[0] for call in gui.render.call_args_list), [B, C, D], "what the plan listed")
+        self.assertEqual(sorted(call.args[0] for call in rendering.render.call_args_list), [B, C, D], "what the plan listed")
         self.assertEqual((done["result"]["rendered"], done["result"]["reused"]), (3, 2))
-        after = gui.push_all_plan("HBW")
+        after = setjobs.push_all_plan("HBW")
         self.assertEqual((after["added"], after["changed"], after["removed"], after["unchanged"]), ([], [], [], 5))
 
     def test_a_foil_the_set_has_from_outside_a_push_is_listed_and_made_again(self):
         def render(card_id, edits=None, style="hybrid", attacks=True, foil=False):
-            return gui.Render(png(card_id), [], "me", holo(card_id) if foil else None)
-        with mock.patch.object(gui.tcg, "TCGLIVE", "extract"), mock.patch.object(gui, "render", side_effect=render):
-            gui.save_project("Foil", {"cards": [entry(A), entry(B)], "edits": {}, "options": {}, "foil": True})
-            first = gui.push_all_plan("HBW")
+            return rendering.Render(png(card_id), [], "me", holo(card_id) if foil else None)
+        with mock.patch.object(gui.tcg, "TCGLIVE", "extract"), mock.patch.object(rendering, "render", side_effect=render):
+            projects.save_project("Foil", {"cards": [entry(A), entry(B)], "edits": {}, "options": {}, "foil": True})
+            first = setjobs.push_all_plan("HBW")
             self.assertEqual([c["id"] for c in first["added"]], [A, B])
             self.push(first["items"])
             self.assertTrue((self.set_dir / "foil" / "001-front.webp").is_file())
             record = json.loads((self.set_dir / "set.json").read_text(encoding="utf-8"))
             sorted(record["cards"], key=lambda c: c["localId"])[0]["custom"]["files"].pop("foil")   # as import-foil.py left the first card
             (self.set_dir / "set.json").write_text(json.dumps(record), encoding="utf-8")
-            plan = gui.push_all_plan("HBW")
+            plan = setjobs.push_all_plan("HBW")
             self.assertEqual(plan["changed"], [{"id": A, "name": "Tyranitar", "lines": [
                 "Its holofoil in the set is not known to match the card: made again"]}])
             self.assertEqual(plan["unchanged"], 1)
-            gui.render.reset_mock()
+            rendering.render.reset_mock()
             self.push(plan["items"])
-            self.assertEqual([call.args[0] for call in gui.render.call_args_list], [A], "what the plan listed")
-            again = gui.push_all_plan("HBW")
+            self.assertEqual([call.args[0] for call in rendering.render.call_args_list], [A], "what the plan listed")
+            again = setjobs.push_all_plan("HBW")
             self.assertEqual((again["changed"], again["unchanged"]), ([], 2))
 
     def test_a_first_push_has_everything_new_and_a_card_that_cannot_be_read_says_so(self):
@@ -182,24 +182,24 @@ class PushAll(unittest.TestCase):
 
         def read(card_id):
             if card_id == D:
-                raise gui.UserError("TCGdex has no such card")
+                raise rendering.UserError("TCGdex has no such card")
             return "me", card(card_id)
-        with mock.patch.object(gui, "read", side_effect=read):
-            plan = gui.push_all_plan("HBW")
+        with mock.patch.object(rendering, "read", side_effect=read):
+            plan = setjobs.push_all_plan("HBW")
         self.assertEqual((plan["existing"], plan["title"], plan["changed"], plan["removed"], plan["moved"]), (None, "", [], [], 0))
         self.assertEqual([(c["id"], c["name"]) for c in plan["added"]], [(A, "Tyranitar"), (D, D), (M, "Sprigatito")])
         self.assertEqual(plan["added"][1]["lines"], ["cannot be read: TCGdex has no such card"])
         self.assertEqual(plan["added"][2]["lines"], [], "a Scarlet & Violet card left as printed has nothing to list")
 
     def test_requests_the_plan_cannot_answer(self):
-        with self.assertRaisesRegex(gui.UserError, "no saved project has a card"):
-            gui.push_all_plan("HBW")
+        with self.assertRaisesRegex(rendering.UserError, "no saved project has a card"):
+            setjobs.push_all_plan("HBW")
         self.put("Only", "2026-10-02T10:00:00", [A])
         for code in ("bad code", None, "H"):
-            with self.subTest(code=code), self.assertRaisesRegex(gui.UserError, "set code"):
-                gui.push_all_plan(code)
-        with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": ""}), self.assertRaisesRegex(gui.UserError, "SVRESTYLE_PTCG_SIM"):
-            gui.push_all_plan("HBW")
+            with self.subTest(code=code), self.assertRaisesRegex(rendering.UserError, "set code"):
+                setjobs.push_all_plan(code)
+        with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": ""}), self.assertRaisesRegex(rendering.UserError, "SVRESTYLE_PTCG_SIM"):
+            setjobs.push_all_plan("HBW")
 
     def test_over_http_only_a_trusted_browser_gets_the_plan(self):
         server = gui.make_server(0)

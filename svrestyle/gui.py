@@ -47,10 +47,10 @@ API (JSON in and out unless noted):
                               written into the simulator's custom-sets folder (SVRESTYLE_PTCG_SIM), which the
                               running simulator reloads; only cards changed since the last push are rendered
                               (export.write_set_dir), every card with force. A push never takes a card out of the
-                              set: the cards it holds that the list does not name stay (keep_unlisted). Only cards
-                              that cannot be sent again (a set this editor did not write) would be lost: refused,
-                              409 {error, drops: {setId, code, incoming, copies, names, message}}, unless allowShrink:
-                              the page asks, then sends again with it
+                              set: the cards it holds that the list does not name stay (setjobs.keep_unlisted).
+                              Only cards that cannot be sent again (a set this editor did not write) would be lost:
+                              refused, 409 {error, drops: {setId, code, incoming, copies, names, message}}, unless
+                              allowShrink: the page asks, then sends again with it
   POST /api/publish-set       {items, title?, code, force?, allowShrink?} -> a job: the set pushed as above, then
                               uploaded to the site's bucket by the simulator's scripts/custom-sets/publish.mjs
                               (rclone remote CUSTOM_SETS_R2_REMOTE); the site (Render) picks it up within ~10 s.
@@ -83,14 +83,15 @@ API (JSON in and out unless noted):
   GET  /api/projects?name=N   {name, saved, rev, data}: a saved project (the page's card list, edits and options)
   POST /api/projects          {name, data, client?} -> {name, saved, rev}: save (overwrites a project of that name)
   POST /api/projects/patch    {name, patch, client?} -> {name, saved, rev}: change only what the patch names (see
-                              apply_patch), making the project if there is none
+                              projects.apply_patch), making the project if there is none
   POST /api/projects/delete   {name, renamed?, client?} -> {deleted: name}
   GET  /api/projects/poll?name=N&after=SEQ&client=C  long poll for what happens to the project: answers when there
-                              is news past SEQ (or after POLL_WAIT s with none) -> {seq, viewers, events: [{event,
-                              data}]}: patch {rev, client, patch}, replaced {rev, client}, renamed {to, client},
-                              deleted {client}, viewers {viewers}. after=-1 (or a SEQ it no longer has) -> {seq,
-                              viewers, events: [], hello: {rev}} at once: the page reads the project again if its
-                              rev differs. (Long polls, not an event stream: Cloudflare quick tunnels hold streams.)
+                              is news past SEQ (or after projects.POLL_WAIT s with none) -> {seq, viewers, events:
+                              [{event, data}]}: patch {rev, client, patch}, replaced {rev, client}, renamed {to,
+                              client}, deleted {client}, viewers {viewers}. after=-1 (or a SEQ it no longer has) ->
+                              {seq, viewers, events: [], hello: {rev}} at once: the page reads the project again if
+                              its rev differs. (Long polls, not an event stream: Cloudflare quick tunnels hold
+                              streams.)
   POST /api/projects/merged   {} -> {id, state: "running"|"done"|"failed"|"cancelled", done, total, current, projects, repeats,
                               failed: [{id, why}], unreadable: [{name, why}], notes: [str], error}: start building
                               every saved project (unreadable: those that could not be read), merged into one list
@@ -110,33 +111,23 @@ API (JSON in and out unless noted):
   POST /api/projects/undelete {id} -> {name, saved, rev}: a deleted project back, under its name (or "<name>
                               (restored)" when another project has it now)
 
-Projects are JSON files under the cache folder (SVRESTYLE_CACHE/projects), so work resumes after a restart. Each
-save or patch raises the project's rev; a page that missed some (reconnecting) reads the project again. Before a
-project is written over, its file is copied to projects/.history/<project>/: always before a whole save or a
-restore, and while patches come in once every HISTORY_EVERY s and once more when work starts again after a break
-(the newest HISTORY_KEEP stay). Delete moves the file to projects/.trash/ (the newest TRASH_KEEP stay).
+This module is the server and what the page asks of a card; the work behind the routes is in rendering.py (a
+card read and rendered), projects.py (saved projects, their history and trash, the long polls), setjobs.py (sends,
+publishes and the push-all plan) and merged.py (every project as one download).
 """
 import base64
-import datetime
 import functools
-import hashlib
 import hmac
 import io
-import itertools
 import json
 import os
 import re
-import secrets
 import shutil
-import signal
-import subprocess
 import threading
-import time
 import traceback
 import warnings
 import webbrowser
 import zipfile
-from collections import OrderedDict, deque, namedtuple
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -145,8 +136,8 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 from PIL import Image
 
-from . import (cache, compose, edit, energy, export, foil, follow, layers, mecompose, meframe, modern, tcg, trainer,
-               wording)
+from . import cache, edit, export, follow, meframe, merged, modern, projects, rendering, setjobs, tcg, wording
+from .rendering import UserError
 
 PAGE = Path(__file__).with_name("gui.html")
 STATIC = Path(__file__).with_name("static")
@@ -160,145 +151,12 @@ TEXTURE_NAME = re.compile(r"[A-Za-z0-9_]{1,80}")
 FILE_NAME = re.compile(r"[\w.-]{1,120}\.png")
 MAX_BODY = 8 << 20
 MAX_ZIP_ITEMS = 60
-STYLES = ("hybrid", "panel")
-PROJECT_NAME = re.compile(r"\w[\w .,'()&+#-]{0,59}")
-MAX_PROJECT = 4 << 20                 # bytes of one saved project
-POLL_WAIT = 20                        # s a poll waits for news before answering with none (tunnels cut at ~100 s)
-VIEWER_GONE = POLL_WAIT + 25          # s without a poll after which a page no longer counts as having it open
-EVENT_LOG = 200                       # events each project keeps for pages catching up
-HISTORY_EVERY = 600                   # s between versions kept while patches come in; also the break that keeps one
-HISTORY_KEEP = 100                    # versions kept of each project
-TRASH_KEEP = 100                      # deleted projects kept
-MERGED_KEEP = 3                       # finished all-projects downloads kept on disk (exports/)
-VERSION_ID = re.compile(r"\d{8}-\d{6}-r\d{6,9}")
-TRASH_ID = re.compile(r"\d{8}-\d{6}-[\w-]{1,80}")
-
-SIM_SETS = ("client", "src", "assets", "custom-sets")   # where the simulator keeps custom sets, in its checkout
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
-PUBLISH_SCRIPT = ("scripts", "custom-sets", "publish.mjs")    # the simulator's bucket uploader, in its checkout
-PUBLISH_TIMEOUT = 20 * 60             # s: past the script's own 15-minute upload limit, so it reports first
 PUBLISH_KEY_HEADER = "X-Svrestyle-Key"  # a custom header: a page elsewhere cannot send it without a CORS preflight
 MIN_PUBLISH_KEY = 16                  # characters; a shorter SVRESTYLE_PUBLISH_TOKEN is ignored, it could be guessed
-SET_JOB_KEEP = 8                      # finished sends and publishes kept for a page that asks late
-CANCEL_POLL = 0.5                     # s between looks at a cancel while the publish script runs
-SITE_CHECK_TIMEOUT = 20               # s the bucket's index may take to read before a publish is checked without it
-CARD_FILE = re.compile(r"(\d{3})/high\.webp")    # a card of a published set, among the files of the bucket's index
-
-_render_lock = threading.Lock()       # LaMa, fonts and the asset builders are not thread-safe
-_push_lock = threading.Lock()         # one write into the simulator's folder at a time
-_renders = OrderedDict()              # request key -> Render; the last few, for zip downloads
-_renders_lock = threading.Lock()      # the cache's own (not _render_lock): a hit must not wait for a render
-_RENDER_CACHE = 48
 
 
-class UserError(ValueError):
-    """A problem with the request, shown to the user as is."""
-
-
-class PublishError(Exception):
-    """The upload to the site's bucket failed (rclone, the network, the bucket), or timed out."""
-
-
-class DropsCards(Exception):
-    """A send or publish would take cards out of a set that is already there: `info` says which copies and how many
-    (drops_for). The page asks the user, and asks the server again with allowShrink; a 409."""
-    def __init__(self, info):
-        super().__init__(info["message"])
-        self.info = info
-
-
-class Render(namedtuple("Render", "png notes layout holo", defaults=(None,))):
-    """(png bytes, warnings, layout, holo): holo is a Holo when the holofoil was asked for and made, else None."""
-
-
-class Holo(namedtuple("Holo", "record files plates token")):
-    """A render's holofoil: record, the foil.json record; files, {file name: bytes} as foil.files writes them; plates,
-    {"base" | "reverse": white plate PNG at card size, for the preview}; token, what its texture URLs carry."""
-
-
-class Jobs:
-    """Background jobs a page polls (sends and publishes; all-projects zips), the last keep() by id. A job is a dict
-    with at least id, state ("running", then "done", "failed" or "cancelled") and cancel (asked to stop: its thread
-    looks). view(job) is what the page reads; dropped(job) cleans up after a job that falls out; `missing` names the
-    kind in the answer to an id it does not have."""
-    def __init__(self, keep, view, missing, dropped=None):
-        self.jobs = OrderedDict()
-        self.lock = threading.RLock()     # a starter holds it from its look for a running job to add
-        self.keep, self.view, self.missing, self.dropped = keep, view, missing, dropped
-
-    def add(self, **fields):
-        job = {"id": secrets.token_hex(8), "state": "running", "cancel": False, **fields}
-        with self.lock:
-            self.jobs[job["id"]] = job
-            while len(self.jobs) > self.keep():
-                old = self.jobs.popitem(last=False)[1]
-                if self.dropped:
-                    self.dropped(old)
-        return job
-
-    def running(self, cancelling=True):
-        """The job running now, or None; with cancelling False, not one that was asked to stop."""
-        with self.lock:
-            return next((j for j in self.jobs.values()
-                         if j["state"] == "running" and (cancelling or not j["cancel"])), None)
-
-    def find(self, job_id):
-        with self.lock:
-            return self.jobs.get(job_id)
-
-    def progress(self, job_id):
-        job = self.find(job_id)
-        if not job:
-            raise LookupError(f"no such {self.missing} (the server restarted since?): start it again")
-        return self.view(job)
-
-    def cancel(self, job_id):
-        """Ask a job to stop; one that is over is left as it is. -> its progress"""
-        with self.lock:
-            job = self.jobs.get(job_id)
-            if not job:
-                raise LookupError(f"no such {self.missing} (the server restarted since?)")
-            if job["state"] == "running":
-                job["cancel"] = True
-        return self.view(job)
-
-
-# ---------------------------------------------------------------- cards
-def layout_of(card_id):
-    if not edit.valid_card_id(card_id):
-        raise UserError(f"{card_id!r} is not a TCGdex card id (like swsh6-99 or sm10-19)")
-    try:
-        data = tcg.card(card_id)
-    except (ValueError, cache.DownloadError) as e:
-        raise UserError(str(e)) from e
-    return layout_for(card_id, data)
-
-
-def layout_for(card_id, data):
-    """The layout a card gets, from its TCGdex record (category and name: a set list's supertype and name do): the one
-    place that decides, for the GUI, the set lists and the command line."""
-    if data.get("category") == "Trainer":       # a Scarlet & Violet Trainer too: set again on its own kind's frame
-        return "trainer"
-    if data.get("category") == "Energy":        # read_card refuses Scarlet & Violet and Mega Evolution Energy
-        return "energy"
-    if modern.is_modern(card_id):
-        return "modern"
-    return "ex" if str(data.get("name") or "").endswith(" V") else "me"
-
-
-def read(card_id):
-    layout = layout_of(card_id)
-    reader = {"ex": compose.read_card, "me": mecompose.read_card, "modern": modern.read_card,
-              "trainer": trainer.read_card, "energy": energy.read_card}[layout]
-    try:
-        card = reader(card_id)
-    except SystemExit as e:                     # the composers refuse unsupported cards this way
-        raise UserError(str(e)) from e
-    except cache.DownloadError as e:
-        raise UserError(str(e)) from e
-    return layout, card
-
-
+# ---------------------------------------------------------------- what the page asks of a card
 def find_cards(body):
     """A card search on TCGdex (tcg.find): {"name", "filters", "offset", "limit"} -> {"total", "cards"}."""
     try:
@@ -316,127 +174,28 @@ def find_options():
 
 
 def card_summary(card_id):
-    layout, card = read(card_id)
+    layout, card = rendering.read(card_id)
     return {"id": card_id, "layout": layout, "name": f"{card['prefix']} {card['name']}".strip(),
             "type": card.get("type", card.get("kind")), "gen9": modern.is_modern(card_id),
             "energy": card.get("energy"),
             "ace": bool(card.get("ace")), "card": edit.editable(card)}
 
 
-def _png(arr, mode=None):
-    buf = io.BytesIO()
-    Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode).save(buf, "PNG")
-    return buf.getvalue()
-
-
-def render(card_id, edits=None, style="hybrid", attacks=True, holo=False):
-    """-> Render; cached by request. holo: also re-make the card's TCG Live holofoil for this render: the plates
-    follow every edit (HP, costs, Ability badge, weakness, resistance and retreat icons are cut out where drawn)."""
-    if style not in STYLES:
-        raise UserError(f"style: one of {', '.join(STYLES)}")
-    if holo and not tcg.TCGLIVE:
-        raise UserError("holofoil needs a Pokemon TCG Live extract: start the GUI with --tcglive DIR "
-                        "(or set SVRESTYLE_TCGLIVE)")
-    key = json.dumps([card_id, edits, style, bool(attacks), bool(holo)], sort_keys=True, ensure_ascii=False)
-    with _renders_lock:
-        if key in _renders:
-            _renders.move_to_end(key)
-            return _renders[key]
-    with _render_lock, warnings.catch_warnings(record=True) as caught, layers.recording() as drawn:
-        warnings.simplefilter("always")
-        layout, original = read(card_id)        # its warnings shown too (a Trainer's kind guessed, its text missing)
-        card = edit.apply(original, edits) if edits else original
-        if layout == "energy":
-            img, _ = energy.compose_card(card_id, card=card)
-            built = energy.build_foil(card, img, drawn) if holo else None
-        elif layout == "trainer":
-            img, _ = trainer.compose_card(card_id, card=card)
-            built = trainer_foil(card_id, card, img, drawn, original) if holo else None
-        elif layout == "modern":
-            img, report = modern.compose_card(card_id, card, original)
-            built = foil.build_modern(card_id, card, img, drawn, original) if holo else None
-        else:
-            if layout == "ex":
-                img, _ = compose.compose(card_id, compose.Options(style=style, attacks=bool(attacks)), card=card)
-            else:
-                img, _ = mecompose.compose_card(card_id, bool(attacks), card=card)
-            built = foil.build(card_id, layout, img, drawn, card) if holo else None
-    notes = export.warning_notes(caught)
-    made = None
-    if built:
-        record, written = foil.files(built, f"{card_id}-{layout}", card_id)
-        plates = {k: _png(foil.card_space(built[k][1]), "L") for k in ("base", "reverse") if built[k]}
-        made = Holo(record, written, plates, hashlib.sha256(key.encode()).hexdigest()[:20])
-    result = Render(_png(img), notes, layout, made)
-    with _renders_lock:
-        _renders[key] = result
-        while len(_renders) > _RENDER_CACHE:
-            _renders.popitem(last=False)
-    return result
-
-
-def trainer_foil(card_id, card, img, drawn, original):
-    """A Trainer's holofoil, by what its printed card is (original: read_card's, before edits): an ACE SPEC card's
-    own printing, edited; a Black & White ACE SPEC set on the Scarlet & Violet frame, the converted one's; any other,
-    the Gen 8 reverse holo. The one place that chooses, for the GUI and the command line."""
-    if original.get("ace"):
-        return foil.build_ace(card_id, card, img, drawn, original)
-    if original.get("ace_convert"):
-        return foil.build_ace_convert(card, img, drawn)
-    return foil.build_trainer(card_id, card, img, drawn)
-
-
 def follow_type(card_id, edits):
     """What goes with the card's edited type (follow.follow): its costs, effect text, weakness and resistance, as
     edits for the page to take."""
-    layout, original = read(card_id)
+    layout, original = rendering.read(card_id)
     if layout in ("trainer", "energy") or not edit.retypes(original):
         raise UserError("only a Pokémon that can change type has a type to follow")
     return follow.follow(original, edit.apply(original, edits) if edits else original)
 
 
-LAYOUT_NOTES = {"ex": "Restyled as a Scarlet & Violet ex card", "me": "Restyled as a Mega Evolution card",
-                "trainer": "Restyled as a Scarlet & Violet Trainer", "energy": "Restyled as a Mega Evolution Energy"}
-
-
-def card_changes(card_id, edits=None, style="hybrid", attacks=True):
-    """-> (printed name, [what differs from the printed card]): the restyle itself, then edit.changes."""
-    layout, original = read(card_id)
-    card = edit.apply(original, edits) if edits else original
-    notes = []
-    if layout in LAYOUT_NOTES and not modern.is_modern(card_id):     # a Gen 9 Trainer is set again, not restyled
-        notes.append(LAYOUT_NOTES[layout] + (" (translucent type panel)" if layout == "ex" and style == "panel" else ""))
-        if not attacks and layout not in ("trainer", "energy"):
-            notes.append("Abilities and attacks left off")
-    return tcg.card(card_id).get("name", card_id), notes + edit.changes(original, card)
-
-
-def changelog(items, title=""):
-    """Markdown: per card what was changed; cards left as printed listed together at the end."""
-    if not isinstance(items, list) or not items:
-        raise UserError("items: a non-empty list")
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    lines, unchanged = [f"# {title.strip() if isinstance(title, str) and title.strip() else 'Cards'}: changelog", "",
-                        f"Changes from each printed card, {stamp}.", ""], []
-    for it in items:
-        if not isinstance(it, dict):
-            raise UserError("items: expected objects")
-        name, changed = card_changes(it.get("id"), it.get("edits"), it.get("style", "hybrid"), it.get("attacks", True))
-        if changed:
-            lines += [f"## {name} ({it['id']})", "", *[f"- {c}" for c in changed], ""]
-        else:
-            unchanged.append(f"{name} ({it['id']})")
-    if unchanged:
-        lines += ["## Unchanged", "", *[f"- {u}" for u in unchanged], ""]
-    return "\n".join(lines)
-
-
 def original_png(card_id):
     if not edit.valid_card_id(card_id):
         raise UserError(f"{card_id!r} is not a TCGdex card id")
-    with _render_lock:                   # the first scan of a card is written to the cache
+    with rendering._render_lock:                   # the first scan of a card is written to the cache
         try:
-            return _png(tcg.scan(card_id), "RGBA")
+            return rendering._png(tcg.scan(card_id), "RGBA")
         except (ValueError, cache.DownloadError) as e:
             raise UserError(str(e)) from e
 
@@ -458,8 +217,8 @@ def foil_file(token, name):
     """A texture of a recent render's holofoil, by the token its foil answer carried."""
     if not FILE_NAME.fullmatch(name or ""):
         raise UserError("bad texture name")
-    with _renders_lock:
-        recent = list(_renders.values())
+    with rendering._renders_lock:
+        recent = list(rendering._renders.values())
     for result in reversed(recent):
         made = result.holo
         if made and made.token == token and name in made.files:
@@ -531,7 +290,7 @@ def import_set(data):
         raise UserError("expected a custom-set export (a JSON object with a \"cards\" list)")
     if export.is_set_data(data):
         try:
-            return export.import_set_data(data, _set_entry)
+            return export.import_set_data(data, rendering._set_entry)
         except ValueError as e:
             raise UserError(str(e)) from e
     out, seen = [], set()
@@ -540,50 +299,8 @@ def import_set(data):
         if not edit.valid_card_id(cid) or cid in seen:
             continue
         seen.add(cid)
-        out.append(_set_entry(cid, c.get("name", ""), c.get("supertype")))
+        out.append(rendering._set_entry(cid, c.get("name", ""), c.get("supertype")))
     return {"name": data.get("name", ""), "cards": out}
-
-
-def _is_ace(cid):
-    """Whether a Scarlet & Violet Trainer is an ACE SPEC card (its holofoil can be made): True or False, None when
-    TCGdex cannot say (not known: a list entry does not keep it, so the next load asks again)."""
-    if not modern.is_modern(cid):
-        return False
-    try:
-        return trainer.ACE_RARITY in (tcg.card(cid).get("rarity") or "").lower()
-    except (ValueError, cache.DownloadError):
-        return None
-
-
-def _trainer_entry(entry):
-    """A Trainer's list entry with gen9 and ace; ace left out while TCGdex cannot say (_is_ace)."""
-    ace = _is_ace(entry.get("id"))
-    return {**entry, "gen9": modern.is_modern(entry.get("id")), **({} if ace is None else {"ace": ace})}
-
-
-def _set_entry(cid, name, supertype):
-    """A set list's entry: the layout the card gets, or why it is skipped. supertype: the export's or TCGdex's."""
-    entry = {"id": cid, "name": name}
-    if supertype not in (None, "Pokémon", "Pokemon", "Trainer", "Energy"):
-        return {**entry, "skip": "not a Pokémon, Trainer or Energy card"}
-    entry["layout"] = layout_for(cid, {"category": supertype, "name": name})   # Energy: SV / ME kept as printed
-    return _trainer_entry(entry) if entry["layout"] == "trainer" else entry
-
-
-def _current_entries(cards):
-    """A saved list as this version sorts it: projects keep each card's entry from their import, so a card once
-    skipped (Trainers were, before they could be edited) is looked at again. A card TCGdex can't give stays as saved."""
-    out = []
-    for c in cards:
-        if isinstance(c, dict) and c.get("skip") and edit.valid_card_id(c.get("id")):
-            try:
-                c = _set_entry(c["id"], c.get("name", ""), tcg.card(c["id"]).get("category"))
-            except (ValueError, cache.DownloadError):
-                pass
-        elif isinstance(c, dict) and c.get("layout") == "trainer" and ("gen9" not in c or "ace" not in c):
-            c = _trainer_entry(c)
-        out.append(c)
-    return out
 
 
 def export_set(items, title, code):
@@ -593,41 +310,8 @@ def export_set(items, title, code):
     if len(items) > MAX_ZIP_ITEMS:
         raise UserError(f"items: at most {MAX_ZIP_ITEMS} per download")
     try:
-        return export.export_zip(items, title, code, read=read, render=render, apply=edit.apply, changelog=changelog,
-                                 is_ace=_is_ace)
-    except ValueError as e:
-        raise UserError(str(e)) from e
-
-
-def sim_sets_dir():
-    """The simulator's custom-sets folder, from SVRESTYLE_PTCG_SIM: the simulator's checkout (its
-    client/src/assets/custom-sets is used, made if missing) or that folder itself; None when unset or neither."""
-    raw = os.environ.get("SVRESTYLE_PTCG_SIM", "").strip()
-    if not raw:
-        return None
-    path = Path(raw).expanduser()
-    if (path / "client" / "src").is_dir():
-        return path.joinpath(*SIM_SETS)
-    if path.name == SIM_SETS[-1] and path.is_dir():
-        return path
-    return None
-
-
-def _sim_root():
-    """The simulator's custom-sets folder; a UserError saying how to set it when it is not known."""
-    root = sim_sets_dir()
-    if root is None:
-        raise UserError("no ptcg-sim folder: start the GUI with SVRESTYLE_PTCG_SIM set to the simulator's folder "
-                        "(start-site.bat sets it when the simulator is in Downloads)")
-    return root
-
-
-def _write_set(items, title, code, root, force, progress=None, cancelled=None):
-    """export.write_set_dir into `root`; the caller holds _push_lock."""
-    try:
-        return export.write_set_dir(items, title, code, root, read=read, render=render, apply=edit.apply,
-                                    changelog=changelog, force=bool(force), progress=progress, cancelled=cancelled,
-                                    is_ace=_is_ace)
+        return export.export_zip(items, title, code, read=rendering.read, render=rendering.render, apply=edit.apply,
+                                 changelog=rendering.changelog, is_ace=rendering._is_ace)
     except ValueError as e:
         raise UserError(str(e)) from e
 
@@ -644,233 +328,6 @@ def publish_key():
     return key
 
 
-def site_remote():
-    """The rclone remote of the site's bucket (CUSTOM_SETS_R2_REMOTE, e.g. r2:ptcg-foil/custom-sets), or None."""
-    return os.environ.get("CUSTOM_SETS_R2_REMOTE", "").strip() or None
-
-
-def sim_checkout():
-    """The simulator's checkout holding its publish script, or None (sim_sets_dir is <checkout>/client/src/...)."""
-    root = sim_sets_dir()
-    if root is None:
-        return None
-    checkout = root.parents[len(SIM_SETS) - 1]
-    return checkout if checkout.joinpath(*PUBLISH_SCRIPT).is_file() else None
-
-
-def _kill_tree(proc):
-    """Stops the publish script and the rclone it started: killing node alone would leave rclone uploading."""
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
-    else:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)      # its own process group (_run_publish starts it in one)
-        except ProcessLookupError:
-            pass
-    proc.communicate()
-
-
-def _run_publish(node, checkout, set_id, remote, cancelled=None):
-    """The publish script's --json report; PublishError on a failure, a timeout or no report. cancelled() -> True
-    stops the script and the rclone under it (export.Cancelled): the bucket's index is replaced only when the upload
-    is over, so the site keeps the copy it had."""
-    proc = subprocess.Popen([node, str(checkout.joinpath(*PUBLISH_SCRIPT)), set_id, "--remote", remote, "--json"],
-                            cwd=checkout, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8",
-                            errors="replace", start_new_session=os.name != "nt")
-    deadline = time.monotonic() + PUBLISH_TIMEOUT
-    while True:
-        try:
-            out, err = proc.communicate(timeout=CANCEL_POLL)
-            break
-        except subprocess.TimeoutExpired:
-            if cancelled and cancelled():
-                _kill_tree(proc)
-                raise export.Cancelled from None
-            if time.monotonic() > deadline:
-                _kill_tree(proc)
-                raise PublishError(f"publishing gave no answer in {PUBLISH_TIMEOUT} s; stopped it") from None
-    if proc.returncode != 0:
-        lines = (err or out or "").strip().splitlines()
-        raise PublishError("publishing failed: " + (" | ".join(lines[-5:]) or f"exit status {proc.returncode}"))
-    try:
-        return json.loads(out.strip().splitlines()[-1])
-    except (IndexError, json.JSONDecodeError) as e:
-        raise PublishError(f"the publish script gave no report: {out.strip()[-300:]!r}") from e
-
-
-# ---------------------------------------------------------------- send and publish, in the background
-def site_card_count(remote, set_id):
-    """How many cards the site's copy of `set_id` has (the card folders among the files of the bucket's index.json),
-    or None: it is not published, or the bucket could not be read in SITE_CHECK_TIMEOUT s (a publish then reports a
-    bucket out of reach by itself)."""
-    rclone = shutil.which("rclone")
-    if rclone is None:
-        return None
-    try:
-        done = subprocess.run([rclone, "cat", f"{remote}/index.json"], capture_output=True, encoding="utf-8",
-                              errors="replace", timeout=SITE_CHECK_TIMEOUT)
-        index = json.loads(done.stdout) if done.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    sets = index.get("sets") if isinstance(index, dict) else None
-    entry = sets.get(set_id) if isinstance(sets, dict) else None
-    files = entry.get("files") if isinstance(entry, dict) else None
-    if not isinstance(files, dict):
-        return None
-    return len({m.group(1) for name in files if (m := CARD_FILE.fullmatch(name))})
-
-
-def _list_of(names, shown=5):
-    return ", ".join(names[:shown]) + (f" and {len(names) - shown} more" if len(names) > shown else "")
-
-
-def drops_for(kind, items, code, set_id):
-    """What sending (kind "push") or publishing (kind "publish") this list would take out of the copies of the set
-    that are already there, or None when it takes nothing out. The simulator's copy is compared card by card (the
-    cards it was made from, export.dropped_cards); the site's, for a publish, by size: the folders past the end of
-    the list go. -> {setId, code, incoming, copies: [{where, cards, dropped}], names: [first few], message}"""
-    ids = [it["id"] for it in items]
-    existing = export.existing_cards(sim_sets_dir() / set_id)
-    names = [name for _, name in export.dropped_cards(existing, ids)] if existing is not None else []
-    site = site_card_count(site_remote(), set_id) if kind == "publish" else None
-    site_drops = site - len(ids) if site is not None and site > len(ids) else 0
-    if not names and not site_drops:
-        return None
-    copies, lines = [], []
-    if names:
-        copies.append({"where": "ptcg-sim", "cards": len(existing), "dropped": len(names)})
-        lines.append(f"{code} has {len(existing)} cards in ptcg-sim; this list has {len(ids)}: "
-                     f"{len(names)} would be removed ({_list_of(names)}).")
-    if site_drops:
-        copies.append({"where": "the site", "cards": site, "dropped": site_drops})
-        lines.append(f"The site has {site} cards of {code}" + ("" if names else f"; this list has {len(ids)}")
-                     + f": {site_drops} would be removed" + (" there too." if names else "."))
-    return {"setId": set_id, "code": code, "incoming": len(ids), "copies": copies, "names": names[:5],
-            "message": " ".join(lines)}
-
-
-def _set_job_view(job):
-    end = job.get("ended") or time.time()
-    return {"id": job["id"], "kind": job["kind"], "code": job["code"], "setId": job["setId"], "state": job["state"],
-            "phase": job["phase"], "done": job["done"], "total": job["total"], "current": job["current"],
-            "elapsed": int(end - job["started"]), "cancelling": job["cancel"], "result": job["result"],
-            "error": job["error"], "pushed": job["pushed"]}
-
-
-SET_JOBS = Jobs(lambda: SET_JOB_KEEP, _set_job_view, "send or publish")    # sends and publishes in the background
-_set_jobs = SET_JOBS.jobs
-
-
-def _running_set_job():
-    return SET_JOBS.running()
-
-
-def start_set_job(kind, items, title, code, force=False, allow_shrink=False):
-    """Send (kind "push": export.write_set_dir into the simulator's folder, which the running simulator reloads) or
-    publish (kind "publish": that, then the simulator's publish script uploads the set to the site's bucket) in the
-    background: a first render takes 10-20 s a card, an upload minutes, and tunnels cut a request at ~100 s, so the
-    page polls set_job_progress. Only cards changed since the last send are rendered (all of them with force). A
-    set that would lose cards is refused (DropsCards) unless allow_shrink. A job already running for the same set and
-    kind is joined, not started again; another set's is a UserError: one write into the folder at a time. -> its
-    progress"""
-    root = _sim_root() if kind == "push" else sim_sets_dir()
-    remote = checkout = node = None
-    if kind == "publish":
-        remote = site_remote()
-        if remote is None:
-            raise UserError("set CUSTOM_SETS_R2_REMOTE to the site's bucket (e.g. r2:ptcg-foil/custom-sets) to publish")
-        checkout = sim_checkout()
-        if checkout is None:
-            raise UserError("no ptcg-sim checkout with scripts/custom-sets/publish.mjs: set SVRESTYLE_PTCG_SIM to it")
-        node = shutil.which("node")
-        if node is None:
-            raise UserError("node not found on PATH: the publish script runs on Node.js")
-    if not isinstance(items, list) or not items:
-        raise UserError("items: a non-empty list")
-    if len(items) > export.MAX_CARDS:
-        raise UserError(f"items: at most {export.MAX_CARDS} cards in a set")
-    if not all(isinstance(it, dict) and isinstance(it.get("id"), str) for it in items):
-        raise UserError("items: expected objects with an id")
-    try:
-        set_id = export.set_id_for(code)
-    except ValueError as e:
-        raise UserError(str(e)) from e
-    with SET_JOBS.lock:
-        running = _running_set_job()
-        if running:
-            return _joined_or_refused(running, kind, set_id)
-    # The list's order is only how it looks here: set.json lists the cards in display order (export.display_order).
-    items = push_items(items, sim_sets_dir() / set_id)
-    if len(items) > export.MAX_CARDS:
-        raise UserError(f"items: at most {export.MAX_CARDS} cards in a set")
-    if not allow_shrink:
-        info = drops_for(kind, items, code, set_id)
-        if info:
-            raise DropsCards(info)
-    with SET_JOBS.lock:
-        running = _running_set_job()
-        if running:                                  # another page started one while the check ran
-            return _joined_or_refused(running, kind, set_id)
-        job = SET_JOBS.add(kind=kind, code=code, setId=set_id, phase="rendering", done=0, total=len(items), current="",
-                           started=time.time(), ended=None, result=None, error=None, pushed=None)
-        threading.Thread(target=_run_set_job, args=(job, items, title, code, force, (root, checkout, node, remote)),
-                         daemon=True).start()
-        return _set_job_view(job)
-
-
-def _joined_or_refused(running, kind, set_id):
-    if (running["kind"], running["setId"]) == (kind, set_id):
-        return _set_job_view(running)
-    raise UserError(f"a {'publish' if running['kind'] == 'publish' else 'send'} of {running['code']} is still "
-                    "running: wait for it, or cancel it")
-
-
-def _run_set_job(job, items, title, code, force, plan):
-    """The job's thread: the push, then for a publish the upload, with the push lock held through both so no other
-    write changes the files while they go up. The job always ends in state done, failed or cancelled."""
-    root, checkout, node, remote = plan
-
-    def cancelled():
-        return job["cancel"]
-
-    def progress(phase, done, total, current):
-        job.update(phase=phase, done=done, total=total, current=current)
-    try:
-        with _push_lock:
-            pushed = _write_set(items, title, code, root, force, progress, cancelled)
-            job["pushed"] = pushed
-            if job["kind"] == "publish":
-                if cancelled():
-                    raise export.Cancelled
-                job.update(phase="uploading", done=0, total=0, current="")
-                report = _run_publish(node, checkout, pushed["setId"], remote, cancelled)
-                job["result"] = {**pushed, "published": report}
-            else:
-                job["result"] = pushed
-        job["state"] = "done"
-    except export.Cancelled:
-        job["state"] = "cancelled"
-    except PublishError as e:
-        job["error"], job["state"] = f"sent to ptcg-sim, but {e}", "failed"
-    except UserError as e:
-        job["error"], job["state"] = str(e), "failed"
-    except (Exception, SystemExit) as e:                                    # noqa: BLE001 - the page shows it
-        job["error"], job["state"] = f"{type(e).__name__}: {e}", "failed"
-    finally:
-        job["ended"] = time.time()
-
-
-def set_job_progress(job_id):
-    return SET_JOBS.progress(job_id)
-
-
-def cancel_set_job(job_id):
-    """Stop a send or publish. Before the first file is written nothing changes; a publish stops its upload (the site
-    keeps the copy it had); a send already writing finishes. Cancelling a job that is over changes nothing. -> its
-    progress"""
-    return SET_JOBS.cancel(job_id)
-
-
 def zip_renders(items, title=""):
     if not isinstance(items, list) or not items:
         raise UserError("items: a non-empty list")
@@ -881,692 +338,13 @@ def zip_renders(items, title=""):
         for it in items:
             if not isinstance(it, dict):
                 raise UserError("items: expected objects")
-            png, _, layout, made = render(it.get("id"), it.get("edits"), it.get("style", "hybrid"),
-                                          it.get("attacks", True), bool(it.get("foil")))
+            png, _, layout, made = rendering.render(it.get("id"), it.get("edits"), it.get("style", "hybrid"),
+                                                    it.get("attacks", True), bool(it.get("foil")))
             z.writestr(f"{it['id']}-{layout}.png", png)
             for name, data in (made.files.items() if made else ()):
                 z.writestr(name, data)
-        z.writestr("CHANGELOG.md", changelog(items, title))
+        z.writestr("CHANGELOG.md", rendering.changelog(items, title))
     return buf.getvalue()
-
-
-# ---------------------------------------------------------------- projects
-_project_lock = threading.Lock()
-
-
-def projects_dir():
-    return cache.CACHE / "projects"
-
-
-def project_file(name):
-    if not isinstance(name, str) or not PROJECT_NAME.fullmatch(name.strip()):
-        raise UserError("project name: 1-60 letters, digits, spaces or . , ' ( ) & + # -")
-    slug = re.sub(r"[^\w-]+", "-", name.strip().lower()).strip("-")
-    return projects_dir() / f"{slug}.json"
-
-
-def _cards(p):
-    return len((p.get("data") or {}).get("cards") or [])
-
-
-def _read_projects():
-    """-> ([{name, saved, cards}] newest first, [{name, why}]: the project files that cannot be read)"""
-    out, unreadable = [], []
-    for f in projects_dir().glob("*.json") if projects_dir().exists() else ():
-        try:
-            p = json.loads(f.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            unreadable.append({"name": f.stem, "why": f"{type(e).__name__}: {e}"})
-            continue
-        out.append({"name": p.get("name", f.stem), "saved": p.get("saved", ""), "cards": _cards(p)})
-    return sorted(out, key=lambda p: p["saved"], reverse=True), unreadable
-
-
-def list_projects():
-    return {"projects": _read_projects()[0]}
-
-
-def load_project(name):
-    f = project_file(name)
-    if not f.exists():
-        raise UserError(f"no saved project {name.strip()!r}")
-    p = json.loads(f.read_text(encoding="utf-8"))
-    p.setdefault("rev", 0)
-    if isinstance(p.get("data"), dict) and isinstance(p["data"].get("cards"), list):
-        p["data"]["cards"] = _current_entries(p["data"]["cards"])
-    return p
-
-
-def _check_data(data):
-    if not isinstance(data, dict) or not isinstance(data.get("cards", []), list) \
-            or not isinstance(data.get("edits", {}), dict) or not isinstance(data.get("options", {}), dict):
-        raise UserError("project data: an object with a \"cards\" list and \"edits\" and \"options\" objects")
-
-
-def _rev(f):
-    try:
-        return int(json.loads(f.read_text(encoding="utf-8")).get("rev", 0))
-    except (OSError, ValueError, AttributeError):
-        return 0
-
-
-def _write(f, name, data, rev):
-    """Write the project atomically (a half-written file would lose the work it was saving). Under _project_lock."""
-    saved = datetime.datetime.now().isoformat(timespec="seconds")
-    text = json.dumps({"name": name, "saved": saved, "rev": rev, "data": data}, ensure_ascii=False)
-    if len(text.encode()) > MAX_PROJECT:
-        raise UserError(f"project too large (over {MAX_PROJECT >> 20} MB)")
-    f.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_suffix(f".tmp{threading.get_ident()}")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, f)
-    return {"name": name, "saved": saved, "rev": rev}
-
-
-def save_project(name, data, client=None):
-    _check_data(data)
-    f = project_file(name)
-    with _project_lock:
-        _keep_version(f, always=True)
-        out = _write(f, name.strip(), data, _rev(f) + 1 if f.exists() else 1)
-        HUB.publish(f.stem, "replaced", {"rev": out["rev"], "client": client})
-    return out
-
-
-def apply_patch(data, patch):
-    """The project data with a page's changes made. patch: {cards?: {removed: [id], added: [{index, card}],
-    order?: [id]}, edits?: {id: {field: value} | null}, options?: {id: object | null}, setName?, foil?, current?}.
-    code: the set code for the ptcg-sim export (export.py).
-    A card's edits change field by field, so two people editing different fields of one card both keep theirs; null
-    drops a card's edits or options. order is the list as the page has it: the cards it names take the places those
-    cards hold, in its order, and cards it does not name (someone else's, just added) keep theirs. The page's
-    applyPatch does the same."""
-    if not isinstance(patch, dict):
-        raise UserError("patch: an object")
-    out = json.loads(json.dumps(data))
-    out.setdefault("cards", [])
-    cards = patch.get("cards")
-    if cards is not None:
-        if not isinstance(cards, dict) or not isinstance(cards.get("removed", []), list) \
-                or not isinstance(cards.get("added", []), list) or not isinstance(cards.get("order", []), list):
-            raise UserError("patch cards: {removed: [id], added: [{index, card}], order: [id]}")
-        gone = set(cards.get("removed", []))
-        out["cards"] = [c for c in out["cards"] if c.get("id") not in gone]
-        for add in cards.get("added", []):
-            card = add.get("card") if isinstance(add, dict) else None
-            if not isinstance(card, dict) or not isinstance(card.get("id"), str):
-                raise UserError("patch cards added: {index, card: {id, ...}}")
-            if any(c.get("id") == card["id"] for c in out["cards"]):
-                continue
-            index = add.get("index") if isinstance(add.get("index"), int) else len(out["cards"])
-            out["cards"].insert(max(0, min(index, len(out["cards"]))), card)
-        out["cards"] = reorder(out["cards"], cards.get("order", []))
-    for key in ("edits", "options"):
-        changes = patch.get(key)
-        if changes is None:
-            continue
-        if not isinstance(changes, dict):
-            raise UserError(f"patch {key}: an object by card id")
-        held = out.setdefault(key, {})
-        for card_id, value in changes.items():
-            if value is None:
-                held.pop(card_id, None)
-            elif not isinstance(value, dict):
-                raise UserError(f"patch {key} {card_id}: an object or null")
-            elif key == "edits":
-                held[card_id] = {**(held.get(card_id) or {}), **value}
-            else:
-                held[card_id] = value
-    for key in ("setName", "foil", "current", "code"):
-        if key in patch:
-            out[key] = patch[key]
-    return out
-
-
-def reorder(cards, order):
-    rank = {card_id: i for i, card_id in enumerate(order) if isinstance(card_id, str)}
-    named = iter(sorted((c for c in cards if c.get("id") in rank), key=lambda c: rank[c["id"]]))
-    return [next(named) if c.get("id") in rank else c for c in cards]
-
-
-def patch_project(name, patch, client=None):
-    f = project_file(name)
-    with _project_lock:
-        held = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {"data": {"version": 1}}
-        data = apply_patch(held.get("data") or {}, patch)
-        _check_data(data)
-        _keep_version(f)
-        out = _write(f, name.strip(), data, int(held.get("rev", 0)) + 1)
-        HUB.publish(f.stem, "patch", {"rev": out["rev"], "client": client, "patch": patch})
-    return out
-
-
-def delete_project(name, renamed=None, client=None):
-    """renamed: the name the work was saved under instead, so the others with it open move there, and its
-    history with them. A plain delete moves the project to the trash."""
-    f = project_file(name)
-    to = project_file(renamed) if renamed is not None else None      # checks the name
-    with _project_lock:
-        if not f.exists():
-            raise UserError(f"no saved project {name.strip()!r}")
-        if to is not None:
-            _move_history(f, to)
-            f.unlink()
-            HUB.publish(f.stem, "renamed", {"to": renamed.strip(), "client": client})
-        else:
-            _to_trash(f)
-            HUB.publish(f.stem, "deleted", {"client": client})
-    return {"deleted": name.strip()}
-
-
-# ---------------------------------------------------------------- project history and trash
-def _history_dir(f):
-    return projects_dir() / ".history" / f.stem
-
-
-def _trash_dir():
-    return projects_dir() / ".trash"
-
-
-def _stamp(t):
-    return datetime.datetime.fromtimestamp(t).strftime("%Y%m%d-%H%M%S")
-
-
-def _time_of(file_id):
-    """The time a version's or a trashed project's id starts with (_stamp), or None."""
-    try:
-        return datetime.datetime.strptime(file_id[:15], "%Y%m%d-%H%M%S")
-    except ValueError:
-        return None
-
-
-def _prune(folder, keep):
-    for old in sorted(folder.glob("*.json"))[:-keep]:
-        old.unlink(missing_ok=True)
-
-
-def _saved(f):
-    """(time, rev) the project file was saved with; its file time when it does not say (a copy has the copy's)."""
-    try:
-        p = json.loads(f.read_text(encoding="utf-8"))
-        return datetime.datetime.fromisoformat(p["saved"]).timestamp(), int(p.get("rev", 0))
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return f.stat().st_mtime, _rev(f)
-
-
-def _keep_version(f, always=False):
-    """Copy the project file into its history before it is written over. Pages patch 0.3 s after each change, so
-    not each time: when `always` (a whole save, a restore), when the newest version is HISTORY_EVERY older than the
-    project, or when the project has not changed for HISTORY_EVERY (the work a break ended on). Versions are named
-    by the project's saved time and rev, so their names sort oldest first. Under _project_lock."""
-    if not f.exists():
-        return
-    folder = _history_dir(f)
-    versions = sorted(folder.glob("*.json")) if folder.exists() else []
-    changed, rev = _saved(f)
-    newest = _time_of(versions[-1].stem) if versions else None
-    if not (always or newest is None or changed - newest.timestamp() >= HISTORY_EVERY
-            or time.time() - changed >= HISTORY_EVERY):
-        return
-    to = folder / f"{_stamp(changed)}-r{rev:06d}.json"
-    if to.exists():                              # kept already (a restore right after another)
-        return
-    folder.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(f, to)
-    _prune(folder, HISTORY_KEEP)
-
-
-def _move_history(f, to):
-    """A renamed project's versions join those of its new name."""
-    src, dst = _history_dir(f), _history_dir(to)
-    if src == dst or not src.exists():
-        return
-    dst.mkdir(parents=True, exist_ok=True)
-    for v in src.glob("*.json"):
-        if not (dst / v.name).exists():
-            os.replace(v, dst / v.name)
-    shutil.rmtree(src, ignore_errors=True)
-    _prune(dst, HISTORY_KEEP)
-
-
-def _to_trash(f):
-    folder = _trash_dir()
-    folder.mkdir(parents=True, exist_ok=True)
-    stamp = _stamp(time.time())
-    to = folder / f"{stamp}-{f.stem}.json"
-    for n in itertools.count(2):
-        if not to.exists():
-            break
-        to = folder / f"{stamp}-{f.stem}-{n}.json"
-    os.replace(f, to)
-    _prune(folder, TRASH_KEEP)
-
-
-def list_versions(name):
-    f = project_file(name)
-    folder = _history_dir(f)
-    out = []
-    for v in sorted(folder.glob("*.json"), reverse=True) if folder.exists() else ():
-        try:
-            p = json.loads(v.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        out.append({"id": v.stem, "saved": p.get("saved", ""), "rev": p.get("rev", 0), "cards": _cards(p)})
-    return {"name": name.strip(), "versions": out}
-
-
-def restore_version(name, version, client=None):
-    f = project_file(name)
-    if not isinstance(version, str) or not VERSION_ID.fullmatch(version):
-        raise UserError("version: an id from the project's history")
-    v = _history_dir(f) / f"{version}.json"
-    with _project_lock:
-        if not v.exists():
-            raise UserError(f"no version {version} of {name.strip()!r}")
-        data = json.loads(v.read_text(encoding="utf-8")).get("data")
-        _check_data(data)
-        _keep_version(f, always=True)
-        out = _write(f, name.strip(), data, _rev(f) + 1 if f.exists() else 1)
-        HUB.publish(f.stem, "replaced", {"rev": out["rev"], "client": client})
-    return out
-
-
-def list_trash():
-    out = []
-    for t in sorted(_trash_dir().glob("*.json"), reverse=True) if _trash_dir().exists() else ():
-        deleted = _time_of(t.stem)
-        try:
-            p = json.loads(t.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        out.append({"id": t.stem, "name": p.get("name", t.stem[16:]), "saved": p.get("saved", ""),
-                    "deleted": deleted.isoformat() if deleted else "", "cards": _cards(p)})
-    return {"trash": out}
-
-
-def _free_name(name):
-    """name, or "name (restored)", "name (restored 2)"... when a project has it now."""
-    if not project_file(name).exists():
-        return name
-    for n in itertools.count(1):
-        tail = " (restored)" if n == 1 else f" (restored {n})"
-        free = name[:60 - len(tail)].rstrip() + tail
-        if not project_file(free).exists():
-            return free
-
-
-def undelete_project(trash_id):
-    if not isinstance(trash_id, str) or not TRASH_ID.fullmatch(trash_id):
-        raise UserError("id: a deleted project's id")
-    t = _trash_dir() / f"{trash_id}.json"
-    with _project_lock:
-        if not t.exists():
-            raise UserError("no such deleted project (restored already, or emptied from the trash)")
-        held = json.loads(t.read_text(encoding="utf-8"))
-        _check_data(held.get("data"))
-        name = _free_name(str(held.get("name") or "").strip())
-        out = _write(project_file(name), name, held["data"], int(held.get("rev", 0)) + 1)
-        t.unlink()
-    return out
-
-
-# ---------------------------------------------------------------- every project as one download
-def exports_dir():
-    return cache.CACHE / "exports"
-
-
-Merged = namedtuple("Merged", "items projects repeats unreadable notes")
-
-
-def merged_items():
-    """Every saved project's cards as one list of zip items (like the page's own, see zip_renders). A card in
-    several projects comes from the most recently saved one, with that project's edits and options; cards a project
-    lists as skipped stay out. -> Merged: items, projects read, repeats left out, unreadable: [{name, why}] the
-    projects that could not be read (their cards are not in the list: whoever uses it says so), notes: [str] what the
-    list leaves out of what a project asks for (its holofoil, when there is no TCG Live extract to make it)."""
-    items, seen, projects, repeats, notes = [], set(), 0, 0, []
-    listed_projects, unreadable = _read_projects()
-    for listed in listed_projects:                                    # newest saved first
-        try:
-            data = load_project(listed["name"]).get("data") or {}
-        except (UserError, OSError, ValueError, AttributeError) as e:
-            unreadable.append({"name": listed["name"], "why": str(e) or type(e).__name__})
-            continue
-        projects += 1
-        foil = bool(data.get("foil"))
-        if foil and not tcg.TCGLIVE:                 # render() refuses it: the cards go without, and the note says so
-            foil = False
-            notes.append(f"{listed['name']}: holofoil left off (it needs a Pokemon TCG Live extract: start the GUI "
-                         "with --tcglive DIR)")
-        for c in data.get("cards") or []:
-            if not isinstance(c, dict) or c.get("skip") or not edit.valid_card_id(c.get("id")):
-                continue
-            if c["id"] in seen:
-                repeats += 1
-                continue
-            seen.add(c["id"])
-            opt = (data.get("options") or {}).get(c["id"]) or {}
-            items.append({"id": c["id"], "edits": (data.get("edits") or {}).get(c["id"]),
-                          "style": opt.get("style", "hybrid"), "attacks": opt.get("attacks", True),
-                          "foil": foil})
-    return Merged(items, projects, repeats, unreadable, notes)
-
-
-def _unreadable_note(unreadable):
-    return f"{len(unreadable)} project{'' if len(unreadable) == 1 else 's'} could not be read: " + "; ".join(
-        f"{u['name']}: {u['why']}" for u in unreadable[:3]) + (" …" if len(unreadable) > 3 else "")
-
-
-def _export_view(job):
-    return {**{k: job[k] for k in ("id", "state", "done", "total", "current", "projects", "repeats")},
-            "failed": list(job["failed"]), "unreadable": list(job["unreadable"]), "notes": list(job["notes"]),
-            "error": job.get("error"), "cancelling": job["cancel"]}
-
-
-def _drop_export(job):
-    if job["file"]:
-        job["file"].unlink(missing_ok=True)
-
-
-MERGED = Jobs(lambda: MERGED_KEEP, _export_view, "download", _drop_export)     # all-projects zips in the background
-_exports = MERGED.jobs
-
-
-def start_merged_zip():
-    """Build every saved project, merged (merged_items), as one zip in the background: a card takes 10-20 s to
-    render the first time and tunnels cut a request at ~100 s, so the page polls merged_progress. A build already
-    running is joined, not started again. -> its progress"""
-    with MERGED.lock:
-        running = MERGED.running(cancelling=False)
-        if running:
-            return _export_view(running)
-        merged = merged_items()
-        if not merged.items:
-            raise UserError("no saved project has a card to download"
-                            + (f" ({_unreadable_note(merged.unreadable)})" if merged.unreadable else ""))
-        job = MERGED.add(done=0, total=len(merged.items), current="", projects=merged.projects,
-                         repeats=merged.repeats, failed=[], unreadable=merged.unreadable, notes=merged.notes,
-                         file=None)
-        for f in exports_dir().glob("*.zip") if exports_dir().exists() else ():       # left by an earlier run
-            if f.stem not in MERGED.jobs:
-                f.unlink(missing_ok=True)
-        threading.Thread(target=_build_merged, args=(job, merged.items), daemon=True).start()
-        return _export_view(job)
-
-
-def _not_included(job):
-    """NOT-INCLUDED.txt of an all-projects zip: the cards that could not be rendered, the projects that could not be
-    read, and what was left off a card (merged_items' notes); "" when nothing was."""
-    parts = []
-    if job["failed"]:
-        parts.append("These cards could not be rendered:\n\n" + "\n".join(f"{f['id']}: {f['why']}" for f in job["failed"]))
-    if job["unreadable"]:
-        parts.append("These projects could not be read, so their cards are not here:\n\n"
-                     + "\n".join(f"{u['name']}: {u['why']}" for u in job["unreadable"]))
-    if job["notes"]:
-        parts.append("Left off:\n\n" + "\n".join(job["notes"]))
-    return "\n\n".join(parts) + "\n" if parts else ""
-
-
-def _build_merged(job, items):
-    """Render each card and zip it (renders are cached, so a card done before is quick). A card that fails does
-    not stop the others: it is listed in NOT-INCLUDED.txt and in the progress."""
-    path = exports_dir() / f"{job['id']}.zip"
-    made = []
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-            for it in items:
-                if job["cancel"]:
-                    raise export.Cancelled
-                job["current"] = it["id"]
-                try:
-                    png, _, layout, holo = render(it["id"], it["edits"], it["style"], it["attacks"], it["foil"])
-                except (Exception, SystemExit) as e:             # noqa: BLE001 - keep the cards that do render
-                    job["failed"].append({"id": it["id"], "why": str(e) or type(e).__name__})
-                else:
-                    z.writestr(f"{it['id']}-{layout}.png", png)
-                    for name, data in (holo.files.items() if holo else ()):
-                        z.writestr(name, data)
-                    made.append(it)
-                job["done"] += 1
-            if not made:
-                raise UserError("no card could be rendered: " + "; ".join(f"{f['id']}: {f['why']}" for f in job["failed"][:3]))
-            z.writestr("CHANGELOG.md", changelog(made, "All projects"))
-            if _not_included(job):
-                z.writestr("NOT-INCLUDED.txt", _not_included(job))
-        job["file"], job["state"] = path, "done"
-    except export.Cancelled:
-        job["state"] = "cancelled"
-        path.unlink(missing_ok=True)
-    except Exception as e:                                       # noqa: BLE001 - the page shows it
-        job["error"], job["state"] = (str(e) if isinstance(e, UserError) else f"{type(e).__name__}: {e}"), "failed"
-        path.unlink(missing_ok=True)
-
-
-def merged_progress(job_id):
-    return MERGED.progress(job_id)
-
-
-def cancel_merged_zip(job_id):
-    """Stop a build: it ends after the card being rendered (a render cannot be stopped halfway) and its zip is
-    removed. Cancelling a build that is over changes nothing. -> its progress"""
-    return MERGED.cancel(job_id)
-
-
-def merged_file(job_id):
-    job = MERGED.find(job_id)
-    if not job or job["state"] != "done" or not job["file"].exists():
-        raise LookupError("that download is not ready, or was removed: start it again")
-    return job["file"]
-
-
-# ---------------------------------------------------------------- push all: what it would change
-def keep_unlisted(items, set_dir):
-    """`items` with the cards the set already in set_dir holds that the list does not name put back where they are in
-    the set (export.unlisted_items): a push adds and changes cards, it never takes one out. A card made by hand in
-    the simulator's folder, or sent from another list, stays with its number and its files."""
-    out = list(items)
-    for place, item in export.unlisted_items(set_dir, {it["id"] for it in items}):
-        out.insert(min(place, len(out)), item)
-    return out
-
-
-MULTI_PRIZE = (" ex", " EX", " GX", " V", " VMAX", " VSTAR")   # name endings of Pokemon worth more than 1 prize
-
-
-def takes_reverse(card_id):
-    """Whether a card always gets the Gen 8 reverse holo (foil.gen8_plate): a 1-prize Pokemon, a Trainer but an ACE
-    SPEC card (its own foil). Energy and multi-prize Pokemon keep the holofoil switch's choice."""
-    try:
-        layout = layout_of(card_id)
-        name = tcg.card(card_id).get("name") or ""
-    except (UserError, ValueError, cache.DownloadError):
-        return False
-    if layout == "trainer":
-        return _is_ace(card_id) is False         # an ACE SPEC card TCGdex cannot vouch for keeps the switch's choice
-    return layout in ("me", "modern") and not name.endswith(MULTI_PRIZE)
-
-
-def standard_foil(items):
-    """`items` with holofoil on for every card that takes the Gen 8 reverse holo as standard (takes_reverse): a
-    push sets it whatever the holofoil switch says. A card the old print made holo keeps its holo."""
-    return [it if it.get("foil") or not takes_reverse(it["id"]) else {**it, "foil": True} for it in items]
-
-
-def keep_numbers(items, existing):
-    """`items` in the order of the set already there (export.existing_cards): a card that is in it keeps its number,
-    the others follow in the order they came. The merge of the projects lists the newest project first, so its own
-    order would renumber the set whenever another project is saved."""
-    place = {}
-    for i, (source, _) in enumerate(existing or []):
-        if source:
-            place.setdefault(source, i)
-    return (sorted((it for it in items if it["id"] in place), key=lambda it: place[it["id"]])
-            + [it for it in items if it["id"] not in place])
-
-
-def push_items(items, set_dir):
-    """What a push of `items` into set_dir sends: a card in the set already keeps its number whatever its place in the
-    list (keep_numbers), the cards of the set the list does not name stay (keep_unlisted: a push never takes one out),
-    and every 1-prize Pokemon and Trainer goes with its holofoil (standard_foil)."""
-    return standard_foil(keep_unlisted(keep_numbers(items, export.existing_cards(set_dir)), set_dir))
-
-
-def _push_changes(original, after, layout, old, new, stale=False):
-    """What differs between a card as it was pushed (its options `old`) and as the list has it now (`new`, from
-    export.card_options): the edits' changes, then the options'. stale: True when its images on disk are not the ones
-    the set's record names, "foil" when its holofoil there is not known to match it (made outside a push, or its files
-    differ from the record): rendered again whatever changed."""
-    try:
-        before = edit.apply(original, old["edits"]) if old.get("edits") else original
-    except ValueError:                                   # edits this version no longer takes
-        before = original
-    lines = edit.changes(before, after)
-    if layout == "ex" and (old.get("style") or "hybrid") != new["style"]:
-        lines.append(f"Style: {old.get('style') or 'hybrid'} → {new['style']}")
-    if bool(old.get("attacks", True)) != new["attacks"]:
-        lines.append("Abilities and attacks: " + ("shown" if new["attacks"] else "left off"))
-    if bool(old.get("foil")) != new["foil"]:
-        lines.append("Holofoil: " + ("on" if new["foil"] else "off"))
-    if stale == "foil":
-        lines.append("Its holofoil in the set is not known to match the card: made again")
-    elif stale:
-        lines.append("Its images in the set are not the ones its record names: rendered again")
-    return lines or ["Set again (its options changed, the card reads the same)"]
-
-
-def _plan_card(item, old=None, stale=False):
-    """A card of the push plan: {id, name (as the set will name it), lines}. lines: for a new card what differs from
-    the printed card (card_changes); for a changed one (old: the options it was pushed with) what differs from that
-    push. A card that cannot be read is listed with the reason: the push would fail on it."""
-    try:
-        layout, original = read(item["id"])
-        card = edit.apply(original, item["edits"]) if item.get("edits") else original
-        opts = export.card_options(item)
-        lines = (card_changes(item["id"], item.get("edits"), opts["style"], opts["attacks"])[1] if old is None
-                 else _push_changes(original, card, layout, old, opts, stale))
-        return {"id": item["id"], "name": export.card_name(card, layout), "lines": lines}
-    except (UserError, ValueError) as e:
-        return {"id": item["id"], "name": item["id"], "lines": [f"cannot be read: {e}"]}
-
-
-def push_all_plan(code):
-    """What pushing every saved project, merged (merged_items; the cards already in the set keep their numbers), as
-    the set `code` would change in the simulator's folder, worked out from its set.json without rendering anything.
-    -> {setId, code, title (the set's name now), projects, repeats, incoming, existing (cards there, None: no set yet),
-    added / changed: [{id, name, lines}], removed: [{id, name}] (cards no list can send again: none in a set this editor
-    wrote), kept: [{id, name}] (in the set, in no saved project: they stay), moved (cards that get another number),
-    unchanged, unreadable: [{name, why}] (projects that could not be read: their cards are in none of the lists),
-    notes: [str] (what the merge left off, merged_items),
-    items (what to send to /api/push-set or /api/publish-set to push exactly this)}"""
-    root = _sim_root()
-    try:
-        set_id = export.set_id_for(code)
-    except ValueError as e:
-        raise UserError(str(e)) from e
-    merged = merged_items()
-    if not merged.items:
-        raise UserError("no saved project has a card to push"
-                        + (f" ({_unreadable_note(merged.unreadable)})" if merged.unreadable else ""))
-    set_dir = root / set_id
-    listed = {it["id"] for it in merged.items}
-    items = push_items(merged.items, set_dir)
-    plan = export.plan_set(items, set_dir)
-    names = {source: name for source, name in reversed(export.existing_cards(set_dir) or []) if source}
-    kept = [{"id": it["id"], "name": names.get(it["id"], it["id"])} for it in items if it["id"] not in listed]
-    return {"setId": set_id, "code": code, "title": export.existing_title(set_dir), "projects": merged.projects,
-            "repeats": merged.repeats, "incoming": len(items), "existing": plan["existing"],
-            "added": [_plan_card(it) for it in plan["added"]],
-            "changed": [_plan_card(it, old, stale) for it, old, stale in plan["changed"]],
-            "removed": [{"id": source, "name": name} for source, name in plan["removed"]],
-            "kept": kept, "moved": plan["moved"], "unchanged": plan["unchanged"], "unreadable": merged.unreadable,
-            "notes": merged.notes, "items": items}
-
-
-class Room:
-    def __init__(self):
-        self.seq = 0
-        self.log = deque(maxlen=EVENT_LOG)    # (seq, event, data)
-        self.viewers = {}                     # client -> time of its last poll
-
-
-class Hub:
-    """What happens to each open project (by project file stem), for the pages polling it."""
-
-    def __init__(self):
-        self._cond = threading.Condition()
-        self._rooms = {}
-
-    def _room(self, key):
-        return self._rooms.setdefault(key, Room())
-
-    def _append(self, room, event, data):
-        room.seq += 1
-        room.log.append((room.seq, event, data))
-        self._cond.notify_all()
-
-    def _viewers(self, room, client=None):
-        """Count the pages polling, `client` now one of them; a change in the count is news too."""
-        now = time.monotonic()
-        before = len(room.viewers)
-        for c, seen in list(room.viewers.items()):
-            if now - seen > VIEWER_GONE:
-                del room.viewers[c]
-        if client is not None:
-            room.viewers[client] = now
-        if len(room.viewers) != before:
-            self._append(room, "viewers", {"viewers": len(room.viewers)})
-        return len(room.viewers)
-
-    def publish(self, key, event, data):
-        with self._cond:
-            self._append(self._room(key), event, data)
-
-    def leave(self, key, client):
-        with self._cond:
-            room = self._room(key)
-            if room.viewers.pop(client, None) is not None:
-                self._append(room, "viewers", {"viewers": len(room.viewers)})
-
-    def poll(self, key, after, client, rev, wait=POLL_WAIT):
-        """-> {seq, viewers, events} once there are events past `after` or `wait` s pass; with hello {rev: rev()}
-        at once when `after` is not a point this log can go on from (a new page, a restarted server, a page that
-        was away longer than the log is long)."""
-        deadline = time.monotonic() + wait
-        with self._cond:
-            room = self._room(key)
-            self._viewers(room, client)
-            oldest = room.log[0][0] if room.log else room.seq + 1
-            if after < 0 or after > room.seq or after < oldest - 1:
-                return {"seq": room.seq, "viewers": len(room.viewers), "events": [], "hello": {"rev": rev()}}
-            while True:
-                news = [{"event": e, "data": d} for n, e, d in room.log if n > after]
-                left = deadline - time.monotonic()
-                if news or left <= 0:
-                    break
-                self._cond.wait(left)
-            room.viewers[client] = time.monotonic()
-            return {"seq": room.seq, "viewers": len(room.viewers), "events": news}
-
-
-HUB = Hub()
-
-
-def poll_project(name, after, client):
-    if not isinstance(client, str) or not 1 <= len(client) <= 80:
-        raise UserError("poll: a client id")
-    try:
-        after = int(after)
-    except (TypeError, ValueError):
-        raise UserError("poll: after=SEQ") from None
-    f = project_file(name)
-    return HUB.poll(f.stem, after, client, lambda: _rev(f) if f.exists() else 0)
-
-
-def leave_project(name, client):
-    HUB.leave(project_file(name).stem, client)
-    return {"left": name.strip()}
 
 
 # ---------------------------------------------------------------- HTTP
@@ -1642,11 +420,11 @@ class Handler(BaseHTTPRequestHandler):
     def _can_push(self):
         """/api/push-set writes into the simulator checkout: only for a trusted request, and only when the checkout
         is known."""
-        return self._trusted() and sim_sets_dir() is not None
+        return self._trusted() and setjobs.sim_sets_dir() is not None
 
     def _can_publish(self):
         """/api/publish-set: as push-set, and the bucket remote and the simulator's publish script are known."""
-        return self._can_push() and site_remote() is not None and sim_checkout() is not None
+        return self._can_push() and setjobs.site_remote() is not None and setjobs.sim_checkout() is not None
 
     def _guard(self, fn):
         try:
@@ -1668,9 +446,9 @@ class Handler(BaseHTTPRequestHandler):
             if url.path in ("/", "/index.html"):
                 self._send(HTTPStatus.OK, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif url.path == "/api/meta":
-                self._json({"energy": list(edit.ENERGY), "styles": list(STYLES), "ptcgSim": self._can_push(),
+                self._json({"energy": list(edit.ENERGY), "styles": list(rendering.STYLES), "ptcgSim": self._can_push(),
                             "ptcgSite": self._can_publish(),
-                            "publishKey": publish_key() is not None and sim_sets_dir() is not None,
+                            "publishKey": publish_key() is not None and setjobs.sim_sets_dir() is not None,
                             "terms": [term for term, _ in wording.TERMS], "suggest": wording.available(),
                             "limits": {"abilities": edit.MAX_ABILITIES, "attacks": edit.MAX_ATTACKS,
                                        "cost": edit.MAX_COST, "retreat": edit.MAX_RETREAT},
@@ -1682,22 +460,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(card_summary((parse_qs(url.query).get("id") or [""])[0].strip()))
             elif url.path == "/api/projects":
                 name = (parse_qs(url.query).get("name") or [None])[0]
-                self._json(load_project(name) if name is not None else list_projects())
+                self._json(projects.load_project(name) if name is not None else projects.list_projects())
             elif url.path == "/api/set-job":
                 if not self._refused("Following a send or publish"):
-                    self._json(set_job_progress((parse_qs(url.query).get("job") or [""])[0]))
+                    self._json(setjobs.set_job_progress((parse_qs(url.query).get("job") or [""])[0]))
             elif url.path == "/api/projects/merged":
-                self._json(merged_progress((parse_qs(url.query).get("job") or [""])[0]))
+                self._json(merged.merged_progress((parse_qs(url.query).get("job") or [""])[0]))
             elif url.path == "/api/projects/merged/file":
-                self._file(merged_file((parse_qs(url.query).get("job") or [""])[0]), "all-projects.zip")
+                self._file(merged.merged_file((parse_qs(url.query).get("job") or [""])[0]), "all-projects.zip")
             elif url.path == "/api/projects/poll":
                 q = parse_qs(url.query)
-                self._json(poll_project((q.get("name") or [""])[0], (q.get("after") or ["-1"])[0],
-                                        (q.get("client") or [""])[0]))
+                self._json(projects.poll_project((q.get("name") or [""])[0], (q.get("after") or ["-1"])[0],
+                                                 (q.get("client") or [""])[0]))
             elif url.path == "/api/projects/history":
-                self._json(list_versions((parse_qs(url.query).get("name") or [""])[0]))
+                self._json(projects.list_versions((parse_qs(url.query).get("name") or [""])[0]))
             elif url.path == "/api/projects/trash":
-                self._json(list_trash())
+                self._json(projects.list_trash())
             elif url.path.startswith("/api/original/") and url.path.endswith(".png"):
                 self._send(HTTPStatus.OK, original_png(url.path[len("/api/original/"):-4]), "image/png")
             elif url.path.startswith("/api/icon/") and url.path.endswith(".png"):
@@ -1723,11 +501,12 @@ class Handler(BaseHTTPRequestHandler):
         def go():
             body = self._body()
             if url.path == "/api/render":
-                png, notes, layout, made = render(body.get("id"), body.get("edits"), body.get("style", "hybrid"),
-                                                  body.get("attacks", True), bool(body.get("foil")))
+                png, notes, layout, made = rendering.render(body.get("id"), body.get("edits"),
+                                                            body.get("style", "hybrid"), body.get("attacks", True),
+                                                            bool(body.get("foil")))
                 out = {"png": base64.b64encode(png).decode(), "warnings": notes, "layout": layout,
-                       "changes": card_changes(body.get("id"), body.get("edits"), body.get("style", "hybrid"),
-                                               body.get("attacks", True))[1]}
+                       "changes": rendering.card_changes(body.get("id"), body.get("edits"),
+                                                         body.get("style", "hybrid"), body.get("attacks", True))[1]}
                 if made:
                     out["foil"] = holo_json(made)
                 self._json(out)
@@ -1752,35 +531,35 @@ class Handler(BaseHTTPRequestHandler):
                 if self._refused("Publish to site" if kind == "publish" else "Send to ptcg-sim"):
                     return
                 try:
-                    self._json(start_set_job(kind, body.get("items"), body.get("title", ""), body.get("code"),
-                                             body.get("force"), body.get("allowShrink") is True))
-                except DropsCards as e:
+                    self._json(setjobs.start_set_job(kind, body.get("items"), body.get("title", ""), body.get("code"),
+                                                     body.get("force"), body.get("allowShrink") is True))
+                except setjobs.DropsCards as e:
                     self._json({"error": str(e), "drops": e.info}, HTTPStatus.CONFLICT)
             elif url.path == "/api/set-job/cancel":
                 if not self._refused("Cancelling a send or publish"):
-                    self._json(cancel_set_job(body.get("job")))
+                    self._json(setjobs.cancel_set_job(body.get("job")))
             elif url.path == "/api/push-plan":
                 if not self._refused("Push all"):
-                    self._json(push_all_plan(body.get("code")))
+                    self._json(setjobs.push_all_plan(body.get("code")))
             elif url.path == "/api/changelog":
-                self._send(HTTPStatus.OK, changelog(body.get("items"), body.get("title", "")).encode(),
+                self._send(HTTPStatus.OK, rendering.changelog(body.get("items"), body.get("title", "")).encode(),
                            "text/markdown; charset=utf-8")
             elif url.path == "/api/projects":
-                self._json(save_project(body.get("name"), body.get("data"), body.get("client")))
+                self._json(projects.save_project(body.get("name"), body.get("data"), body.get("client")))
             elif url.path == "/api/projects/merged":
-                self._json(start_merged_zip())
+                self._json(merged.start_merged_zip())
             elif url.path == "/api/projects/merged/cancel":
-                self._json(cancel_merged_zip(body.get("job")))
+                self._json(merged.cancel_merged_zip(body.get("job")))
             elif url.path == "/api/projects/patch":
-                self._json(patch_project(body.get("name"), body.get("patch"), body.get("client")))
+                self._json(projects.patch_project(body.get("name"), body.get("patch"), body.get("client")))
             elif url.path == "/api/projects/delete":
-                self._json(delete_project(body.get("name"), body.get("renamed"), body.get("client")))
+                self._json(projects.delete_project(body.get("name"), body.get("renamed"), body.get("client")))
             elif url.path == "/api/projects/leave":
-                self._json(leave_project(body.get("name"), body.get("client")))
+                self._json(projects.leave_project(body.get("name"), body.get("client")))
             elif url.path == "/api/projects/restore":
-                self._json(restore_version(body.get("name"), body.get("version"), body.get("client")))
+                self._json(projects.restore_version(body.get("name"), body.get("version"), body.get("client")))
             elif url.path == "/api/projects/undelete":
-                self._json(undelete_project(body.get("id")))
+                self._json(projects.undelete_project(body.get("id")))
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         self._guard(go)

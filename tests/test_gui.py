@@ -10,7 +10,7 @@ import urllib.request
 import zipfile
 from unittest import mock
 
-from svrestyle import edit, gui
+from svrestyle import edit, gui, projects, rendering, setjobs
 
 
 def card(**over):
@@ -107,7 +107,7 @@ class ImportSet(unittest.TestCase):
                  {"id": "me04-001", "name": "Weedle", "layout": "modern"}]
         category = {"me01-117": "Trainer", "me03-086": "Energy"}
         with mock.patch.object(gui.tcg, "card", side_effect=lambda i: {"id": i, "category": category[i]}):
-            out = gui._current_entries(cards)
+            out = rendering._current_entries(cards)
         self.assertEqual(out, [{"id": "me01-117", "name": "Forest of Vitality", "layout": "trainer", "gen9": True,
                                 "ace": False},
                                {"id": "me03-086", "name": "Growing Grass Energy", "layout": "energy"},
@@ -118,10 +118,10 @@ class ImportSet(unittest.TestCase):
     def test_skipped_card_stays_when_tcgdex_fails(self):
         card = {"id": "me01-117", "name": "Forest of Vitality", "skip": "not a Pokémon"}
         with mock.patch.object(gui.tcg, "card", side_effect=gui.cache.DownloadError("offline")):
-            self.assertEqual(gui._current_entries([card]), [card])
+            self.assertEqual(rendering._current_entries([card]), [card])
 
     def test_rejects_other_json(self):
-        with self.assertRaises(gui.UserError):
+        with self.assertRaises(rendering.UserError):
             gui.import_set([1, 2])
 
 
@@ -213,10 +213,10 @@ class Http(unittest.TestCase):
         self.assertIn("--tcglive", json.loads(body)["error"])
 
     def test_render_and_zip(self):
-        gui._renders.clear()
-        fake = gui.Render(b"\x89PNG fake", ["a warning"], "me")
-        with mock.patch.object(gui, "render", return_value=fake) as r, \
-                mock.patch.object(gui, "card_changes", return_value=("Tyranitar", ["Retreat: 4 → 2"])):
+        rendering._renders.clear()
+        fake = rendering.Render(b"\x89PNG fake", ["a warning"], "me")
+        with mock.patch.object(rendering, "render", return_value=fake) as r, \
+                mock.patch.object(rendering, "card_changes", return_value=("Tyranitar", ["Retreat: 4 → 2"])):
             status, _, body = self.call("/api/render", {"id": "swsh3-88", "edits": {"retreat": 2}})
             self.assertEqual(status, 200)
             data = json.loads(body)
@@ -231,14 +231,14 @@ class Http(unittest.TestCase):
         self.assertIn("- Retreat: 4 → 2", z.read("CHANGELOG.md").decode())
 
     def test_render_and_zip_with_holofoil(self):
-        gui._renders.clear()
+        rendering._renders.clear()
         record = {"front": "swsh3-51-me-front.png", "base": None,
                   "reverse": {"shader": "TPCi/Cards3D/HoloFoil/FlatSilver", "material": "MAT_Cards3D_FlatSilver",
                               "wp": "swsh3-51-me-wp-ph.png", "cc": None, "etch": None, "cf": None}}
         files = {"swsh3-51-me-front.png": b"f", "swsh3-51-me-wp-ph.png": b"p", "swsh3-51-me-foil.json": b"{}"}
-        fake = gui.Render(b"fake png", [], "me", gui.Holo(record, files, {"reverse": b"plate"}, "t0ken"))
-        gui._renders["a request"] = fake             # what render() keeps, for the texture URLs
-        with mock.patch.object(gui, "render", return_value=fake) as r,                 mock.patch.object(gui, "card_changes", return_value=("Kingler", [])):
+        fake = rendering.Render(b"fake png", [], "me", rendering.Holo(record, files, {"reverse": b"plate"}, "t0ken"))
+        rendering._renders["a request"] = fake             # what render() keeps, for the texture URLs
+        with mock.patch.object(rendering, "render", return_value=fake) as r,                 mock.patch.object(rendering, "card_changes", return_value=("Kingler", [])):
             status, _, body = self.call("/api/render", {"id": "swsh3-51", "foil": True})
             data = json.loads(body)
             self.assertIsNone(data["foil"]["base"])
@@ -270,7 +270,7 @@ class Http(unittest.TestCase):
         gui.foil_materials.cache_clear()
 
     def test_edit_errors_come_back_as_400(self):
-        with mock.patch.object(gui, "read", return_value=("me", card())):
+        with mock.patch.object(rendering, "read", return_value=("me", card())):
             status, _, body = self.call("/api/render", {"id": "swsh3-88", "edits": {"retreat": 9}})
         self.assertEqual(status, 400)
         self.assertIn("retreat", json.loads(body)["error"])
@@ -295,37 +295,37 @@ class Projects(unittest.TestCase):
     def test_save_list_open_delete(self):
         data = {"cards": [{"id": "swsh3-88", "name": "Tyranitar", "layout": "me"}],
                 "edits": {"swsh3-88": {"hp": "190"}}, "current": "swsh3-88"}
-        self.assertEqual(gui.list_projects(), {"projects": []})
-        out = gui.save_project(" My Set (v2) ", data)
+        self.assertEqual(projects.list_projects(), {"projects": []})
+        out = projects.save_project(" My Set (v2) ", data)
         self.assertEqual(out["name"], "My Set (v2)")
-        listed = gui.list_projects()["projects"]
+        listed = projects.list_projects()["projects"]
         self.assertEqual([(p["name"], p["cards"]) for p in listed], [("My Set (v2)", 1)])
-        self.assertEqual(gui.load_project("My Set (v2)")["data"], data)
-        gui.save_project("My Set (v2)", {**data, "cards": []})          # overwrites
-        self.assertEqual(gui.list_projects()["projects"][0]["cards"], 0)
-        self.assertEqual(gui.delete_project("My Set (v2)"), {"deleted": "My Set (v2)"})
-        self.assertEqual(gui.list_projects(), {"projects": []})
+        self.assertEqual(projects.load_project("My Set (v2)")["data"], data)
+        projects.save_project("My Set (v2)", {**data, "cards": []})          # overwrites
+        self.assertEqual(projects.list_projects()["projects"][0]["cards"], 0)
+        self.assertEqual(projects.delete_project("My Set (v2)"), {"deleted": "My Set (v2)"})
+        self.assertEqual(projects.list_projects(), {"projects": []})
 
     def test_rejections(self):
         for name in ("", "../x", "a/b", None, "x" * 61, " "):
-            with self.subTest(name), self.assertRaises(gui.UserError):
-                gui.save_project(name, {"cards": []})
+            with self.subTest(name), self.assertRaises(rendering.UserError):
+                projects.save_project(name, {"cards": []})
         for data in (None, [], {"cards": "x"}, {"edits": []}):
-            with self.subTest(data), self.assertRaises(gui.UserError):
-                gui.save_project("ok", data)
-        with self.assertRaises(gui.UserError):
-            gui.load_project("missing")
-        with mock.patch.object(gui, "MAX_PROJECT", 50), self.assertRaises(gui.UserError):
-            gui.save_project("big", {"cards": [{"id": "x" * 100}]})
+            with self.subTest(data), self.assertRaises(rendering.UserError):
+                projects.save_project("ok", data)
+        with self.assertRaises(rendering.UserError):
+            projects.load_project("missing")
+        with mock.patch.object(projects, "MAX_PROJECT", 50), self.assertRaises(rendering.UserError):
+            projects.save_project("big", {"cards": [{"id": "x" * 100}]})
 
     def test_names_stay_inside_the_folder(self):
-        self.assertEqual(gui.project_file("Base Set, 1999").parent, gui.projects_dir())
-        self.assertEqual(gui.project_file("Base Set, 1999").name, "base-set-1999.json")
+        self.assertEqual(projects.project_file("Base Set, 1999").parent, projects.projects_dir())
+        self.assertEqual(projects.project_file("Base Set, 1999").name, "base-set-1999.json")
 
     def test_patches_change_only_what_they_name(self):
         base = {"cards": [{"id": "a"}, {"id": "b"}], "edits": {"a": {"name": "A", "hp": "60"}},
                 "options": {"a": {"style": "hybrid"}}, "setName": "S"}
-        out = gui.apply_patch(base, {"cards": {"removed": ["b"], "added": [{"index": 0, "card": {"id": "c"}}]},
+        out = projects.apply_patch(base, {"cards": {"removed": ["b"], "added": [{"index": 0, "card": {"id": "c"}}]},
                                      "edits": {"a": {"hp": "70", "weakness": None}, "c": {"name": "C"}},
                                      "options": {"a": None}})
         self.assertEqual([c["id"] for c in out["cards"]], ["c", "a"])
@@ -334,53 +334,53 @@ class Projects(unittest.TestCase):
         self.assertNotIn("a", out["options"])
         self.assertEqual(out["setName"], "S")
         self.assertEqual(base["edits"]["a"]["hp"], "60")                                   # a copy
-        again = gui.apply_patch(out, {"cards": {"added": [{"index": 5, "card": {"id": "a"}}]}})
+        again = projects.apply_patch(out, {"cards": {"added": [{"index": 5, "card": {"id": "a"}}]}})
         self.assertEqual([c["id"] for c in again["cards"]], ["c", "a"])                    # no duplicates
         for bad in ([], {"cards": []}, {"edits": []}, {"edits": {"a": 3}}, {"cards": {"added": [{"card": {}}]}}):
-            with self.subTest(bad), self.assertRaises(gui.UserError):
-                gui.apply_patch(base, bad)
+            with self.subTest(bad), self.assertRaises(rendering.UserError):
+                projects.apply_patch(base, bad)
 
     def test_order_moves_only_the_cards_it_names(self):
         base = {"cards": [{"id": "a"}, {"id": "b"}, {"id": "new"}, {"id": "c"}]}
-        out = gui.apply_patch(base, {"cards": {"order": ["c", "a", "b", "gone"]}})
+        out = projects.apply_patch(base, {"cards": {"order": ["c", "a", "b", "gone"]}})
         self.assertEqual([c["id"] for c in out["cards"]], ["c", "a", "new", "b"])        # "new" keeps its place
-        moved = gui.apply_patch(base, {"cards": {"removed": ["a"], "added": [{"index": 0, "card": {"id": "d"}}],
+        moved = projects.apply_patch(base, {"cards": {"removed": ["a"], "added": [{"index": 0, "card": {"id": "d"}}],
                                                  "order": ["b", "c", "d"]}})
         self.assertEqual([c["id"] for c in moved["cards"]], ["b", "c", "new", "d"])
-        with self.assertRaises(gui.UserError):
-            gui.apply_patch(base, {"cards": {"order": "c"}})
+        with self.assertRaises(rendering.UserError):
+            projects.apply_patch(base, {"cards": {"order": "c"}})
 
     def test_two_people_editing_one_card_keep_both_fields(self):
-        gui.patch_project("Shared", {"cards": {"added": [{"index": 0, "card": {"id": "a"}}]},
+        projects.patch_project("Shared", {"cards": {"added": [{"index": 0, "card": {"id": "a"}}]},
                                      "edits": {"a": {"name": "A", "hp": "60"}}})
-        gui.patch_project("Shared", {"edits": {"a": {"name": "Alpha"}}}, client="one")
-        out = gui.patch_project("Shared", {"edits": {"a": {"hp": "90"}}}, client="two")
+        projects.patch_project("Shared", {"edits": {"a": {"name": "Alpha"}}}, client="one")
+        out = projects.patch_project("Shared", {"edits": {"a": {"hp": "90"}}}, client="two")
         self.assertEqual(out["rev"], 3)
-        self.assertEqual(gui.load_project("Shared")["data"]["edits"]["a"], {"name": "Alpha", "hp": "90"})
-        self.assertEqual(gui.save_project("Shared", {"cards": []})["rev"], 4)
+        self.assertEqual(projects.load_project("Shared")["data"]["edits"]["a"], {"name": "Alpha", "hp": "90"})
+        self.assertEqual(projects.save_project("Shared", {"cards": []})["rev"], 4)
 
     def test_open_pages_hear_patches_saves_renames_and_deletes(self):
-        seq = gui.poll_project("Live", -1, "me")["seq"]
-        gui.patch_project("Live", {"setName": "L"}, client="me")
-        gui.save_project("Live", {"cards": []}, client="me")
-        news = gui.poll_project("Live", seq, "me")
+        seq = projects.poll_project("Live", -1, "me")["seq"]
+        projects.patch_project("Live", {"setName": "L"}, client="me")
+        projects.save_project("Live", {"cards": []}, client="me")
+        news = projects.poll_project("Live", seq, "me")
         self.assertEqual([(e["event"], e["data"].get("rev")) for e in news["events"]], [("patch", 1), ("replaced", 2)])
-        with mock.patch.object(gui, "POLL_WAIT", 0):
+        with mock.patch.object(projects, "POLL_WAIT", 0):
             seq = news["seq"]
-            other = gui.HUB.poll("live", -1, "other", lambda: 2, wait=0)
+            other = projects.HUB.poll("live", -1, "other", lambda: 2, wait=0)
             self.assertEqual((other["hello"], other["viewers"]), ({"rev": 2}, 2))
-            news = gui.HUB.poll("live", seq, "me", lambda: 2, wait=0)
+            news = projects.HUB.poll("live", seq, "me", lambda: 2, wait=0)
             self.assertEqual(news["events"], [{"event": "viewers", "data": {"viewers": 2}}])
-            gui.leave_project("Live", "other")
-            gui.delete_project("Live", renamed="Live 2", client="me")
-            news = gui.HUB.poll("live", news["seq"], "me", lambda: 0, wait=0)
+            projects.leave_project("Live", "other")
+            projects.delete_project("Live", renamed="Live 2", client="me")
+            news = projects.HUB.poll("live", news["seq"], "me", lambda: 0, wait=0)
             self.assertEqual([e["event"] for e in news["events"]], ["viewers", "renamed"])
             self.assertEqual(news["events"][1]["data"], {"to": "Live 2", "client": "me"})
             self.assertEqual(news["viewers"], 1)
 
     def test_a_page_away_too_long_reads_the_project_again(self):
-        with mock.patch.object(gui, "EVENT_LOG", 3):
-            hub = gui.Hub()
+        with mock.patch.object(projects, "EVENT_LOG", 3):
+            hub = projects.Hub()
             start = hub.poll("k", -1, "me", lambda: 0, wait=0)["seq"]
             for i in range(5):
                 hub.publish("k", "patch", {"rev": i})
@@ -388,61 +388,61 @@ class Projects(unittest.TestCase):
             self.assertEqual(hub.poll("k", 999, "me", lambda: 5, wait=0)["hello"], {"rev": 5})   # server restarted
 
     def test_versions_kept_while_working_and_restored(self):
-        gui.patch_project("Hist", {"setName": "one"})
-        self.assertEqual(gui.list_versions("Hist")["versions"], [])           # nothing written over yet
-        gui.patch_project("Hist", {"setName": "two"})                         # the first one written over: kept
-        gui.patch_project("Hist", {"setName": "three"})                       # soon after: not kept
-        first = gui.list_versions("Hist")["versions"]
+        projects.patch_project("Hist", {"setName": "one"})
+        self.assertEqual(projects.list_versions("Hist")["versions"], [])           # nothing written over yet
+        projects.patch_project("Hist", {"setName": "two"})                         # the first one written over: kept
+        projects.patch_project("Hist", {"setName": "three"})                       # soon after: not kept
+        first = projects.list_versions("Hist")["versions"]
         self.assertEqual([(v["rev"], v["cards"]) for v in first], [(1, 0)])
-        f = gui.project_file("Hist")                                          # work stopped, then goes on
+        f = projects.project_file("Hist")                                          # work stopped, then goes on
         held = json.loads(f.read_text(encoding="utf-8"))
-        then = gui.datetime.datetime.fromtimestamp(time.time() - gui.HISTORY_EVERY - 5)
+        then = projects.datetime.datetime.fromtimestamp(time.time() - projects.HISTORY_EVERY - 5)
         f.write_text(json.dumps({**held, "saved": then.isoformat(timespec="seconds")}), encoding="utf-8")
-        gui.patch_project("Hist", {"setName": "four"})
-        self.assertEqual(sorted(v["rev"] for v in gui.list_versions("Hist")["versions"]), [1, 3])
-        self.assertEqual(gui.restore_version("Hist", first[0]["id"], client="me")["rev"], 5)
-        self.assertEqual(gui.load_project("Hist")["data"]["setName"], "one")
-        self.assertIn(4, [v["rev"] for v in gui.list_versions("Hist")["versions"]])   # what it was, kept first
+        projects.patch_project("Hist", {"setName": "four"})
+        self.assertEqual(sorted(v["rev"] for v in projects.list_versions("Hist")["versions"]), [1, 3])
+        self.assertEqual(projects.restore_version("Hist", first[0]["id"], client="me")["rev"], 5)
+        self.assertEqual(projects.load_project("Hist")["data"]["setName"], "one")
+        self.assertIn(4, [v["rev"] for v in projects.list_versions("Hist")["versions"]])   # what it was, kept first
         for bad in ("../../x", "20200101-000000-r000001", None):
-            with self.subTest(bad), self.assertRaises(gui.UserError):
-                gui.restore_version("Hist", bad)
+            with self.subTest(bad), self.assertRaises(rendering.UserError):
+                projects.restore_version("Hist", bad)
 
     def test_whole_saves_keep_a_version_and_old_versions_go(self):
-        gui.save_project("Whole", {"cards": [{"id": "a"}]})
-        gui.save_project("Whole", {"cards": []})
-        self.assertEqual([(v["rev"], v["cards"]) for v in gui.list_versions("Whole")["versions"]], [(1, 1)])
-        with mock.patch.object(gui, "HISTORY_EVERY", 0), mock.patch.object(gui, "HISTORY_KEEP", 2):
+        projects.save_project("Whole", {"cards": [{"id": "a"}]})
+        projects.save_project("Whole", {"cards": []})
+        self.assertEqual([(v["rev"], v["cards"]) for v in projects.list_versions("Whole")["versions"]], [(1, 1)])
+        with mock.patch.object(projects, "HISTORY_EVERY", 0), mock.patch.object(projects, "HISTORY_KEEP", 2):
             for i in range(5):
-                gui.patch_project("Busy", {"setName": str(i)})
-        self.assertEqual([v["rev"] for v in gui.list_versions("Busy")["versions"]], [4, 3])
+                projects.patch_project("Busy", {"setName": str(i)})
+        self.assertEqual([v["rev"] for v in projects.list_versions("Busy")["versions"]], [4, 3])
 
     def test_deleted_projects_go_to_the_trash(self):
-        gui.save_project("Gone", {"cards": [{"id": "a"}]})
-        gui.delete_project("Gone")
-        trash = gui.list_trash()["trash"]
+        projects.save_project("Gone", {"cards": [{"id": "a"}]})
+        projects.delete_project("Gone")
+        trash = projects.list_trash()["trash"]
         self.assertEqual([(t["name"], t["cards"]) for t in trash], [("Gone", 1)])
-        gui.save_project("Gone", {"cards": []})                               # the name taken again meanwhile
-        self.assertEqual(gui.undelete_project(trash[0]["id"])["name"], "Gone (restored)")
-        self.assertEqual(gui.load_project("Gone (restored)")["data"]["cards"], [{"id": "a"}])
-        self.assertEqual(gui.list_trash(), {"trash": []})
+        projects.save_project("Gone", {"cards": []})                               # the name taken again meanwhile
+        self.assertEqual(projects.undelete_project(trash[0]["id"])["name"], "Gone (restored)")
+        self.assertEqual(projects.load_project("Gone (restored)")["data"]["cards"], [{"id": "a"}])
+        self.assertEqual(projects.list_trash(), {"trash": []})
         for bad in (trash[0]["id"], "../x", None):                            # restored already, not an id
-            with self.subTest(bad), self.assertRaises(gui.UserError):
-                gui.undelete_project(bad)
+            with self.subTest(bad), self.assertRaises(rendering.UserError):
+                projects.undelete_project(bad)
 
     def test_a_rename_takes_the_history_along(self):
-        with mock.patch.object(gui, "HISTORY_EVERY", 0):
-            gui.patch_project("Untitled 1", {"setName": "a"})
-            gui.patch_project("Untitled 1", {"setName": "b"})
-        gui.save_project("Named", gui.load_project("Untitled 1")["data"])
-        gui.delete_project("Untitled 1", renamed="Named")
-        self.assertEqual([v["rev"] for v in gui.list_versions("Named")["versions"]], [1])
-        self.assertEqual(gui.list_versions("Untitled 1")["versions"], [])
-        self.assertEqual(gui.list_trash(), {"trash": []})                    # a rename is not a delete
+        with mock.patch.object(projects, "HISTORY_EVERY", 0):
+            projects.patch_project("Untitled 1", {"setName": "a"})
+            projects.patch_project("Untitled 1", {"setName": "b"})
+        projects.save_project("Named", projects.load_project("Untitled 1")["data"])
+        projects.delete_project("Untitled 1", renamed="Named")
+        self.assertEqual([v["rev"] for v in projects.list_versions("Named")["versions"]], [1])
+        self.assertEqual(projects.list_versions("Untitled 1")["versions"], [])
+        self.assertEqual(projects.list_trash(), {"trash": []})                    # a rename is not a delete
 
     def test_quiet_pages_stop_counting(self):
-        hub = gui.Hub()
+        hub = projects.Hub()
         hub.poll("k", -1, "a", lambda: 0, wait=0)
-        with mock.patch.object(gui.time, "monotonic", return_value=gui.time.monotonic() + gui.VIEWER_GONE + 1):
+        with mock.patch.object(projects.time, "monotonic", return_value=projects.time.monotonic() + projects.VIEWER_GONE + 1):
             self.assertEqual(hub.poll("k", -1, "b", lambda: 0, wait=0)["viewers"], 1)
 
 
@@ -477,13 +477,13 @@ class Changes(unittest.TestCase):
     def test_changelog_lists_changed_then_unchanged(self):
         answers = {"swsh3-88": ("Tyranitar", ["Restyled as a Mega Evolution card", "HP: 180 → 190"]),
                    "sv09-080": ("Larvitar", [])}
-        with mock.patch.object(gui, "card_changes", side_effect=lambda i, *a: answers[i]):
-            text = gui.changelog([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "sv09-080"}], "My set")
+        with mock.patch.object(rendering, "card_changes", side_effect=lambda i, *a: answers[i]):
+            text = rendering.changelog([{"id": "swsh3-88", "edits": {"hp": "190"}}, {"id": "sv09-080"}], "My set")
         self.assertTrue(text.startswith("# My set: changelog"))
         self.assertIn("## Tyranitar (swsh3-88)\n\n- Restyled as a Mega Evolution card\n- HP: 180 → 190", text)
         self.assertIn("## Unchanged\n\n- Larvitar (sv09-080)", text)
-        with self.assertRaises(gui.UserError):
-            gui.changelog([])
+        with self.assertRaises(rendering.UserError):
+            rendering.changelog([])
 
 
 class StandardFoil(unittest.TestCase):
@@ -493,10 +493,10 @@ class StandardFoil(unittest.TestCase):
              "swsh1-1": ("ex", "Celebi V"), "sve-1": ("energy", "Basic Grass Energy")}
 
     def test_holofoil_goes_on_for_1_prize_pokemon_and_trainers_but_ace_spec(self):
-        with mock.patch.object(gui, "layout_of", side_effect=lambda cid: self.CARDS[cid][0]), \
+        with mock.patch.object(rendering, "layout_of", side_effect=lambda cid: self.CARDS[cid][0]), \
                 mock.patch.object(gui.tcg, "card", side_effect=lambda cid: {"name": self.CARDS[cid][1]}), \
-                mock.patch.object(gui, "_is_ace", side_effect=lambda cid: cid == "sv05-144"):
-            items = gui.standard_foil([{"id": cid, "foil": False} for cid in self.CARDS])
-            kept = gui.standard_foil([{"id": "swsh1-1", "foil": True}])
+                mock.patch.object(rendering, "_is_ace", side_effect=lambda cid: cid == "sv05-144"):
+            items = setjobs.standard_foil([{"id": cid, "foil": False} for cid in self.CARDS])
+            kept = setjobs.standard_foil([{"id": "swsh1-1", "foil": True}])
         self.assertEqual({it["id"] for it in items if it["foil"]}, {"sm1-1", "sv01-1", "sv01-190"})
         self.assertEqual(kept, [{"id": "swsh1-1", "foil": True}], "a card with holofoil on keeps it")

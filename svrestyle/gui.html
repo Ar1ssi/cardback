@@ -1711,6 +1711,11 @@ function drawPushPlan(error = "") {
     + "project. They stay in the set as they are."));
   if (plan.moved) notes.push(el("div", { class: "msg warn" }, `${cardCount(plan.moved)} get another number in the set: a deck that `
     + "names them by number would find other cards."));
+  if (plan.unreadable && plan.unreadable.length) notes.push(el("div", { class: "msg err" },
+    `${plan.unreadable.length === 1 ? "1 project" : `${plan.unreadable.length} projects`} could not be read, so `
+    + `${plan.unreadable.length === 1 ? "its" : "their"} cards are not in this push:\n`
+    + plan.unreadable.map((u) => `${u.name}: ${u.why}`).join("\n")));
+  if (plan.notes && plan.notes.length) notes.push(el("div", { class: "msg warn" }, `Left off:\n${plan.notes.join("\n")}`));
   $("pushAllList").replaceChildren(...notes, ...planGroup("New", plan.added, "new"), ...planGroup("Changed", plan.changed, "changed"),
     ...planGroup("Removed", plan.removed, "gone"),
     ...(changes ? [] : [el("div", { class: "none" }, plan.existing === null ? "Nothing to push." : `ptcg-sim already has all ${cardCount(plan.incoming)} as they are.`)]));
@@ -2015,7 +2020,13 @@ async function downloadAllProjects() {
     const a = el("a", { href: `/api/projects/merged/file?job=${job.id}`, download: "all-projects.zip" });
     document.body.append(a); a.click(); a.remove();
     status(`All projects downloaded (${what}).`);
-    if (job.failed.length) showError(`Not in the zip (${job.failed.length}):\n${job.failed.map((f) => `${f.id}: ${f.why}`).join("\n")}`);
+    const missing = [
+      ...(job.failed.length ? [`Not in the zip (${job.failed.length}):\n${job.failed.map((f) => `${f.id}: ${f.why}`).join("\n")}`] : []),
+      ...(job.unreadable && job.unreadable.length ? [`Projects that could not be read (${job.unreadable.length}), their cards not in the zip:\n`
+        + job.unreadable.map((u) => `${u.name}: ${u.why}`).join("\n")] : []),
+      ...(job.notes && job.notes.length ? [`Left off:\n${job.notes.join("\n")}`] : []),
+    ];
+    if (missing.length) showError(missing.join("\n\n"));
   } catch (e) { status(""); showError(e.message); }
   finally {
     mergeJob = null;

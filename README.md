@@ -73,7 +73,7 @@ lettering and rule pill stay, the chevrons fill its pattern field). Every such c
 had a reverse holo or not (a print with no foil at all takes its era's frame from a reference print: Sprigatito /
 Floragato, Abra / Meganium). What stays: a holo (a card whose base printing is foil keeps it; the set uses the holo),
 a print's own reverse that is not the generic FlatSilver one (`foil.generic_reverse`), ACE SPEC Trainers' AceFoil
-(`build_ace`), ex cards and Energy. A push turns holofoil on for every card that takes it (`gui.standard_foil`).
+(`build_ace`), ex cards and Energy. A push turns holofoil on for every card that takes it (`setjobs.standard_foil`).
 
 ### Scarlet & Violet / Mega Evolution cards: edited in place
 
@@ -559,7 +559,9 @@ How it works, module by module:
 - `megarule.py` - the Mega Evolution rule as Gen 9 sets such a rule: the panel under the "Evolves from" strip and
   the Mega badge (lifted from the Mega ex prints) that labels it.
 - `edit.py` / `gui.py` / `gui.html` - the editor: which fields can change and the checks on them, the local HTTP
-  server, and the page.
+  server, and the page. Behind the server: `rendering.py` (a card read and rendered, cached, and its changelog),
+  `projects.py` (saved projects, their history and trash, the long polls open pages follow), `setjobs.py` (sending
+  and publishing a set in the background, and the push-all plan) and `merged.py` (every project as one download).
 - `mecompose.py` - the Mega Evolution layout: art window, portrait, Pokedex line (PokeAPI), the vertical spacing of
   abilities and attacks fitted on 45 me1 cards, flavour text; text drawing is shared with `compose.py`.
 

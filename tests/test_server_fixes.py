@@ -15,7 +15,7 @@ from unittest import mock
 
 import numpy as np
 
-from svrestyle import export, gui
+from svrestyle import export, gui, merged, projects, rendering, setjobs
 
 offline = gui.cache.DownloadError("offline")
 
@@ -23,15 +23,15 @@ offline = gui.cache.DownloadError("offline")
 class AceUnknown(unittest.TestCase):
     def test_a_failed_lookup_is_not_an_answer(self):
         with mock.patch.object(gui.tcg, "card", side_effect=offline):
-            self.assertIsNone(gui._is_ace("sv05-144"))
-            entry = gui._set_entry("sv05-144", "Prime Catcher", "Trainer")
+            self.assertIsNone(rendering._is_ace("sv05-144"))
+            entry = rendering._set_entry("sv05-144", "Prime Catcher", "Trainer")
             self.assertEqual(entry, {"id": "sv05-144", "name": "Prime Catcher", "layout": "trainer", "gen9": True})
             saved = [{"id": "sv05-144", "name": "Prime Catcher", "layout": "trainer", "gen9": True}]
-            self.assertEqual(gui._current_entries(saved), saved, "nothing stored while TCGdex cannot say")
-            self.assertFalse(gui.takes_reverse("sv05-144"), "holofoil stays the switch's choice")
-        self.assertFalse(gui._is_ace("swsh1-156"), "an older Trainer is no ACE SPEC card, no lookup needed")
+            self.assertEqual(rendering._current_entries(saved), saved, "nothing stored while TCGdex cannot say")
+            self.assertFalse(setjobs.takes_reverse("sv05-144"), "holofoil stays the switch's choice")
+        self.assertFalse(rendering._is_ace("swsh1-156"), "an older Trainer is no ACE SPEC card, no lookup needed")
         with mock.patch.object(gui.tcg, "card", return_value={"rarity": "ACE SPEC Rare"}):
-            self.assertEqual(gui._current_entries(saved)[0]["ace"], True, "the next load asks again")
+            self.assertEqual(rendering._current_entries(saved)[0]["ace"], True, "the next load asks again")
 
     def test_an_unknown_ace_sorts_with_the_other_trainers(self):
         recs = [{"category": "Trainer", "trainerType": "Item", "name": n, "localId": f"00{i}",
@@ -45,16 +45,16 @@ class Unreadable(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         for p in (mock.patch.object(gui.cache, "CACHE", Path(self.tmp.name)),
-                  mock.patch.object(gui, "changelog", return_value="# log"),
+                  mock.patch.object(rendering, "changelog", return_value="# log"),
                   mock.patch.object(gui.tcg, "TCGLIVE", None)):
             p.start()
             self.addCleanup(p.stop)
-        gui._exports.clear()
-        gui.save_project("Good", {"cards": [{"id": "swsh3-88", "name": "Tyranitar", "layout": "me"}], "foil": True})
-        (gui.projects_dir() / "broken.json").write_text("{not json", encoding="utf-8")
+        merged._exports.clear()
+        projects.save_project("Good", {"cards": [{"id": "swsh3-88", "name": "Tyranitar", "layout": "me"}], "foil": True})
+        (projects.projects_dir() / "broken.json").write_text("{not json", encoding="utf-8")
 
     def test_merged_items_carries_what_it_left_out(self):
-        merged = gui.merged_items()
+        merged = projects.merged_items()
         self.assertEqual((merged.projects, [i["id"] for i in merged.items]), (1, ["swsh3-88"]))
         self.assertEqual([u["name"] for u in merged.unreadable], ["broken"])
         self.assertFalse(merged.items[0]["foil"])
@@ -62,51 +62,51 @@ class Unreadable(unittest.TestCase):
         self.assertIn("Good: holofoil left off", merged.notes[0])
 
     def test_the_zip_and_its_progress_say_so(self):
-        with mock.patch.object(gui, "render", return_value=gui.Render(b"png", [], "me")):
-            job = gui.start_merged_zip()
+        with mock.patch.object(rendering, "render", return_value=rendering.Render(b"png", [], "me")):
+            job = merged.start_merged_zip()
             end = time.time() + 10
-            while gui.merged_progress(job["id"])["state"] == "running" and time.time() < end:
+            while merged.merged_progress(job["id"])["state"] == "running" and time.time() < end:
                 time.sleep(0.02)
-        done = gui.merged_progress(job["id"])
+        done = merged.merged_progress(job["id"])
         self.assertEqual(done["state"], "done")
         self.assertEqual([u["name"] for u in done["unreadable"]], ["broken"])
         self.assertTrue(done["notes"])
-        with zipfile.ZipFile(gui.merged_file(job["id"])) as z:
+        with zipfile.ZipFile(merged.merged_file(job["id"])) as z:
             text = z.read("NOT-INCLUDED.txt").decode()
         self.assertIn("could not be read", text)
         self.assertIn("broken: JSONDecodeError", text)
         self.assertIn("holofoil left off", text)
 
     def test_nothing_to_download_names_the_unreadable(self):
-        gui.project_file("Good").unlink()
-        with self.assertRaisesRegex(gui.UserError, "1 project could not be read: broken"):
-            gui.start_merged_zip()
+        projects.project_file("Good").unlink()
+        with self.assertRaisesRegex(rendering.UserError, "1 project could not be read: broken"):
+            merged.start_merged_zip()
 
     def test_the_push_plan_says_so(self):
         checkout = Path(self.tmp.name, "sim")
         (checkout / "client" / "src").mkdir(parents=True)
         with mock.patch.dict("os.environ", {"SVRESTYLE_PTCG_SIM": str(checkout)}), \
-                mock.patch.object(gui, "takes_reverse", return_value=False), \
-                mock.patch.object(gui, "_plan_card", side_effect=lambda it, *a: {"id": it["id"]}):
-            plan = gui.push_all_plan("HBW")
+                mock.patch.object(setjobs, "takes_reverse", return_value=False), \
+                mock.patch.object(setjobs, "_plan_card", side_effect=lambda it, *a: {"id": it["id"]}):
+            plan = setjobs.push_all_plan("HBW")
         self.assertEqual(([u["name"] for u in plan["unreadable"]], len(plan["notes"])), (["broken"], 1))
 
 
 class RenderCache(unittest.TestCase):
     def setUp(self):
-        gui._renders.clear()
-        self.addCleanup(gui._renders.clear)
+        rendering._renders.clear()
+        self.addCleanup(rendering._renders.clear)
         blank = np.zeros((4, 4, 4), np.float32)
-        for p in (mock.patch.object(gui, "read", return_value=("energy", {"id": "x"})),
-                  mock.patch.object(gui.energy, "compose_card", return_value=(blank, {}))):
+        for p in (mock.patch.object(rendering, "read", return_value=("energy", {"id": "x"})),
+                  mock.patch.object(rendering.energy, "compose_card", return_value=(blank, {}))):
             p.start()
             self.addCleanup(p.stop)
 
     def test_a_hit_does_not_wait_for_a_render_in_progress(self):
-        first = gui.render("sm1-1")
+        first = rendering.render("sm1-1")
         got = []
-        with gui._render_lock:                        # a render in progress elsewhere
-            t = threading.Thread(target=lambda: got.append(gui.render("sm1-1")), daemon=True)
+        with rendering._render_lock:                        # a render in progress elsewhere
+            t = threading.Thread(target=lambda: got.append(rendering.render("sm1-1")), daemon=True)
             t.start()
             t.join(2)
         self.assertEqual(got, [first])
@@ -117,7 +117,7 @@ class RenderCache(unittest.TestCase):
         def fill():
             try:
                 for i in range(3000):
-                    gui.render(f"sm1-{i}")
+                    rendering.render(f"sm1-{i}")
             except Exception as e:                    # noqa: BLE001
                 errors.append(e)
             finally:
@@ -141,7 +141,7 @@ class RenderCache(unittest.TestCase):
         for t in threads:
             t.join(60)
         self.assertEqual(errors, [])
-        self.assertLessEqual(len(gui._renders), gui._RENDER_CACHE)
+        self.assertLessEqual(len(rendering._renders), rendering._RENDER_CACHE)
 
 
 class MegaStage(unittest.TestCase):
@@ -163,7 +163,7 @@ class Guard(unittest.TestCase):
                 raise e
             return go
         with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            gui.Handler._guard(handler, fail(gui.UserError("bad id")))
+            gui.Handler._guard(handler, fail(rendering.UserError("bad id")))
             self.assertEqual(err.getvalue(), "")
             gui.Handler._guard(handler, fail(RuntimeError("boom")))
         self.assertIn("Traceback", err.getvalue())
