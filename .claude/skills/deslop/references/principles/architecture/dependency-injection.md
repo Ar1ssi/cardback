@@ -1,0 +1,34 @@
+---
+name: deslop-architecture-dependency-injection
+description: Deslop principle — Dependency Injection: hand a unit what it needs instead of letting it construct or look it up; declare what, not how, so it can be tested and swapped.
+---
+
+# Dependency Injection
+
+> "The key benefit of Dependency Injection is that it removes the dependency that a class has on a concrete implementation."
+> — Martin Fowler
+
+Dependencies should be injected from outside rather than created internally — a class declares *what* it needs, not *how* to get it. Constructor injection is preferred (explicit, immutable, testable) over setter or interface injection. The primary payoff is testability: swap real dependencies for test doubles without touching the class. DI also makes SRP violations visible — a constructor demanding too many dependencies is a class doing too much.
+
+```python
+# ❌ Wrong - Hardcoded dependency
+class MovieLister:
+    def __init__(self):
+        self._finder = ColonDelimitedMovieFinder("movies.txt")  # Coupled!
+
+# ✅ Correct - Injected dependency
+class MovieLister:
+    def __init__(self, finder: MovieFinder):
+        self._finder = finder
+```
+
+---
+
+In relation to other principles, dependency injection:
+
+| Principle | Relationship |
+|-----------|--------------|
+| [**SOLID**](solid.md) | DI is Dependency Inversion in practice |
+| [**Orthogonality**](orthogonality.md) | Injected dependencies change independently of their consumers |
+| [**Encapsulation**](encapsulation.md) | Constructors declare needs instead of hiding them |
+| [**Convention Over Configuration**](convention-over-configuration.md) | Constructor defaults are DI's zero-config escape hatch |
